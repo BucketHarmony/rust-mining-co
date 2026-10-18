@@ -548,3 +548,14 @@ Identity: commits are authored as Bucket Harmony <kenneth.raisor@gmail.com> (rep
 Decisions: SAD-P2 §7.1 temperature uses the per-edge update quantized to max(C_i, C_j) with power-of-two heat capacities (8..=128), so Σ T·C is exactly conserved (the owner's per-edge truncation, amended for unequal capacities).
 Next: F062.
 Blockers: none.
+
+## 2026-10-18 19:00 — F062 FixedUpdate at 60 Hz with render interpolation — passed
+Done: New rmc_client::interp (re-exported: InterpolatedEye, render_pos). `InterpolatedEye { prev, curr }` component holds the eye after the last two fixed steps; `push(eye)` shifts curr into prev. `render_pos(prev, curr, f)` is `prev.lerp(curr, f.clamp(0, 1))`, as in Bevy's physics_in_fixed_timestep example. ControllerPlugin's FixedUpdate set ControllerSystems::Move now runs `move_players` then `record_eyes` (chained); `record_eyes` pushes `Player::eye()` (feet + step-up offset, as F061 asked) or inserts `InterpolatedEye::at(eye)` on a player's first step. `follow_player` (Update) puts the GameCamera at `render_pos` at `Time<Fixed>::overstep_fraction()`, or at `Player::eye()` before the first fixed step. The fixed rate stays 60 Hz (FIXED_HZ, set by ControllerPlugin since F060).
+Tests added: interp::tests::render_pos_between_prev_and_curr: the lerp's ends, middle, 17 fractions on the segment, clamping outside 0..=1; push keeps the last two; then a MinimalPlugins app with ControllerPlugin at 240 Hz frames (one fixed step per four frames) with a player walking along -Z on a floor: every frame curr is the player's eye, prev is the previous curr, the camera is at render_pos(prev, curr, overstep_fraction), the eye height holds, and every frame after the first steps moves the view by walk/240 along -Z (no stutter); 48 frames run exactly 12 fixed steps. It failed first against a stub render_pos that returned curr ("0 is prev").
+Decisions:
+- Only the eye position is interpolated. The rotation is not: mouse look applies in Update every frame, so it is already smooth and has no fixed-step lag.
+- The view is up to one fixed step (16.7 ms) behind the simulation, as in Bevy's example. A player standing still has prev == curr, so the existing plugin test's camera-at-eye check still holds.
+- A teleport (feet set outside FixedUpdate) glides over one fixed step instead of snapping. No snap threshold was added; F070's snap-to-free-cell may want to call `InterpolatedEye::at` after moving the player.
+- Input is still read per fixed step from ButtonInput (held keys). No input accumulation like the Bevy example's, because nothing uses just_pressed in FixedUpdate yet. F064's pickaxe swing should read held buttons too, or accumulate.
+Next: F063 (E2E walk_and_jump and step_up through injected input); its blockers F061, F062, F057 all pass.
+Blockers: none.
