@@ -41,3 +41,13 @@ Decisions:
 - On native Windows, jq in pass-feature.sh writes features.json with CRLF. Git normalizes it to LF on commit (warning only).
 Next: F003 (coordinate conversions), then F004, F005.
 Blockers: none.
+
+## 2026-10-18 05:00 — F003 Coordinate conversions — passed
+Done: rmc_world::coords has constants CHUNK_SHIFT/CHUNK_SIZE/CHUNK_MASK/CHUNK_VOLUME/CELL_SIZE_M and the types CellPos(IVec3), ChunkPos(IVec3), LocalPos(UVec3), all serde. CellPos::{chunk, local, split, from_chunk_local, min_corner_m, center_m, from_meters}, ChunkPos::origin_cell, LocalPos::{index, from_index}. Chunk = arithmetic `>> 5`, local = `& 31`, index = x + z*32 + y*1024. Meters: cell * 0.5, half-open, from_meters floors.
+Tests added: coords::tests::{cell_to_chunk_negative, local_index_roundtrip, world_meters_roundtrip, ordering_is_y_z_x}. They cover i32::MIN/MAX, mixed-sign borders, all 32768 indices, and floor vs truncate for negative meters.
+Decisions:
+- CellPos and ChunkPos implement Ord manually (IVec3 has no Ord) as lexicographic (y, z, x), which matches the local linear index and the §8.1 shape order. Every "sorted" output (iter_chunks_sorted, save, damage BTreeMap) uses this order.
+- The meter conversions are the float boundary that rule 3 allows (raycast/client). Integer logic does not call them.
+- SAD §5 says 0.5 m cells, so CELL_SIZE_M = 0.5.
+Next: F004 (MaterialTable from materials.ron), then F005.
+Blockers: none.
