@@ -1,0 +1,19 @@
+[package]
+name = "rmc_testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmc_client.workspace = true
+rmc_host.workspace = true
+rmc_worldgen.workspace = true
+rmc_world.workspace = true
+rmc_protocol.workspace = true
+bevy.workspace = true
+crossbeam-channel.workspace = true
+image.workspace = true
+image-compare.workspace = true
+thiserror.workspace = true

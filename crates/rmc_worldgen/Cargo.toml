@@ -1,0 +1,18 @@
+[package]
+name = "rmc_worldgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmc_world.workspace = true
+glam.workspace = true
+fastnoise-lite.workspace = true
+rayon.workspace = true
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true

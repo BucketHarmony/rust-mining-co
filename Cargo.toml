@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rmc_world",
+    "crates/rmc_worldgen",
+    "crates/rmc_protocol",
+    "crates/rmc_host",
+    "crates/rmc_client",
+    "crates/rmc_testkit",
+    "crates/rmc_app",
+    "tests/e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Every external version is pinned exactly. Checked on crates.io at M0 (2026-10-17).
+[workspace.dependencies]
+# Engine (client side only). bevy_egui 0.43 and bevy-inspector-egui 0.38 target bevy 0.20.
+bevy = "=0.20.0"
+bevy_egui = "=0.43.1"
+bevy-inspector-egui = "=0.38.0"
+# glam at the minor bevy_math 0.20 re-exports (^0.33.2).
+glam = { version = "=0.33.12", features = ["serde"] }
+fastnoise-lite = "=1.1.1"
+rayon = "=1.12.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+postcard = { version = "=1.1.3", features = ["use-std"] }
+ron = "=0.12.2"
+zstd = "=0.14.3"
+crossbeam-channel = "=0.5.17"
+xxhash-rust = { version = "=0.8.19", features = ["xxh3"] }
+thiserror = "=2.0.21"
+anyhow = "=1.0.104"
+tracing = "=0.1.44"
+clap = { version = "=4.6.7", features = ["derive"] }
+image = "=0.25.10"
+image-compare = "=0.5.0"
+# Dev / bench
+proptest = "=1.12.0"
+criterion = "=0.8.2"
+
+# Internal
+rmc_world = { path = "crates/rmc_world" }
+rmc_worldgen = { path = "crates/rmc_worldgen" }
+rmc_protocol = { path = "crates/rmc_protocol" }
+rmc_host = { path = "crates/rmc_host" }
+rmc_client = { path = "crates/rmc_client" }
+rmc_testkit = { path = "crates/rmc_testkit" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,14 @@
+[package]
+name = "rmc_protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmc_world.workspace = true
+glam.workspace = true
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true

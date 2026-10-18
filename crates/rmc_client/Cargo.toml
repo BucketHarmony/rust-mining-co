@@ -1,0 +1,17 @@
+[package]
+name = "rmc_client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmc_world.workspace = true
+rmc_protocol.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+bevy-inspector-egui.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
