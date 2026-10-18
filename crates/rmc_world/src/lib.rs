@@ -3,6 +3,7 @@
 
 pub mod chunk;
 pub mod coords;
+pub mod damage;
 pub mod edit;
 pub mod materials;
 pub mod shape;

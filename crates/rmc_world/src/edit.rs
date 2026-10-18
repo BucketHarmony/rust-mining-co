@@ -53,13 +53,15 @@ impl EditOp {
             EditOp::Set(id) | EditOp::Paint(id) if materials.get(id).is_none() => {
                 Err(RejectReason::UnknownMaterial(id))
             }
-            EditOp::Set(_) | EditOp::Paint(_) | EditOp::Remove => Ok(()),
-            EditOp::Damage(_) => Err(RejectReason::Unsupported),
+            EditOp::Set(_) | EditOp::Paint(_) | EditOp::Remove | EditOp::Damage(_) => Ok(()),
         }
     }
 
     /// The material a cell holding `old` becomes, or `None` if the op skips it.
-    /// Only meaningful for ops that passed [`EditOp::validate`].
+    /// Only meaningful for ops that passed [`EditOp::validate`]. `Damage`
+    /// returns `None`: whether it breaks a cell depends on the cell's
+    /// accumulated damage, which [`World::apply`](crate::world::World::apply)
+    /// tracks.
     pub(crate) fn target(self, old: Option<&MaterialDef>) -> Option<MaterialId> {
         match self {
             EditOp::Set(id) => Some(id),
@@ -84,8 +86,6 @@ pub struct EditCommand {
 pub enum RejectReason {
     #[error("material {0:?} is not in the material table")]
     UnknownMaterial(MaterialId),
-    #[error("this edit op is not supported yet")]
-    Unsupported,
     #[error("shape has more than {MAX_EDIT_CELLS} cells")]
     TooManyCells,
     #[error("shape lies entirely outside the world bounds")]

@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use crate::chunk::Chunk;
 use crate::coords::{CellAabb, CellPos, ChunkPos};
+use crate::damage::DamageMap;
 use crate::edit::{
-    ChunkDelta, EditCommand, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
+    ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
     RejectReason,
 };
 use crate::materials::{MaterialId, MaterialTable};
@@ -23,6 +24,7 @@ pub enum WorldError {
 #[derive(Clone, Debug)]
 pub struct World {
     chunks: HashMap<ChunkPos, Chunk>,
+    damage: DamageMap,
     materials: Arc<MaterialTable>,
     bounds: CellAabb,
 }
@@ -32,6 +34,7 @@ impl World {
     pub fn new(materials: Arc<MaterialTable>, bounds: CellAabb) -> Self {
         Self {
             chunks: HashMap::new(),
+            damage: DamageMap::default(),
             materials,
             bounds,
         }
@@ -43,6 +46,11 @@ impl World {
 
     pub fn materials(&self) -> &Arc<MaterialTable> {
         &self.materials
+    }
+
+    /// Accumulated cell damage. Host-only: not hashed, saved or sent.
+    pub fn damage(&self) -> &DamageMap {
+        &self.damage
     }
 
     /// Material at `cell`, or `None` if the cell is outside the bounds or its
@@ -148,6 +156,12 @@ impl World {
     /// holds the target. Each changed chunk gets one
     /// revision bump and is marked modified; its delta is `Full` (with the
     /// chunk compacted) when more than [`FULL_DELTA_THRESHOLD`] cells changed.
+    ///
+    /// `Damage` adds to each diggable cell's damage (saturating). A cell whose
+    /// damage reaches its hardness breaks: it becomes air and its material's
+    /// `yield_count` is added to the yields. Damage without a break changes
+    /// no cell and produces no delta. `Set`, `Paint` and `Remove` clear the
+    /// damage on every cell they apply to.
     pub fn apply(&mut self, cmd: &EditCommand) -> EditResult {
         if let Err(reason) = self.validate(cmd) {
             tracing::debug!(command = ?cmd.id, %reason, "edit rejected");
@@ -155,6 +169,7 @@ impl World {
         }
 
         let mut changed: BTreeMap<ChunkPos, Vec<(u16, MaterialId)>> = BTreeMap::new();
+        let mut yields: BTreeMap<MaterialId, u32> = BTreeMap::new();
         for cell in cmd.shape.cells() {
             if !self.bounds.contains(cell) {
                 continue;
@@ -164,8 +179,26 @@ impl World {
                 continue;
             };
             let old = chunk.storage.get(local);
-            let Some(new) = cmd.op.target(self.materials.get(old)) else {
-                continue;
+            let def = self.materials.get(old);
+            let new = if let EditOp::Damage(dmg) = cmd.op {
+                let Some(def) = def.filter(|d| d.diggable) else {
+                    continue;
+                };
+                if !self.damage.hit(cell, def.hardness, dmg) {
+                    continue;
+                }
+                if def.yield_count > 0 {
+                    *yields.entry(old).or_insert(0) += u32::from(def.yield_count);
+                }
+                MaterialId::AIR
+            } else {
+                let Some(new) = cmd.op.target(def) else {
+                    continue;
+                };
+                // Set, Paint and Remove clear damage on every cell they
+                // apply to, even one that already holds the target.
+                self.damage.clear(cell);
+                new
             };
             if new != old {
                 chunk.storage.set(local, new);
@@ -208,7 +241,7 @@ impl World {
             command: cmd.id,
             status: EditStatus::Applied,
             deltas,
-            yields: Vec::new(),
+            yields: yields.into_iter().collect(),
         }
     }
 
@@ -223,6 +256,7 @@ impl World {
             return Err(WorldError::ChunkOutOfBounds(pos));
         }
         tracing::debug!(?pos, revision = chunk.revision, "chunk inserted");
+        self.damage.clear_chunk(pos);
         Ok(self.chunks.insert(pos, chunk))
     }
 }
