@@ -82,8 +82,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "verify-features.sh must correctly run cargo:<pkg>:<filter> with --exact and e2e:<scenario> entries. Test it on F003 before passing this."
+      "passes": true,
+      "notes": "verify-features.sh must correctly run cargo:<pkg>:<filter> with --exact and e2e:<scenario> entries. Test it on F003 before passing this.",
+      "passedAt": "2026-10-18T04:24:53Z"
     },
     {
       "id": "F010",
