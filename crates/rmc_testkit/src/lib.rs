@@ -2,7 +2,9 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod screenshot;
 
 pub use app::{
     FRAME_HZ, RenderFailure, TestApp, TestCamera, TestConfig, TestRenderTarget, frame_duration,
 };
+pub use screenshot::{MAX_SCREENSHOT_STEPS, ScreenshotError};
