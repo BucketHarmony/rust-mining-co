@@ -7,6 +7,7 @@
 //! codec for framing.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -42,6 +43,14 @@ pub trait Transport: Send {
     fn recv(&mut self) -> Vec<(PlayerId, ClientMsg)>;
     /// Queues `msg` for every connected player that `to` addresses.
     fn send(&mut self, to: Recipient, msg: ServerMsg);
+    /// A channel that receives a token after a message arrives, so the host
+    /// thread can wake for it instead of waiting for its next tick. Tokens
+    /// may be coalesced: one token can stand for several messages, and every
+    /// message arrives before its token. `None` (the default) means the
+    /// transport cannot signal, and the host thread ticks on its timer only.
+    fn wake_signal(&self) -> Option<Receiver<()>> {
+        None
+    }
 }
 
 /// The client's end has been dropped, or the host's.
@@ -62,16 +71,22 @@ pub struct ChannelTransport {
     inbound_tx: Sender<(PlayerId, ClientMsg)>,
     inbound_rx: Receiver<(PlayerId, ClientMsg)>,
     clients: BTreeMap<PlayerId, Sender<ServerMsg>>,
+    /// Capacity 1: a token already waiting covers every later message.
+    wake_tx: Sender<()>,
+    wake_rx: Receiver<()>,
     next_player: u32,
 }
 
 impl ChannelTransport {
     pub fn new() -> Self {
         let (inbound_tx, inbound_rx) = crossbeam_channel::unbounded();
+        let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
         Self {
             inbound_tx,
             inbound_rx,
             clients: BTreeMap::new(),
+            wake_tx,
+            wake_rx,
             next_player: 1,
         }
     }
@@ -85,6 +100,7 @@ impl ChannelTransport {
         ClientEndpoint {
             player,
             tx: self.inbound_tx.clone(),
+            wake: self.wake_tx.clone(),
             rx,
         }
     }
@@ -142,12 +158,17 @@ impl Transport for ChannelTransport {
         }
         self.deliver(last, msg);
     }
+
+    fn wake_signal(&self) -> Option<Receiver<()>> {
+        Some(self.wake_rx.clone())
+    }
 }
 
 /// A client's end of a [`ChannelTransport`].
 pub struct ClientEndpoint {
     player: PlayerId,
     tx: Sender<(PlayerId, ClientMsg)>,
+    wake: Sender<()>,
     rx: Receiver<ServerMsg>,
 }
 
@@ -157,14 +178,24 @@ impl ClientEndpoint {
         self.player
     }
 
-    /// Sends `msg` to the host, tagged with this client's id.
+    /// Sends `msg` to the host, tagged with this client's id, and wakes the
+    /// host thread if one is waiting.
     pub fn send(&self, msg: ClientMsg) -> Result<(), Disconnected> {
-        self.tx.send((self.player, msg)).map_err(|_| Disconnected)
+        self.tx.send((self.player, msg)).map_err(|_| Disconnected)?;
+        // Full means a token is already waiting; the host will see this
+        // message when it wakes for that one.
+        let _ = self.wake.try_send(());
+        Ok(())
     }
 
     /// The next message from the host, if one is waiting. Never blocks.
     pub fn try_recv(&self) -> Option<ServerMsg> {
         self.rx.try_recv().ok()
+    }
+
+    /// The next message from the host, waiting up to `timeout` for one.
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<ServerMsg> {
+        self.rx.recv_timeout(timeout).ok()
     }
 
     /// Every message from the host that is waiting, in the order sent.

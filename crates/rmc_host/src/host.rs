@@ -17,15 +17,23 @@
 //! an `Inventory` message with its new totals. A `RequestChunk` (a replica
 //! repairing a revision gap) is answered with a `ChunkSnapshot` of that
 //! chunk, to the requester only.
+//!
+//! A `SaveRequest` writes the world's modified chunks to the directory in
+//! [`SaveConfig`] (SAD §10) right then, after every message that arrived
+//! before it, and the requester alone gets `Saved { ok, path }`. A host
+//! without a save directory answers `Saved { ok: false, path: "" }`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
+use crossbeam_channel::Receiver;
 use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::{EditCommand, EditStatus, PlayerId};
 use rmc_world::inventory::Inventory;
+use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::transport::{Recipient, Transport};
 
@@ -39,6 +47,24 @@ pub struct HostConfig {
     pub gen_params_hash: u64,
 }
 
+/// Where and how `SaveRequest` writes the world (SAD §10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveConfig {
+    /// The save directory (`header.ron` and `chunks.bin`).
+    pub dir: PathBuf,
+    /// The noise crate version worldgen samples, for the save header.
+    pub noise_crate_version: String,
+}
+
+/// Why [`Host::save`] wrote nothing.
+#[derive(Debug, thiserror::Error)]
+pub enum HostSaveError {
+    #[error("host has no save directory")]
+    NoSaveDir,
+    #[error(transparent)]
+    Save(#[from] SaveError),
+}
+
 /// The authoritative world and its connection to the clients.
 pub struct Host {
     world: World,
@@ -48,6 +74,8 @@ pub struct Host {
     joined: BTreeSet<PlayerId>,
     /// What each joined player has collected.
     inventories: BTreeMap<PlayerId, Inventory>,
+    /// Where `SaveRequest` writes; `None` refuses every save.
+    save: Option<SaveConfig>,
 }
 
 impl Host {
@@ -58,7 +86,14 @@ impl Host {
             transport,
             joined: BTreeSet::new(),
             inventories: BTreeMap::new(),
+            save: None,
         }
+    }
+
+    /// Lets `SaveRequest` write the world as `save` describes.
+    pub fn with_save(mut self, save: SaveConfig) -> Self {
+        self.save = Some(save);
+        self
     }
 
     /// Drains the inbound messages and handles each in arrival order.
@@ -71,6 +106,25 @@ impl Host {
     /// The authoritative world. Tests read this; the client never has access to it.
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    /// The transport's arrival signal ([`Transport::wake_signal`]).
+    pub fn wake_signal(&self) -> Option<Receiver<()>> {
+        self.transport.wake_signal()
+    }
+
+    /// Writes the world's modified chunks to the save directory, replacing
+    /// any save there, and returns how many were written.
+    pub fn save(&self) -> Result<usize, HostSaveError> {
+        let config = self.save.as_ref().ok_or(HostSaveError::NoSaveDir)?;
+        let header = SaveHeader::new(
+            self.config.seed,
+            self.world.bounds(),
+            self.world.materials().hash(),
+            self.config.gen_params_hash,
+            config.noise_crate_version.clone(),
+        );
+        Ok(save::save(&config.dir, &header, &self.world)?)
     }
 
     /// Whether `player` has joined (sent a matching `Hello`).
@@ -96,9 +150,7 @@ impl Host {
             // Single player: there is nobody to relay positions to.
             ClientMsg::PlayerState { .. } => {}
             ClientMsg::RequestChunk(pos) => self.request_chunk(player, pos),
-            ClientMsg::SaveRequest => {
-                debug!(player = player.0, "SaveRequest not handled yet");
-            }
+            ClientMsg::SaveRequest => self.save_request(player),
         }
     }
 
@@ -184,6 +236,28 @@ impl Host {
             self.transport
                 .send(Recipient::One(player), ServerMsg::Inventory { items });
         }
+    }
+
+    /// Saves the world as it is now, after every message that arrived
+    /// before this one, and tells `player` (only) how it went.
+    fn save_request(&mut self, player: PlayerId) {
+        let path = self
+            .save
+            .as_ref()
+            .map(|s| s.dir.display().to_string())
+            .unwrap_or_default();
+        let ok = match self.save() {
+            Ok(chunks) => {
+                info!(player = player.0, %path, chunks, "saved on request");
+                true
+            }
+            Err(e) => {
+                warn!(player = player.0, %path, error = %e, "save failed");
+                false
+            }
+        };
+        self.transport
+            .send(Recipient::One(player), ServerMsg::Saved { ok, path });
     }
 
     /// Sends `player` a snapshot of the chunk at `pos`, so its replica can
@@ -1090,5 +1164,241 @@ mod tests {
         // b sees the result but not a's inventory, and keeps its own.
         assert_eq!(b.drain().len(), 1);
         assert_eq!(host.inventory(b.player()), Some(&inventories[1]));
+    }
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("rmc_host_{name}_{}_{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const NOISE_VERSION: &str = "fastnoise-lite 1.1.1";
+
+    fn save_config(dir: &std::path::Path) -> SaveConfig {
+        SaveConfig {
+            dir: dir.to_path_buf(),
+            noise_crate_version: NOISE_VERSION.into(),
+        }
+    }
+
+    fn saved(ok: bool, dir: &std::path::Path) -> ServerMsg {
+        ServerMsg::Saved {
+            ok,
+            path: dir.display().to_string(),
+        }
+    }
+
+    /// Every chunk of `a` and `b` matches in position, revision and contents.
+    fn assert_same_world(a: &World, b: &World) {
+        let chunks = |w: &World| -> Vec<(ChunkPos, u64, u64)> {
+            w.iter_chunks_sorted()
+                .map(|(p, c)| (p, c.revision, c.hash()))
+                .collect()
+        };
+        assert_eq!(chunks(a), chunks(b));
+        assert_eq!(a.hash(), b.hash());
+    }
+
+    #[test]
+    fn save_request_writes_files() {
+        use rmc_world::edit::EditResult;
+        use rmc_world::save::{self, CHUNKS_FILE, HEADER_FILE, SaveHeader};
+
+        let tmp = TempDir::new("save_request");
+        // Not there yet: the host creates it.
+        let dir = tmp.0.join("save");
+        let world = test_world();
+        let generated = world.clone();
+        let mut reference = world.clone();
+        let header = SaveHeader::new(
+            CONFIG.seed,
+            world.bounds(),
+            world.materials().hash(),
+            CONFIG.gen_params_hash,
+            NOISE_VERSION,
+        );
+        let granite = mat(&world, "granite");
+        let mut transport = ChannelTransport::new();
+        let eps: Vec<ClientEndpoint> = (0..3).map(|_| transport.connect()).collect();
+        let [a, b, c] = &eps[..] else { unreachable!() };
+        let mut host = Host::new(world, CONFIG, Box::new(transport)).with_save(save_config(&dir));
+
+        // Before joining, a SaveRequest is ignored: nothing written or sent.
+        a.send(ClientMsg::SaveRequest).unwrap();
+        host.tick();
+        assert!(!dir.exists());
+        assert!(a.drain().is_empty());
+
+        a.send(hello(host.world())).unwrap();
+        b.send(hello(host.world())).unwrap();
+        host.tick();
+        assert_join(&host, a.player(), &a.drain());
+        assert_join(&host, b.player(), &b.drain());
+
+        // One tick: two edits, a's SaveRequest, then one more edit. The save
+        // holds exactly the edits that arrived before the request.
+        let e1 = edit(
+            1,
+            0,
+            EditOp::Set(granite),
+            Shape::Box {
+                min: CellPos::new(-3, 40, -3),
+                max: CellPos::new(2, 44, 2),
+            },
+        );
+        let e2 = edit(
+            2,
+            0,
+            EditOp::Damage(u16::MAX),
+            Shape::Cell(CellPos::new(10, 3, 10)),
+        );
+        let e3 = edit(
+            1,
+            1,
+            EditOp::Remove,
+            Shape::Sphere {
+                center: CellPos::new(-40, 10, 40),
+                radius: 4,
+            },
+        );
+        let apply = |w: &mut World, m: &ClientMsg| {
+            let ClientMsg::Edit(cmd) = m else {
+                unreachable!()
+            };
+            w.apply(cmd)
+        };
+        let r1 = apply(&mut reference, &e1);
+        let r2 = apply(&mut reference, &e2);
+        let at_save = reference.clone();
+        let r3 = apply(&mut reference, &e3);
+        assert!(
+            [&r1, &r2, &r3]
+                .iter()
+                .all(|r| r.status == EditStatus::Applied)
+        );
+        a.send(e1).unwrap();
+        b.send(e2).unwrap();
+        a.send(ClientMsg::SaveRequest).unwrap();
+        a.send(e3).unwrap();
+        host.tick();
+        assert_same_world(host.world(), &reference);
+
+        // Saved goes to the requester only, in arrival order.
+        let applied = |r: &EditResult| ServerMsg::Applied(r.clone());
+        let mut inventory = Inventory::new();
+        assert!(!r2.yields.is_empty());
+        inventory.add_all(&r2.yields);
+        assert_eq!(
+            a.drain(),
+            vec![applied(&r1), applied(&r2), saved(true, &dir), applied(&r3)]
+        );
+        assert_eq!(
+            b.drain(),
+            vec![
+                applied(&r1),
+                applied(&r2),
+                ServerMsg::Inventory {
+                    items: inventory.items()
+                },
+                applied(&r3),
+            ]
+        );
+        assert!(c.drain().is_empty());
+
+        // The files are there, the header describes the world, and only
+        // modified chunks were written, sorted.
+        assert!(dir.join(HEADER_FILE).is_file());
+        assert!(dir.join(CHUNKS_FILE).is_file());
+        assert_eq!(save::read_header(&dir).unwrap(), header);
+        let chunks = save::read_chunks(&dir).unwrap();
+        assert_eq!(chunks, save::snapshot(&at_save));
+        assert!(!chunks.is_empty());
+        assert!(chunks.len() < at_save.chunk_count());
+
+        // Loading over the generated world gives the world as it was at the
+        // request: e3 is not in it.
+        let loaded = save::load(&dir, &header, || generated.clone()).unwrap();
+        assert_same_world(&loaded, &at_save);
+        assert_ne!(loaded.hash(), host.world().hash());
+
+        // b's later request replaces the save with the current world, and
+        // only b hears about it.
+        b.send(ClientMsg::SaveRequest).unwrap();
+        host.tick();
+        assert_eq!(b.drain(), vec![saved(true, &dir)]);
+        assert!(a.drain().is_empty());
+        let loaded = save::load(&dir, &header, || generated.clone()).unwrap();
+        assert_same_world(&loaded, host.world());
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n != HEADER_FILE && n != CHUNKS_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "stray files {leftovers:?}");
+
+        // A directory that cannot be created: Saved { ok: false }, nothing
+        // changes, and the host carries on.
+        let blocker = tmp.0.join("not_a_dir");
+        std::fs::write(&blocker, b"file").unwrap();
+        let bad = blocker.join("save");
+        let mut transport = ChannelTransport::new();
+        let d = transport.connect();
+        let mut host =
+            Host::new(generated.clone(), CONFIG, Box::new(transport)).with_save(save_config(&bad));
+        d.send(hello(host.world())).unwrap();
+        host.tick();
+        assert_join(&host, d.player(), &d.drain());
+        d.send(ClientMsg::SaveRequest).unwrap();
+        let e4 = edit(
+            1,
+            0,
+            EditOp::Set(granite),
+            Shape::Cell(CellPos::new(5, 50, 5)),
+        );
+        d.send(e4.clone()).unwrap();
+        host.tick();
+        let mut expect = generated.clone();
+        assert_eq!(
+            d.drain(),
+            vec![
+                saved(false, &bad),
+                ServerMsg::Applied(apply(&mut expect, &e4))
+            ]
+        );
+        assert!(!bad.exists());
+        assert_same_world(host.world(), &expect);
+
+        // A host with no save directory refuses with an empty path.
+        let mut transport = ChannelTransport::new();
+        let f = transport.connect();
+        let mut host = Host::new(generated.clone(), CONFIG, Box::new(transport));
+        f.send(hello(host.world())).unwrap();
+        host.tick();
+        let _ = f.drain();
+        f.send(ClientMsg::SaveRequest).unwrap();
+        host.tick();
+        assert_eq!(
+            f.drain(),
+            vec![ServerMsg::Saved {
+                ok: false,
+                path: String::new()
+            }]
+        );
     }
 }
