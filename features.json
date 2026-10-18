@@ -29,8 +29,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "scripts/check-no-bevy.sh must exit non-zero if bevy appears in cargo tree of the four core crates. .github/workflows/ci.yml from the kit must be valid; run `scripts/check-no-bevy.sh` locally."
+      "passes": true,
+      "notes": "scripts/check-no-bevy.sh must exit non-zero if bevy appears in cargo tree of the four core crates. .github/workflows/ci.yml from the kit must be valid; run `scripts/check-no-bevy.sh` locally.",
+      "passedAt": "2026-10-18T04:14:57Z"
     },
     {
       "id": "F003",

@@ -33,6 +33,7 @@ jobs:
       - name: Feature regression check
         run: scripts/verify-features.sh --quick
       - name: End-to-end (lavapipe)
+        if: hashFiles('tests/e2e/tests/*.rs') != ''
         env:
           WGPU_BACKEND: vulkan
           WGPU_ADAPTER_NAME: llvmpipe
@@ -62,6 +63,7 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
       - name: End-to-end (WARP)
+        if: hashFiles('tests/e2e/tests/*.rs') != ''
         shell: bash
         env:
           WGPU_BACKEND: dx12
