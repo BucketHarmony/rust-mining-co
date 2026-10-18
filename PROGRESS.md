@@ -816,3 +816,59 @@ Decisions:
 - The HUD's PickTarget still uses the pickaxe reach; the targeted-cell gizmo at brush reach is F073's business.
 Next: F072 (egui panel: bevy_egui + bevy-inspector-egui; confirm versions for the pinned Bevy minor on crates.io first).
 Blockers: none.
+
+## 2026-10-18 23:55 — F072 egui panel (bevy_egui + inspector): brush, stats, gizmos toggles, seed, save/load buttons — passed
+Done:
+- New rmc_client::panel (re-exported from lib.rs):
+  - `editor_panel(ctx, &mut EditorState, &mut fly, PanelView, inspector) -> bool` draws the panel while `EditorState::open` is set and returns whether it drew. It is a left-edge `egui::Panel` with a scroll area, and holds:
+    - Brush: summary line, op / shape selectors, size slider (1..=MAX_BRUSH_SIZE), material combo over `brush_materials`.
+    - Fly camera checkbox.
+    - Gizmos: three checkboxes.
+    - Stats.
+    - Worldgen: seed DragValue and Regenerate.
+    - Save / Load.
+    - A collapsed "Inspector" section, which the plugin fills with bevy-inspector-egui's `ui_for_world`.
+  - Buttons push `EditorAction`s and go through `EditorState::apply`, the same path as the keys.
+  - `brush_summary` gives the "Set · Sphere · size 2 · granite" line.
+  - `EditorStats` resource: fps and edits/s averaged over `STATS_WINDOW_S` (1 s), chunks, mesh queued / in flight, last remesh ms, host tick ms.
+    - Sampled every frame by `sample_stats`, which EditorPlugin adds.
+    - Frames with zero delta (the first) are not counted.
+    - Edits/s counts `Applied` results with status Applied.
+  - `HostTickTime(Option<f32>)` resource: whoever runs the host reports the tick time in ms. The panel shows "n/a" while it is None.
+  - `EditorPanelPlugin` adds:
+    - EguiPlugin and DefaultInspectorConfigPlugin (if not already added);
+    - `enable_absorb_bevy_input_system`, so panel clicks do not fire the brush and typing in the seed field does not fire editor keys;
+    - the exclusive `draw_panel` system in `EguiPrimaryContextPass`, run only while the editor is open. It mirrors the fly checkbox into `FlyCam::enabled`.
+- rmc_client::editor:
+  - EditorState gains `seed` and `regenerate_requested`.
+  - New `EditorAction::Regenerate` bound to F8 ("Regenerate the world from the seed").
+  - `follow_welcome_seed` sets `seed` from each Welcome.
+  - EditorPlugin registers FromHost, EditorStats, HostTickTime and sample_stats.
+- docs/CONTROLS.md: F8 row.
+Tests added: editor::tests::panel_toggles_with_f1.
+- The test was written first against a stub `editor_panel` (always false) and a stub sampler. It failed with "F1 opens the panel".
+- The test runs the panel on a bare `egui::Context` (two frames on a 1280 × 2000 screen) and reads the text shapes. It checks:
+  - closed: nothing drawn;
+  - after F1: every §11.6 section and the brush summary are drawn, and drawing alone changes no state;
+  - keys change what the panel shows;
+  - 90 frames at 1/60 s read 60 FPS, and a reported host tick shows up;
+  - F8 sets regenerate_requested;
+  - after F1 again: nothing drawn.
+- Two harness fixes were made before the commit, with no assertion changed:
+  - FullOutput is dropped with `drop_without_applying_deltas`; egui panics on unapplied texture deltas.
+  - The tall test screen keeps the scroll area from clipping the lower sections.
+- One real bug found by the test was fixed in the sampler: the zero-delta first frame was counted, which read 61 FPS.
+Decisions:
+- Left side panel, not a floating window. Inside an egui Window, a scroll area is capped at the window's 420-pt default height, so the lower sections were cut off. A full-height side panel with a scroll area fits any view height.
+- F1 is the only way to close the panel; a side panel has no close button.
+- Worldgen seed + regenerate:
+  - The seed lives in EditorState and follows Welcome.
+  - Regenerate is a one-shot request (`regenerate_requested`), like Save / Load. Its consumer comes with the save/load and app work (F075/F077); there is still no protocol message for it.
+  - It got key F8, because SAD §11.6 says every editor action has a key.
+- Host tick ms comes from a client-side `HostTickTime` resource. rmc_client does not depend on rmc_host, so neither TestApp nor the app fills it yet. F077 should time the host thread's tick and set it.
+- EditorPanelPlugin is not added to TestApp in this feature (e2e: false).
+  - A scratch scenario (not committed) added it to a render TestApp. That ran green on WARP, the panel drew over the game, and a closed panel left the frame unchanged.
+  - F074 or F077 can add it to the real app, and to TestApp's render mode if editor screenshots should show the panel.
+  - Add it after the main plugin tuple; adding EditorPlugin twice panics.
+Next: F073 (gizmos: chunk bounds, targeted cell, mesh-queue state; SAD §11.6), driven by `EditorState::gizmos`.
+Blockers: none.
