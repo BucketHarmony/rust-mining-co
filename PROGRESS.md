@@ -74,3 +74,16 @@ Decisions:
 Next: M1 F010 (ChunkStorage Uniform/Paletted).
 Blockers:
 - OWNER ACTION (native Windows only; Linux/WSL2/CI unaffected): `scripts/verify-features.sh --quick` and `--all` report "no such feature: F001 / REGRESSION" for every id except the last. jq.exe writes CRLF to pipes, and `for id in $(jq -r ...)` keeps the `\r` (Git Bash's `read` strips it, so the single-id path used by pass-feature.sh works). Fix: add `-b` to the two `for id in $(jq -r ...)` jq calls and the `unpassed=` jq call (`jq -rb`), or pipe them through `tr -d '\r'`. Checked: `jq -rb` emits LF here. Until it is fixed, `--all` cannot print ALL_FEATURES_PASS on this box; per-id `verify-features.sh <id>` is reliable.
+
+## 2026-10-18 06:00 — F010 ChunkStorage Uniform/Paletted with get/set and bit-width promotion — passed
+Done: New rmc_world::chunk with Chunk { storage, revision, modified } (Chunk::new, Chunk::uniform; revision 0, not modified) and ChunkStorage::{Uniform(MaterialId), Paletted { palette, bits, data }}. get(LocalPos) and set(LocalPos, id) -> previous MaterialId. A Uniform chunk stays Uniform when written with its own material; the first differing write promotes it to palette [fill, id] at 1 bit. A new palette entry repacks data to the smallest width in PALETTE_BITS = [1, 2, 4, 8, 16] that holds it. Promotion happens at palette sizes 2/3/5/17/257 → 1/2/4/8/16 bits. data always has CHUNK_VOLUME*bits/64 words; entries are packed LSB-first in local linear index order and never span words.
+Tests added: chunk::tests::{uniform_promotes_on_first_write, set_get_roundtrip_proptest, bits_promote_through_16}. The proptest checks every set/get against a 32768-cell model, plus invariants: allowed bits, palette fits and is not oversized, no duplicate entries, correct data length. Also passes with PROPTEST_CASES=1000 (about 1 s).
+Decisions:
+- set returns the previous material, so later edit code (F021) can find changed cells without a second get.
+- Palette lookup on set is a linear scan. Phase 1 palettes are small (the table has 13 materials). Revisit in the F082 perf pass if host_tick_100 shows it.
+- set never demotes and never drops unused palette entries; compact() does that (F011). Revision and modified are not touched by ChunkStorage; World::apply owns them (F021).
+- ChunkStorage PartialEq is structural (Uniform != equivalent Paletted). Content equality is the canonical hash's job (F012).
+- No serde derives yet. Save (F027) and protocol (F030) will choose their wire form and validate bits/data length on decode.
+- Deleted the proptest-regressions/chunk.txt that the deliberate todo!() failure wrote (seed: fill=0, ops=[]). It recorded only the stub panic.
+Next: F011 (compact), F012 (chunk hash), then F013 World.
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
