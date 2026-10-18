@@ -87,3 +87,13 @@ Decisions:
 - Deleted the proptest-regressions/chunk.txt that the deliberate todo!() failure wrote (seed: fill=0, ops=[]). It recorded only the stub panic.
 Next: F011 (compact), F012 (chunk hash), then F013 World.
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 06:20 — F011 compact() preserves content and demotes bit width — passed
+Done: ChunkStorage::compact(&mut self) in rmc_world::chunk. Uniform is a no-op. Paletted is rebuilt in one pass over local linear index order: each used old slot gets a new slot on first appearance, unused entries are dropped, and data is repacked at bits_for(len) (smallest of 1/2/4/8/16). If only one material is left, the chunk becomes Uniform. Revision and modified are untouched, since content does not change.
+Tests added: chunk::tests::{compact_preserves_contents_proptest, compact_demotes_bits}. The proptest sets cells, writes the fill back over a random prefix so some palette entries go unused, then checks: every cell against the model; the palette is exactly the used materials in first-appearance order (or Uniform when only one is used); compact is idempotent; set still works afterwards; well-formedness (shared assert_well_formed, which also rejects a width wider than needed). compact_demotes_bits starts at 16 bits (301 entries) and steps down to 8/4/2/1 by overwriting cells, then checks Uniform when one material is left, including a chunk whose original fill was fully overwritten. Also passes with PROPTEST_CASES=1000 (about 1.5 s).
+Decisions:
+- Compacted palette order is first appearance in local linear index order, not sorted by id and not the old palette order. The result depends only on content, so equal contents give a structurally equal ChunkStorage after compact. F012 can use that as the canonical encoding if it wants.
+- A single remaining material demotes to Uniform. The SAD says "demoting bit width"; Uniform is the narrowest form, and it matches how worldgen emits single-material chunks.
+- Deleted the proptest-regressions/chunk.txt seed that the deliberate todo!() failure wrote (fill=0, ops=[], undo=0). It recorded only the stub panic.
+Next: F012 (chunk hash canonical across Uniform/Paletted), then F013 World.
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
