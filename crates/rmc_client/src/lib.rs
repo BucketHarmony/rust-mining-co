@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod flycam;
+pub mod material;
 pub mod mesher;
 pub mod meshpipe;
 pub mod net;
@@ -9,6 +10,9 @@ pub mod render;
 pub mod replica;
 
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
+pub use material::{
+    ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveFromAlpha, EmissiveMaterialPlugin,
+};
 pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
 pub use meshpipe::{
     ChunkMesh, ChunkMeshState, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats, MeshSystems,

@@ -5755,6 +5755,7 @@ dependencies = [
  "rmc_world",
  "thiserror 2.0.21",
  "tracing",
+ "wesl",
 ]
 
 [[package]]
@@ -5764,6 +5765,7 @@ dependencies = [
  "bevy",
  "image",
  "rmc_client",
+ "rmc_protocol",
  "rmc_testkit",
  "rmc_world",
 ]

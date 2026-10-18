@@ -5,8 +5,11 @@
 //! - One shared [`ChunkMaterial`]: a `StandardMaterial` with a white
 //!   `base_color`, so the mesh's vertex colors (material color × AO) are the
 //!   surface color. The color alpha carries emissive strength (SAD §11.2);
-//!   the material is opaque, so alpha does not affect the surface until the
-//!   emissive extension (F058) reads it. Every [`ChunkMesh`] entity gets it.
+//!   the material is opaque, so alpha does not affect its surface. When the
+//!   app renders (`PbrPlugin` is present) the plugin also adds
+//!   [`EmissiveMaterialPlugin`], and every [`ChunkMesh`] entity gets the
+//!   shared [`EmissiveChunkMaterial`] (the same StandardMaterial extended to
+//!   glow by the color alpha) instead; otherwise it gets [`ChunkMaterial`].
 //! - The [`GameCamera`]: `Camera3d` with `Hdr` and `Bloom::NATURAL`, order 0
 //!   (the camera the mesh pipeline meshes nearest to), starting at
 //!   [`CameraStart`].
@@ -20,10 +23,12 @@
 
 use bevy::camera::{Hdr, ShadowLodOrigin};
 use bevy::light::CascadeShadowConfigBuilder;
+use bevy::pbr::PbrPlugin;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use rmc_world::coords::{CELL_SIZE_M, CellAabb};
 
+use crate::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveMaterialPlugin};
 use crate::meshpipe::{ChunkMesh, MeshSystems};
 
 /// The sky: what the camera clears to.
@@ -95,6 +100,10 @@ pub struct GameRenderPlugin;
 
 impl Plugin for GameRenderPlugin {
     fn build(&self, app: &mut App) {
+        // A rendering app draws chunks with the emissive extension (F058).
+        if app.is_plugin_added::<PbrPlugin>() && !app.is_plugin_added::<EmissiveMaterialPlugin>() {
+            app.add_plugins(EmissiveMaterialPlugin);
+        }
         app.init_resource::<CameraStart>()
             .insert_resource(ClearColor(SKY_COLOR))
             .insert_resource(GlobalAmbientLight {
@@ -120,7 +129,7 @@ fn create_chunk_material(
 }
 
 /// White and rough: the vertex colors are the surface color.
-fn chunk_material() -> StandardMaterial {
+pub(crate) fn chunk_material() -> StandardMaterial {
     StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: 0.9,
@@ -181,19 +190,33 @@ fn spawn_sun(mut commands: Commands) {
     ));
 }
 
-/// Gives every chunk mesh without a material the shared one.
+/// Chunk meshes that have neither chunk material yet.
+type WithoutChunkMaterial = (
+    With<ChunkMesh>,
+    Without<MeshMaterial3d<StandardMaterial>>,
+    Without<MeshMaterial3d<ChunkEmissiveMaterial>>,
+);
+
+/// Gives every chunk mesh without a material the shared one: the emissive
+/// material when there is one, otherwise the plain [`ChunkMaterial`].
 fn add_chunk_material(
     mut commands: Commands,
     material: Option<Res<ChunkMaterial>>,
-    chunks: Query<Entity, (With<ChunkMesh>, Without<MeshMaterial3d<StandardMaterial>>)>,
+    emissive: Option<Res<EmissiveChunkMaterial>>,
+    chunks: Query<Entity, WithoutChunkMaterial>,
 ) {
-    let Some(material) = material else {
-        return;
-    };
-    for entity in &chunks {
-        commands
-            .entity(entity)
-            .insert(MeshMaterial3d(material.0.clone()));
+    if let Some(emissive) = emissive {
+        for entity in &chunks {
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(emissive.0.clone()));
+        }
+    } else if let Some(material) = material {
+        for entity in &chunks {
+            commands
+                .entity(entity)
+                .insert(MeshMaterial3d(material.0.clone()));
+        }
     }
 }
 

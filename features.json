@@ -687,9 +687,10 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
+      "passes": true,
       "optional": true,
-      "notes": "Optional. If the ExtendedMaterial extension is not working after one serious attempt, run scripts/skip-feature.sh F058 \"<reason>\" and move on."
+      "notes": "Optional. If the ExtendedMaterial extension is not working after one serious attempt, run scripts/skip-feature.sh F058 \"<reason>\" and move on.",
+      "passedAt": "2026-10-18T11:29:44Z"
     },
     {
       "id": "F060",
