@@ -82,7 +82,7 @@ pub struct EditCommand {
 }
 
 /// Why a whole command was rejected. A rejected command changes nothing.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 pub enum RejectReason {
     #[error("material {0:?} is not in the material table")]
     UnknownMaterial(MaterialId),
@@ -92,14 +92,17 @@ pub enum RejectReason {
     OutsideBounds,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EditStatus {
     Applied,
     Rejected(RejectReason),
 }
 
 /// What changed in one chunk. `revision` is the chunk's revision after the change.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Like [`ChunkStorage`], a delta decoded from outside the process is
+/// untrusted; [`World::apply_delta`](crate::world::World::apply_delta) checks it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkDelta {
     /// Changed cells as (local linear index, new material), ascending by index.
     Cells {
@@ -131,7 +134,7 @@ impl ChunkDelta {
 }
 
 /// The outcome of [`World::apply`](crate::world::World::apply).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditResult {
     pub command: CommandId,
     pub status: EditStatus,
