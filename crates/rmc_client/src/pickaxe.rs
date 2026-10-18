@@ -20,7 +20,8 @@
 //! - A swing needs a target. Holding the button at the sky or at a cell
 //!   beyond reach sends nothing and does not restart the interval.
 //! - Releasing the button does not reset the interval.
-//! - While the fly camera is on, the pickaxe does not swing.
+//! - While the fly camera is on, or the editor is open (the left button
+//!   then applies the brush), the pickaxe does not swing.
 
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ use rmc_world::world::World;
 use rmc_world::{Hit, ToolProfile, raycast};
 
 use crate::controller::{ControllerSystems, Player};
+use crate::editor::EditorState;
 use crate::flycam::FlyCam;
 use crate::net::{CommandSeq, ToHost};
 use crate::replica::Replica;
@@ -131,6 +133,7 @@ fn swing(
     replica: Option<Res<Replica>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     fly: Option<Res<FlyCam>>,
+    editor: Option<Res<EditorState>>,
     time: Res<Time>,
     mut state: ResMut<SwingState>,
     mut seq: ResMut<CommandSeq>,
@@ -145,7 +148,7 @@ fn swing(
         *since += time.delta();
     }
     let held = buttons.is_some_and(|b| b.pressed(SWING_BUTTON));
-    if !held || fly.is_some_and(|f| f.enabled) {
+    if !held || fly.is_some_and(|f| f.enabled) || editor.is_some_and(|e| e.open) {
         return;
     }
     let interval = Duration::from_secs_f32(profile.interval_s);

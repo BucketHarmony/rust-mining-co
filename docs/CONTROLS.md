@@ -62,3 +62,18 @@ settings.
   Box is a cube 2 × size + 1 cells on a side. A Cell ignores the size.
 - The brush material cycles through every solid material in id order. Until
   you pick one, the brush uses the first material tagged `placeable`.
+
+## Brush
+
+While the editor is open, the left mouse button is the brush, and the
+pickaxe does not swing.
+
+| Input | Action |
+|---|---|
+| `Left mouse` | Apply the brush once at the cell under the crosshair (up to 32 m away) |
+
+- The ray starts at the fly camera while it is on, else at the player's eye.
+- Set fills on the near side of the face you look at, so a placed block
+  lands against it. Remove and Paint act on the cell you look at.
+- Box and Sphere center on that cell. One click sends one edit; hold does
+  not repeat.

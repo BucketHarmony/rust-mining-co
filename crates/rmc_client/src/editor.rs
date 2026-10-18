@@ -19,16 +19,26 @@
 //! and pitch, moved to the nearest free spot ([`free_feet_near`]) if the box
 //! would overlap a blocking cell there. If there is no free spot within
 //! [`SNAP_RADIUS_CELLS`], the player stays where it was before flying.
+//!
+//! While the editor is open, a click of [`BRUSH_BUTTON`] applies the brush
+//! once at the cell the view ray hits within [`BRUSH_REACH_M`]: from the
+//! fly camera while it is on, else from the player's eye. The brush sends
+//! one normal [`EditCommand`] ([`brush_command`]); the host decides what
+//! changes. The pickaxe does not swing while the editor is open.
 
 use bevy::prelude::*;
+use rmc_protocol::ClientMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
+use rmc_world::edit::{EditCommand, EditOp};
 use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::shape::Shape;
 use rmc_world::world::World;
+use rmc_world::{Hit, raycast};
 
 use crate::controller::{Aabb, ControllerSystems, EYE_HEIGHT_M, Player, blocks};
 use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::interp::InterpolatedEye;
-use crate::net::ClientMaterials;
+use crate::net::{ClientMaterials, CommandSeq, ToHost};
 use crate::render::GameCamera;
 use crate::replica::Replica;
 
@@ -39,6 +49,12 @@ pub const TOGGLE_EDITOR_KEY: KeyCode = KeyCode::F1;
 /// cells on a side, still fits in one edit command
 /// ([`MAX_EDIT_CELLS`](rmc_world::edit::MAX_EDIT_CELLS)).
 pub const MAX_BRUSH_SIZE: u16 = 15;
+
+/// The button that applies the brush while the editor is open.
+pub const BRUSH_BUTTON: MouseButton = MouseButton::Left;
+
+/// How far the brush reaches along the view ray, in meters.
+pub const BRUSH_REACH_M: f32 = 32.0;
 
 /// How far, in cells, [`free_feet_near`] looks for a spot the player fits.
 pub const SNAP_RADIUS_CELLS: i32 = 8;
@@ -237,6 +253,48 @@ fn cycle_material(
     Some(list[next])
 }
 
+/// The op and shape the brush sends for a ray `hit`, or `None` when it
+/// sends nothing.
+///
+/// - Set fills on the face-normal side of the hit: the empty cell the ray
+///   crossed last. A hit with a zero normal (the ray started inside the
+///   cell) has no such side, so Set sends nothing.
+/// - Remove and Paint act on the hit cell itself.
+/// - The shape is centered on that target cell: [`BrushShape`] with the
+///   state's size.
+/// - Set and Paint need a brush material ([`EditorState::brush_material`]).
+pub fn brush_command(
+    state: &EditorState,
+    table: &MaterialTable,
+    hit: Hit,
+) -> Option<(EditOp, Shape)> {
+    let (op, target) = match state.op {
+        BrushOp::Set => {
+            if hit.face_normal == IVec3::ZERO {
+                return None;
+            }
+            let material = state.brush_material(table)?;
+            (EditOp::Set(material), CellPos(hit.cell.0 + hit.face_normal))
+        }
+        BrushOp::Remove => (EditOp::Remove, hit.cell),
+        BrushOp::Paint => (EditOp::Paint(state.brush_material(table)?), hit.cell),
+    };
+    let size = state.size.clamp(1, MAX_BRUSH_SIZE);
+    let half = IVec3::splat(i32::from(size));
+    let shape = match state.shape {
+        BrushShape::Cell => Shape::Cell(target),
+        BrushShape::Box => Shape::Box {
+            min: CellPos(target.0 - half),
+            max: CellPos(target.0 + half),
+        },
+        BrushShape::Sphere => Shape::Sphere {
+            center: target,
+            radius: size,
+        },
+    };
+    Some((op, shape))
+}
+
 /// The feet nearest `feet` where the player's box overlaps no blocking cell
 /// ([`blocks`]): `feet` itself if the box is free there, else the
 /// bottom-center of the nearest cell within [`SNAP_RADIUS_CELLS`] where it
@@ -332,16 +390,24 @@ pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EditorState>().add_systems(
-            Update,
-            (
-                editor_keys,
-                drop_player_after_flying
-                    .after(FlyCamSystems)
-                    .before(ControllerSystems::Look),
-            )
-                .in_set(EditorSystems),
-        );
+        app.add_message::<ToHost>()
+            .init_resource::<EditorState>()
+            .init_resource::<CommandSeq>()
+            .add_systems(
+                Update,
+                (
+                    editor_keys,
+                    drop_player_after_flying
+                        .after(FlyCamSystems)
+                        .before(ControllerSystems::Look),
+                    apply_brush
+                        .after(editor_keys)
+                        .after(drop_player_after_flying)
+                        .after(FlyCamSystems)
+                        .after(ControllerSystems::Look),
+                )
+                    .in_set(EditorSystems),
+            );
     }
 }
 
@@ -360,6 +426,54 @@ fn editor_keys(
         state.apply(action, materials.as_deref().map(|m| &*m.0));
         debug!(?action, "editor key");
     }
+}
+
+/// On a click of [`BRUSH_BUTTON`] while the editor is open, sends the
+/// brush's edit at the cell the view ray hits (see the module docs).
+#[allow(clippy::too_many_arguments)]
+fn apply_brush(
+    state: Res<EditorState>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    materials: Option<Res<ClientMaterials>>,
+    replica: Option<Res<Replica>>,
+    fly: Option<Res<FlyCam>>,
+    cameras: Query<&Transform, With<GameCamera>>,
+    players: Query<&Player>,
+    mut seq: ResMut<CommandSeq>,
+    mut out: MessageWriter<ToHost>,
+) {
+    if !state.open || !buttons.is_some_and(|b| b.just_pressed(BRUSH_BUTTON)) {
+        return;
+    }
+    let (Some(materials), Some(replica)) = (materials, replica) else {
+        return;
+    };
+    let ray = if fly.is_some_and(|f| f.enabled) {
+        cameras
+            .iter()
+            .next()
+            .map(|t| (t.translation, t.rotation * Vec3::NEG_Z))
+    } else {
+        players
+            .iter()
+            .next()
+            .map(|p| (p.eye(), p.rotation() * Vec3::NEG_Z))
+    };
+    let Some((origin, dir)) = ray else { return };
+    let Some(hit) = raycast(replica.world(), origin, dir, BRUSH_REACH_M) else {
+        return;
+    };
+    let Some((op, shape)) = brush_command(&state, &materials.0, hit) else {
+        return;
+    };
+    let issuer = replica.player();
+    out.write(ToHost(ClientMsg::Edit(EditCommand {
+        id: seq.next_id(issuer),
+        issuer,
+        op,
+        shape,
+    })));
+    debug!(?op, ?shape, "editor brush");
 }
 
 /// When the fly camera turns off, moves the player under the camera (see
@@ -408,7 +522,7 @@ mod tests {
     use super::*;
     use crate::controller::ControllerPlugin;
     use crate::flycam::{FLY_TOGGLE_KEY, FlyCamPlugin};
-    use crate::pickaxe::SWING_BUTTON;
+    use crate::pickaxe::{Pickaxe, PickaxePlugin, SWING_BUTTON};
     use bevy::input::mouse::AccumulatedMouseMotion;
     use bevy::time::TimeUpdateStrategy;
     use rmc_world::chunk::Chunk;
@@ -448,6 +562,12 @@ mod tests {
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .clear();
+        if let Some(mut buttons) = app
+            .world_mut()
+            .get_resource_mut::<ButtonInput<MouseButton>>()
+        {
+            buttons.clear();
+        }
         app.world_mut()
             .resource_mut::<AccumulatedMouseMotion>()
             .delta = Vec2::ZERO;
@@ -923,5 +1043,396 @@ mod tests {
         app.insert_resource(Replica::from_world(deep_world));
         fly_to(&mut app, camera, buried + Vec3::Y * EYE_HEIGHT_M, 0.0, 0.0);
         assert_eq!(player(&app, p).feet, before, "stays put");
+    }
+
+    // ---- The brush ----
+
+    const TOOLS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/tools.ron");
+
+    /// Every message the client wrote for the host.
+    #[derive(Resource, Default)]
+    struct Sent(Vec<ClientMsg>);
+
+    fn record(mut out: MessageReader<ToHost>, mut sent: ResMut<Sent>) {
+        sent.0.extend(out.read().map(|m| m.0.clone()));
+    }
+
+    /// Feet south of [`rock_world`]'s block, in cell column (24, 32), facing
+    /// -Z. The eye (3.55 m) is in cell row 7, 2 m from the block's +Z face,
+    /// so it looks at cell (24, 7, 27).
+    const FEET: Vec3 = Vec3::new(12.25, 2.0, 16.0);
+    const WALL_HIT: CellPos = CellPos(IVec3::new(24, 7, 27));
+
+    /// The editor with the fly camera, the controller and the pickaxe, over
+    /// [`rock_world`], a player at [`FEET`] and the game camera. Records
+    /// everything sent to the host.
+    struct Brush {
+        app: App,
+        player: Entity,
+        camera: Entity,
+        world: World,
+    }
+
+    impl Brush {
+        fn new() -> Self {
+            let world = rock_world();
+            let pickaxe = rmc_world::ToolTable::load(TOOLS_PATH)
+                .expect("assets/tools.ron loads")
+                .pickaxe;
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                    1.0 / 60.0,
+                )))
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<ButtonInput<MouseButton>>()
+                .init_resource::<AccumulatedMouseMotion>()
+                .insert_resource(ClientMaterials(materials()))
+                .insert_resource(Replica::from_world(world.clone()))
+                .insert_resource(Pickaxe(pickaxe))
+                .init_resource::<Sent>()
+                .add_plugins((FlyCamPlugin, ControllerPlugin, PickaxePlugin, EditorPlugin))
+                .add_systems(Last, record);
+            let player = app.world_mut().spawn(Player::at(FEET)).id();
+            let camera = app
+                .world_mut()
+                .spawn((GameCamera, Transform::default()))
+                .id();
+            app.update();
+            let mut brush = Self {
+                app,
+                player,
+                camera,
+                world,
+            };
+            for _ in 0..5 {
+                brush.frame();
+            }
+            brush
+        }
+
+        fn frame(&mut self) {
+            frame(&mut self.app);
+        }
+
+        fn tap(&mut self, key: KeyCode) {
+            tap(&mut self.app, key);
+        }
+
+        fn act(&mut self, action: EditorAction) {
+            self.tap(key_of(action));
+        }
+
+        /// Opens the editor with F1.
+        fn open(&mut self) {
+            self.tap(TOGGLE_EDITOR_KEY);
+            assert!(self.state().open);
+        }
+
+        fn state(&self) -> EditorState {
+            state(&self.app)
+        }
+
+        /// Presses the brush button for one frame and releases it.
+        fn click(&mut self) {
+            self.app
+                .world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .press(BRUSH_BUTTON);
+            self.frame();
+            self.app
+                .world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .release(BRUSH_BUTTON);
+            self.frame();
+        }
+
+        /// Clicks and returns the edits sent during the click.
+        fn click_edits(&mut self) -> Vec<EditCommand> {
+            let before = self.edits().len();
+            self.click();
+            self.edits()[before..].to_vec()
+        }
+
+        /// Clicks and returns the one edit the click sent.
+        fn click_one(&mut self) -> EditCommand {
+            let edits = self.click_edits();
+            assert_eq!(edits.len(), 1, "one click, one edit: {edits:?}");
+            edits[0]
+        }
+
+        fn edits(&self) -> Vec<EditCommand> {
+            self.app
+                .world()
+                .resource::<Sent>()
+                .0
+                .iter()
+                .filter_map(|m| match m {
+                    ClientMsg::Edit(cmd) => Some(*cmd),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn player_mut(&mut self) -> Mut<'_, Player> {
+            self.app.world_mut().get_mut::<Player>(self.player).unwrap()
+        }
+
+        /// Turns the fly camera on and puts it at `eye` looking along -Z.
+        fn fly_at(&mut self, eye: Vec3) {
+            if !self.app.world().resource::<FlyCam>().enabled {
+                self.tap(FLY_TOGGLE_KEY);
+            }
+            assert!(self.app.world().resource::<FlyCam>().enabled);
+            *self
+                .app
+                .world_mut()
+                .get_mut::<Transform>(self.camera)
+                .unwrap() = Transform::from_translation(eye);
+        }
+
+        fn material(&self) -> MaterialId {
+            self.state()
+                .brush_material(&materials())
+                .expect("a brush material")
+        }
+
+        /// The world after the host applies `cmd`.
+        fn applied(&self, cmd: &EditCommand) -> World {
+            let mut world = self.world.clone();
+            assert_eq!(world.apply(cmd).status, EditStatus::Applied, "{cmd:?}");
+            world
+        }
+    }
+
+    fn cell(x: i32, y: i32, z: i32) -> CellPos {
+        CellPos::new(x, y, z)
+    }
+
+    #[test]
+    fn set_targets_adjacent_cell() {
+        let mut b = Brush::new();
+        let hit = raycast(
+            &b.world,
+            FEET + Vec3::Y * EYE_HEIGHT_M,
+            Vec3::NEG_Z,
+            BRUSH_REACH_M,
+        )
+        .expect("the block is ahead");
+        assert_eq!(hit.cell, WALL_HIT);
+        assert_eq!(hit.face_normal, IVec3::Z);
+
+        // Closed: the click is the pickaxe's, not the brush's.
+        let edits = b.click_edits();
+        assert_eq!(edits.len(), 1, "{edits:?}");
+        assert!(matches!(edits[0].op, EditOp::Damage(_)), "{edits:?}");
+        let pickaxe_id = edits[0].id;
+
+        // Open, Set, Cell: one Set on the face-normal side of the hit.
+        b.open();
+        assert_eq!(
+            (b.state().op, b.state().shape),
+            (BrushOp::Set, BrushShape::Cell)
+        );
+        let material = b.material();
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Set(material));
+        assert_eq!(cmd.shape, Shape::Cell(cell(24, 7, 28)));
+        assert_eq!(cmd.issuer, PlayerId(1));
+        assert_eq!(
+            cmd.id,
+            CommandId {
+                issuer: PlayerId(1),
+                seq: pickaxe_id.seq + 1
+            },
+            "the brush and the pickaxe share the command sequence"
+        );
+        let after = b.applied(&cmd);
+        assert_eq!(
+            after.get_cell(cell(24, 7, 28)),
+            Some(material),
+            "placed in front"
+        );
+        assert_eq!(
+            after.get_cell(WALL_HIT),
+            b.world.get_cell(WALL_HIT),
+            "hit cell kept"
+        );
+
+        // Holding the button sends nothing more: one edit per click, and the
+        // pickaxe does not swing while the editor is open.
+        let n = b.edits().len();
+        b.app
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(BRUSH_BUTTON);
+        for _ in 0..60 {
+            b.frame();
+        }
+        b.app
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(BRUSH_BUTTON);
+        b.frame();
+        assert_eq!(b.edits().len(), n + 1, "{:?}", &b.edits()[n..]);
+        assert!(matches!(b.edits()[n].op, EditOp::Set(_)));
+
+        // The picked material is the one placed.
+        b.act(EditorAction::NextMaterial);
+        let next = b.material();
+        assert_ne!(next, material);
+        assert_eq!(b.click_one().op, EditOp::Set(next));
+
+        // Box of size 2: a 5-cell cube centered on the adjacent cell.
+        b.act(EditorAction::Shape(BrushShape::Box));
+        b.act(EditorAction::SizeUp);
+        assert_eq!(b.state().size, 2);
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Set(next));
+        assert_eq!(
+            cmd.shape,
+            Shape::Box {
+                min: cell(22, 5, 26),
+                max: cell(26, 9, 30)
+            }
+        );
+
+        // Flying, the ray starts at the camera: 6 m from the block, beyond
+        // the pickaxe's reach, one cell row above the player's eye.
+        b.act(EditorAction::Shape(BrushShape::Cell));
+        b.fly_at(Vec3::new(12.25, 4.25, 20.0));
+        let cmd = b.click_one();
+        assert_eq!(cmd.shape, Shape::Cell(cell(24, 8, 28)));
+
+        // A camera inside rock hits its own cell with no face: Set sends
+        // nothing.
+        b.fly_at(Vec3::new(12.25, 4.25, 12.25));
+        assert!(b.click_edits().is_empty());
+
+        // Looking at the sky, nothing is hit.
+        b.tap(FLY_TOGGLE_KEY);
+        b.player_mut().feet = FEET;
+        b.player_mut().pitch = 1.2;
+        b.frame();
+        assert!(b.click_edits().is_empty());
+    }
+
+    #[test]
+    fn remove_targets_hit_cell() {
+        let mut b = Brush::new();
+        b.open();
+        let material = b.material();
+
+        // Remove: the hit cell itself, which the host clears.
+        b.act(EditorAction::Op(BrushOp::Remove));
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Remove);
+        assert_eq!(cmd.shape, Shape::Cell(WALL_HIT));
+        let after = b.applied(&cmd);
+        assert_eq!(after.get_cell(WALL_HIT), Some(MaterialId::AIR));
+        assert_eq!(
+            after.get_cell(cell(24, 7, 26)),
+            b.world.get_cell(cell(24, 7, 26))
+        );
+
+        // Paint: the hit cell, with the brush material.
+        b.act(EditorAction::Op(BrushOp::Paint));
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Paint(material));
+        assert_eq!(cmd.shape, Shape::Cell(WALL_HIT));
+        assert_eq!(b.applied(&cmd).get_cell(WALL_HIT), Some(material));
+
+        // Box of size 3 around the hit cell.
+        b.act(EditorAction::Op(BrushOp::Remove));
+        b.act(EditorAction::Shape(BrushShape::Box));
+        b.act(EditorAction::SizeUp);
+        b.act(EditorAction::SizeUp);
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Remove);
+        assert_eq!(
+            cmd.shape,
+            Shape::Box {
+                min: cell(21, 4, 24),
+                max: cell(27, 10, 30)
+            }
+        );
+
+        // From a camera inside rock, Remove takes the cell the camera is in.
+        b.act(EditorAction::Shape(BrushShape::Cell));
+        b.fly_at(Vec3::new(12.25, 4.25, 12.25));
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Remove);
+        assert_eq!(cmd.shape, Shape::Cell(cell(24, 8, 24)));
+
+        // Closing the editor stops the brush.
+        b.tap(FLY_TOGGLE_KEY);
+        b.player_mut().feet = FEET;
+        b.frame();
+        b.tap(TOGGLE_EDITOR_KEY);
+        let edits = b.click_edits();
+        assert!(
+            edits.iter().all(|c| matches!(c.op, EditOp::Damage(_))),
+            "{edits:?}"
+        );
+    }
+
+    #[test]
+    fn sphere_brush_sends_sphere_shape() {
+        let mut b = Brush::new();
+        b.open();
+        b.act(EditorAction::Shape(BrushShape::Sphere));
+        for _ in 0..3 {
+            b.act(EditorAction::SizeUp);
+        }
+        assert_eq!(b.state().size, 4);
+
+        // Remove: a sphere of radius `size` centered on the hit cell. The
+        // host clears every cell of it.
+        b.act(EditorAction::Op(BrushOp::Remove));
+        let cmd = b.click_one();
+        let sphere = Shape::Sphere {
+            center: WALL_HIT,
+            radius: 4,
+        };
+        assert_eq!(cmd.op, EditOp::Remove);
+        assert_eq!(cmd.shape, sphere);
+        let after = b.applied(&cmd);
+        let cells: Vec<CellPos> = sphere.cells().collect();
+        assert_eq!(cells.len() as u64, sphere.cell_count());
+        assert!(
+            cells
+                .iter()
+                .any(|&c| b.world.get_cell(c) != Some(MaterialId::AIR)),
+            "the sphere reaches into the block"
+        );
+        for c in &cells {
+            assert_eq!(after.get_cell(*c), Some(MaterialId::AIR), "{c:?}");
+        }
+
+        // Set: centered on the face-normal side.
+        b.act(EditorAction::Op(BrushOp::Set));
+        let material = b.material();
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Set(material));
+        assert_eq!(
+            cmd.shape,
+            Shape::Sphere {
+                center: cell(24, 7, 28),
+                radius: 4
+            }
+        );
+
+        // Paint: centered on the hit; the radius follows the size.
+        b.act(EditorAction::Op(BrushOp::Paint));
+        b.act(EditorAction::SizeDown);
+        let cmd = b.click_one();
+        assert_eq!(cmd.op, EditOp::Paint(material));
+        assert_eq!(
+            cmd.shape,
+            Shape::Sphere {
+                center: WALL_HIT,
+                radius: 3
+            }
+        );
     }
 }
