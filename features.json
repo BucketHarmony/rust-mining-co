@@ -546,8 +546,9 @@
       ],
       "e2e": false,
       "review": true,
-      "passes": false,
-      "notes": "Follow Bevy's externally_driven_headless_renderer example: WindowPlugin primary_window None, disable WinitPlugin, RenderPlugin synchronous_pipeline_compilation. Set WGPU_ADAPTER_NAME=llvmpipe in scripts/e2e.sh. If no adapter is found, print the vulkaninfo summary into PROGRESS.md under Blockers and stop."
+      "passes": true,
+      "notes": "Follow Bevy's externally_driven_headless_renderer example: WindowPlugin primary_window None, disable WinitPlugin, RenderPlugin synchronous_pipeline_compilation. Set WGPU_ADAPTER_NAME=llvmpipe in scripts/e2e.sh. If no adapter is found, print the vulkaninfo summary into PROGRESS.md under Blockers and stop.",
+      "passedAt": "2026-10-18T07:25:25Z"
     },
     {
       "id": "F051",
