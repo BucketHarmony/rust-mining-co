@@ -619,3 +619,51 @@ Decisions:
 - PlayerState carries the feet, not the eye (as F061 planned). It is not sent before Welcome, because it needs a Replica.
 Next: F065 (HUD with HudState: crosshair, target outline, material name, damage progress, inventory; tests hud::tests::{hudstate_reflects_target, inventory_count_updates_on_applied}). PickTarget gives the target. The client never receives damage (SAD §7), so "damage progress" has to be estimated client-side from swings sent at the same cell versus hardness. Record that decision.
 Blockers: none.
+
+## 2026-10-18 21:45 — F065 HUD with HudState resource: crosshair, target outline, material name, damage progress, inventory — passed
+Done: New rmc_client::hud (re-exported: HudPlugin, HudState, HudItem, DamageProgress, ClientInventory, DamageEstimate, HudRoot, HudSystems).
+- `HudState { crosshair, target: Option<CellPos>, material: Option<String>, damage: Option<DamageProgress { dealt, hardness }>, inventory: Vec<HudItem { material, name, count }> }` mirrors what is drawn. The UI and the outline are drawn from it and nothing else.
+- `HudSystems::Track` (PreUpdate, after NetSystems::Receive) follows the host's messages:
+  - `Inventory` replaces `ClientInventory`.
+  - `Welcome` empties the inventory and the damage estimate.
+  - A changed cell in an `Applied` delta drops that cell's estimate. A `Full` delta or a `ChunkSnapshot` drops the whole chunk's.
+- `HudSystems::Show` (Update, after PickaxeSystems::Target), chained:
+  1. Attach the root to the GameCamera with `UiTargetCamera`, so the HUD also draws into the test kit's image target.
+  2. Add the frame's own `Damage` edits (read from ToHost) to `DamageEstimate`.
+  3. Recompute HudState.
+  4. Sync the UI (only when HudState changed).
+- The gizmo cube outline (OUTLINE_SCALE 1.02, near-black) is added only when GizmoPlugin is present (logic-only apps have no gizmos).
+- UI (Bevy UI):
+  - a 14 × 2 px plus crosshair at the center;
+  - the material key and a 120 × 6 px damage bar at bottom center;
+  - inventory lines "key count" at top left;
+  - white text with a 1 px shadow.
+- TestApp now adds HudPlugin and has `hud()` and `inventory()` (SAD §12.2).
+Tests added:
+- hud::tests::hudstate_reflects_target:
+  - Looking at a stone wall gives the exact HudState: crosshair, the wall cell, "stone", no damage.
+  - Each swing adds the profile's damage (10/30, 20/30).
+  - Looking down shows the granite floor with no damage. The sky shows nothing, and the crosshair stays.
+  - Looking back still shows 20/30. The third swing caps at 30/30.
+  - The host's answers (World::apply on a host copy) break the cell: replica air, estimate empty, no target.
+  - Swinging at nothing estimates nothing. Fly mode shows no target. With no player, HudState is the default.
+- hud::tests::inventory_count_updates_on_applied:
+  - Non-breaking results leave the count at 0. The breaking Applied plus the host's Inventory give stone 1, and a second cell gives 2 (the host's totals are not doubled by the Applied yields).
+  - A later Inventory replaces the totals, ordered by id (stone, glowcrystal), and the UI text reads "stone 2\nglowcrystal 4".
+  - A new Welcome empties the inventory.
+- rmc_testkit player::tests::hud_follows_a_dig (logic mode, real host):
+  - Before the player spawns there is no crosshair.
+  - After one swing, the HUD's 10/30 equals the host world's DamageMap for the cell.
+  - After the break, the HUD lists stone 1, and `t.inventory()` equals the host's inventory.
+- Both F065 tests failed first against stub systems (empty HudState).
+- Checked by eye with a throwaway rendered scenario on WARP (deleted, not committed): the crosshair, "stone 1", the "stone" label, the bar at 1/3 and the cell outline all render on the image target. walk_and_jump still passes and its screenshot shows the crosshair.
+Decisions:
+- Damage progress is a client-side estimate, because the host never sends damage (SAD §7, §8.3).
+  - It is the sum of the `Damage` this client sent per cell, counted only for cells that are diggable and solid in the replica, and capped at hardness.
+  - It is forgotten when a delta or snapshot changes the cell's chunk/cell, and on Welcome.
+  - Damage from other players or from before a load is not seen. A snapshot (gap repair) forgets a still-damaged cell's estimate.
+- The inventory shown is the host's last `Inventory` totals. Yields in `Applied` are not added, so nothing is counted twice. Names are material keys (the table has no display name).
+- The crosshair shows whenever a Player exists, fly mode included. The target, name and damage are hidden in fly mode, because the pickaxe is off there; F070/F071 decide what the editor shows.
+- The outline is near-black: white was nearly invisible on light stone.
+Next: F066 (E2E dig_cell_visible and latency_dig). `t.hud()` and `t.inventory()` exist. The crosshair is drawn at the image center (about 14 px), so dig_cell_visible's "pixel block under the crosshair changed" should sample a block around the center that is larger than the crosshair, or leave the crosshair pixels out.
+Blockers: none.
