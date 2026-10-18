@@ -592,3 +592,30 @@ Decisions:
 - The protect-files hook denies a Write of Rust text containing #[ignore] to a scratch path outside tests/e2e (correct). A failed `cat head tail > file` truncated step_up.rs once; it was restored from the saved head.
 Next: F064 (pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz; SAD §11.5). Its tests are pickaxe::tests::{swing_respects_interval, swing_sends_damage_for_hit_cell, no_swing_beyond_reach}. F062 noted that swing input in FixedUpdate should read held buttons.
 Blockers: none.
+
+## 2026-10-18 21:00 — F064 Pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz — passed
+Done: New `assets/tools.ron` and `rmc_world::tools` (re-exported ToolTable, ToolProfile, ToolShape). `ToolTable { pickaxe: ToolProfile { damage: 10, interval_s: 0.35, reach_m: 3.0, shape: Cell } }`. The loader rejects damage 0, interval or reach that is not finite and > 0, and unknown fields. `ToolShape::{Cell, Sphere { radius }}::at(hit_cell)` gives the edit Shape. New `rmc_client::pickaxe` (re-exported):
+- `Pickaxe(ToolProfile)` resource: without it the plugin is inert.
+- `PickTarget(Option<Hit>)`: updated in Update after ControllerSystems::Look, for the F065 HUD.
+- `SwingState` (swings()), `PickaxeSystems::{Swing, Target}`, `SWING_BUTTON` (left mouse), `SWING_SLACK` (1 ms).
+- `target(world, player, reach)`: raycast from `Player::eye()` along `rotation() * -Z`.
+- `PickaxePlugin`: the swing runs in FixedUpdate after ControllerSystems::Move, reading the held button. It needs a Replica and a target within reach, and the interval since the last swing (minus 1 ms of clock rounding) must have passed. It writes `ToHost(Edit { id: CommandSeq::next_id(replica.player()), op: Damage(damage), shape: profile.shape.at(hit.cell) })`.
+New `net::CommandSeq` resource (sequence 0, 1, 2, ... wrapping) so the F071 editor can share ids with the pickaxe. Controller: `report_state` (chained after record_eyes) writes `ToHost(PlayerState { pos: feet, yaw, pitch })` on every third fixed step from the first (`PLAYER_STATE_HZ` = 20). It runs only once a Replica exists and not while the fly camera is on. ControllerPlugin now registers ToHost itself (add_message is idempotent). TestApp loads tools.ron and adds PickaxePlugin.
+Tests added:
+- pickaxe::tests::swing_respects_interval: a swing on the first held step, then exactly every 21 steps (6 in 2 s). Releasing does not reset the interval. A press after a rest swings at once. A 0.1 s profile swings every 6 steps.
+- pickaxe::tests::swing_sends_damage_for_hit_cell: the exact EditCommand for the wall cell ahead (issuer from the replica, seq 0). Looking down, it damages the floor cell through its top face (seq 1). PickTarget mirrors the hit. A Sphere(1)/25-damage profile sends Sphere centered on the hit with unique seqs.
+- pickaxe::tests::no_swing_beyond_reach: a wall at 3.02 m gives no target and no edit. At 2.99 m it swings next step. Back out of reach, no more swings. No swing at the sky, with the fly camera on, or without a Pickaxe resource.
+- controller::tests::player_state_sent_at_20_hz: 40 states in 120 frames, 3 frames apart, each equal to the player's feet, yaw and pitch after the step; none in fly mode.
+- rmc_world tools::tests::{asset_loads_with_sad_defaults, shapes_center_on_the_hit_cell, rejects_bad_profiles}.
+- rmc_testkit player::tests::held_pickaxe_breaks_the_cell_ahead (logic mode): holding the button at a stone pillar sends ceil(30/10) = 3 swings. The host and replica cell become air and the host inventory has 1 stone. A mutation of the swing count assert failed as expected.
+- The pickaxe tests failed first against a no-op swing system (0 edits); the PlayerState test failed against a no-op report_state (0 of 40).
+Decisions:
+- The profile lives in rmc_world (Bevy-free), so the host can use reach for validation later. tools.ron also holds reach_m. A single `pickaxe` field avoids looking a tool up by key.
+- A swing needs a target. Holding at the sky or beyond reach sends nothing and does not start the interval, so the swing comes the moment a cell is in reach. Undiggable cells (bedrock) are still swung at; the host skips them (SAD §8.2).
+- The interval is counted in fixed-step time. 21 steps of 1/60 s fall a few ns short of 0.35 s, hence the 1 ms slack.
+- The raycast uses `Player::eye()` (the simulated eye including the step-up offset), not the interpolated camera. The view lags one fixed step at most.
+- Damage per swing is 10: topsoil breaks in 1 swing, stone in 3 (~0.7 s), basalt in 6. To tune after playing.
+- The pickaxe does not swing in fly mode. F070/F071 must make the editor's left click and the pickaxe exclusive (for example, skip the swing while the editor is on).
+- PlayerState carries the feet, not the eye (as F061 planned). It is not sent before Welcome, because it needs a Replica.
+Next: F065 (HUD with HudState: crosshair, target outline, material name, damage progress, inventory; tests hud::tests::{hudstate_reflects_target, inventory_count_updates_on_applied}). PickTarget gives the target. The client never receives damage (SAD §7), so "damage progress" has to be estimated client-side from swings sent at the same cell versus hardness. Record that decision.
+Blockers: none.
