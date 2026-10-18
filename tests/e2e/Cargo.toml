@@ -8,3 +8,6 @@ publish.workspace = true
 
 [dependencies]
 rmc_testkit.workspace = true
+rmc_client.workspace = true
+bevy.workspace = true
+image.workspace = true

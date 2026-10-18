@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod e2e;
 pub mod input;
 pub mod screenshot;
 

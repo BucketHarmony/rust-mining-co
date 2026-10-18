@@ -5761,6 +5761,9 @@ dependencies = [
 name = "rmc_e2e"
 version = "0.1.0"
 dependencies = [
+ "bevy",
+ "image",
+ "rmc_client",
  "rmc_testkit",
 ]
 

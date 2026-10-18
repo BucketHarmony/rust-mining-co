@@ -4,6 +4,7 @@
 pub mod mesher;
 pub mod meshpipe;
 pub mod net;
+pub mod render;
 pub mod replica;
 
 pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
@@ -12,4 +13,5 @@ pub use meshpipe::{
     Mesher,
 };
 pub use net::{ClientMaterials, FromHost, HostConnection, HostLink, NetPlugin, NetSystems, ToHost};
+pub use render::{CameraStart, GameCamera, GameRenderPlugin};
 pub use replica::{Replica, ReplicaError, ReplicaPlugin};

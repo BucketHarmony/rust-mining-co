@@ -7,6 +7,7 @@ use std::time::Duration;
 use bevy::app::PluginsState;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
+use bevy::diagnostic::FrameCount;
 use bevy::input::InputPlugin;
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
@@ -14,9 +15,13 @@ use bevy::render::error_handler::{RenderErrorHandler, RenderErrorPolicy};
 use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
 use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::time::TimeUpdateStrategy;
+use bevy::transform::TransformPlugin;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
-use rmc_client::{ClientMaterials, HostConnection, HostLink, NetPlugin, ReplicaPlugin, ToHost};
+use rmc_client::{
+    CameraStart, ClientMaterials, GameCamera, GameRenderPlugin, HostConnection, HostLink,
+    MeshPipelinePlugin, NetPlugin, ReplicaPlugin, ToHost,
+};
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::CellAabb;
@@ -101,10 +106,18 @@ impl TestApp {
         if config.render {
             add_render_plugins(&mut app);
         } else {
-            app.add_plugins((MinimalPlugins, InputPlugin));
+            // TransformPlugin so GlobalTransform follows Transform as in the
+            // game (the mesh pipeline meshes nearest the camera's).
+            app.add_plugins((MinimalPlugins, InputPlugin, TransformPlugin));
         }
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame_duration()))
-            .add_plugins((NetPlugin, ReplicaPlugin))
+            .insert_resource(CameraStart::overview(config.world_bounds))
+            .add_plugins((
+                NetPlugin,
+                ReplicaPlugin,
+                MeshPipelinePlugin,
+                GameRenderPlugin,
+            ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
 
@@ -183,6 +196,11 @@ impl TestApp {
     pub fn host_ticks(&self) -> u64 {
         self.host_ticks
     }
+
+    /// The app's frame count (one per step, boot included).
+    pub fn frame(&self) -> u32 {
+        self.app.world().resource::<FrameCount>().0
+    }
 }
 
 fn asset_path(name: &str) -> PathBuf {
@@ -249,8 +267,9 @@ fn add_render_plugins(app: &mut App) {
     }));
 }
 
-/// The image the camera renders into (`Rgba8UnormSrgb`, readable by copy)
-/// and a camera looking at the world from above its center.
+/// The image the game camera renders into (`Rgba8UnormSrgb`, readable by
+/// copy). The game camera, spawned at startup, is pointed at it and marked
+/// [`TestCamera`].
 fn spawn_render_target(app: &mut App, (width, height): (u32, u32)) {
     let mut image = Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
@@ -258,15 +277,14 @@ fn spawn_render_target(app: &mut App, (width, height): (u32, u32)) {
     let world = app.world_mut();
     let handle = world.resource_mut::<Assets<Image>>().add(image);
     world.insert_resource(TestRenderTarget(handle.clone()));
-    world.spawn((
-        TestCamera,
-        Camera3d::default(),
-        RenderTarget::Image(handle.into()),
-        Transform::from_xyz(64.0, 96.0, -32.0).looking_at(Vec3::new(64.0, 48.0, 64.0), Vec3::Y),
-    ));
+    world.add_observer(move |add: On<Add<GameCamera>>, mut commands: Commands| {
+        commands
+            .entity(add.entity)
+            .insert((TestCamera, RenderTarget::Image(handle.clone().into())));
+    });
 }
 
-/// The test kit's camera. The game's own camera (F056) replaces it.
+/// Marks the game camera, which renders into [`TestRenderTarget`].
 #[derive(Component)]
 pub struct TestCamera;
 
@@ -286,7 +304,6 @@ impl HostLink for EndpointLink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::diagnostic::FrameCount;
     use bevy::render::RenderApp;
     use bevy::render::render_resource::{TextureFormat, TextureUsages};
     use bevy::render::renderer::{RenderAdapterInfo, RenderDevice};
@@ -388,6 +405,20 @@ mod tests {
                 .contains_resource::<ButtonInput<MouseButton>>()
         );
         assert!(!t.app().world().contains_resource::<TestRenderTarget>());
+    }
+
+    #[test]
+    fn logic_mode_camera_starts_at_camera_start() {
+        let mut t = TestApp::new(logic_config());
+        t.step();
+        let expected = CameraStart::overview(small_bounds()).0;
+        let world = t.app_mut().world_mut();
+        let (transform, global) = world
+            .query_filtered::<(&Transform, &GlobalTransform), With<GameCamera>>()
+            .single(world)
+            .expect("one game camera in logic mode too");
+        assert_eq!(*transform, expected);
+        assert_eq!(global.translation(), expected.translation, "propagated");
     }
 
     #[test]
