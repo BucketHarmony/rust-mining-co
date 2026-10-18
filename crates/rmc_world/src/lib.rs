@@ -10,7 +10,9 @@ pub mod materials;
 pub mod raycast;
 pub mod save;
 pub mod shape;
+pub mod tools;
 pub mod world;
 
 pub use inventory::Inventory;
 pub use raycast::{Hit, raycast};
+pub use tools::{ToolProfile, ToolShape, ToolTable};

@@ -20,10 +20,12 @@ use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, FlyCamPlugin, GameCamera, GameRenderPlugin,
-    HostConnection, HostLink, MeshPipelinePlugin, NetPlugin, ReplicaPlugin, ToHost,
+    HostConnection, HostLink, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin,
+    ToHost,
 };
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
+use rmc_world::ToolTable;
 use rmc_world::coords::CellAabb;
 use rmc_world::edit::PlayerId;
 use rmc_world::materials::MaterialTable;
@@ -96,6 +98,7 @@ impl TestApp {
         let materials = Arc::new(
             MaterialTable::load(asset_path("materials.ron")).expect("assets/materials.ron loads"),
         );
+        let tools = ToolTable::load(asset_path("tools.ron")).expect("assets/tools.ron loads");
         let (world, host_config) = generate_world(&config, &materials);
         let mut transport = ChannelTransport::new();
         let endpoint = transport.connect();
@@ -120,8 +123,10 @@ impl TestApp {
                 FlyCamPlugin,
                 // Inert until a scenario spawns a `Player`.
                 ControllerPlugin,
+                PickaxePlugin,
             ))
             .insert_resource(ClientMaterials(materials))
+            .insert_resource(Pickaxe(tools.pickaxe))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
 
         // What App::run does before its first update; we never call run.

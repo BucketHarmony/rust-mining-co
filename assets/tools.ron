@@ -1,0 +1,16 @@
+// Tool profiles (SAD §11.5). Loaded by rmc_world::tools::ToolTable.
+//
+// damage:     added to the target cell's damage per swing; a cell breaks when
+//             its damage reaches the material's hardness (materials.ron).
+// interval_s: the shortest time between two swings, in seconds.
+// reach_m:    how far from the eye a cell can be hit, in meters.
+// shape:      the cells one swing damages around the hit cell:
+//             Cell, or Sphere(radius: r) for every cell within r cells.
+(
+    pickaxe: (
+        damage: 10,
+        interval_s: 0.35,
+        reach_m: 3.0,
+        shape: Cell,
+    ),
+)

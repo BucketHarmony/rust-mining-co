@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
+use rmc_world::edit::{CommandId, PlayerId};
 use rmc_world::materials::MaterialTable;
 
 /// The client's end of a connection to the host.
@@ -62,6 +63,23 @@ impl HostConnection {
 /// The material table the client was built with. Its hash goes in `Hello`.
 #[derive(Resource, Clone)]
 pub struct ClientMaterials(pub Arc<MaterialTable>);
+
+/// Hands out the ids of the edit commands this client sends: sequence
+/// numbers 0, 1, 2, ... in send order (wrapping), so every command a tool
+/// sends has its own id.
+#[derive(Resource, Debug, Default)]
+pub struct CommandSeq {
+    next: u32,
+}
+
+impl CommandSeq {
+    /// The id for the next command `issuer` sends.
+    pub fn next_id(&mut self, issuer: PlayerId) -> CommandId {
+        let seq = self.next;
+        self.next = self.next.wrapping_add(1);
+        CommandId { issuer, seq }
+    }
+}
 
 /// A message the host sent, delivered in `PreUpdate`.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -126,7 +144,6 @@ mod tests {
     use std::sync::Mutex;
 
     use rmc_world::coords::CellAabb;
-    use rmc_world::edit::PlayerId;
 
     const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 

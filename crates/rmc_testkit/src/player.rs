@@ -112,7 +112,7 @@ mod tests {
     use rmc_protocol::ClientMsg;
     use rmc_world::coords::{CELL_SIZE_M, CellAabb, CellPos};
     use rmc_world::edit::{CommandId, EditCommand, EditOp};
-    use rmc_world::materials::Phase;
+    use rmc_world::materials::{MaterialId, Phase};
     use rmc_world::shape::Shape;
 
     /// A logic-only player on a stone floor built at y = 100 in a 2 × 4 × 2
@@ -185,5 +185,67 @@ mod tests {
         let cells = t.player_penetration();
         assert!(!cells.is_empty());
         assert!(cells.iter().all(|c| c.0.y == 100), "{cells:?}");
+    }
+
+    /// Holding the swing button at a stone cell breaks it through the host:
+    /// one Damage edit per interval until the damage reaches the hardness,
+    /// then the replica shows air and the stone is in the inventory.
+    #[test]
+    fn held_pickaxe_breaks_the_cell_ahead() {
+        let mut t = TestApp::new(TestConfig {
+            seed: 3,
+            world_bounds: CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 127, 63)),
+            render: false,
+            ..TestConfig::default()
+        });
+        let stone = t.host_world().materials().id("stone").unwrap();
+        let edits = [
+            (CellPos::new(24, 100, 24), CellPos::new(39, 100, 39)),
+            (CellPos::new(24, 101, 24), CellPos::new(39, 120, 39)),
+            // A pillar 1.5 m in front of the eye.
+            (CellPos::new(32, 101, 28), CellPos::new(32, 106, 28)),
+        ];
+        let ops = [EditOp::Set(stone), EditOp::Remove, EditOp::Set(stone)];
+        for (seq, ((min, max), op)) in (1000..).zip(edits.into_iter().zip(ops)) {
+            t.send(ClientMsg::Edit(EditCommand {
+                id: CommandId {
+                    issuer: t.player_id(),
+                    seq,
+                },
+                issuer: t.player_id(),
+                op,
+                shape: Shape::Box { min, max },
+            }));
+        }
+        t.steps(3);
+        t.spawn_player(Vec3::new(16.25, 101.0 * CELL_SIZE_M, 16.25));
+        t.steps(10);
+        let cell = CellPos::new(32, 104, 28);
+        let target = t.app().world().resource::<rmc_client::PickTarget>().0;
+        assert_eq!(target.map(|h| h.cell), Some(cell), "looking at the pillar");
+
+        let profile = t.app().world().resource::<rmc_client::Pickaxe>().0;
+        let hardness = t.host_world().materials().get(stone).unwrap().hardness;
+        let swings = hardness.div_ceil(profile.damage);
+        let interval = (profile.interval_s * 60.0).round() as u32;
+        t.mouse_down(rmc_client::SWING_BUTTON);
+        // The last swing goes out (swings - 1) intervals after the first;
+        // its result is back two frames later.
+        t.steps((u32::from(swings) - 1) * interval + 3);
+        t.mouse_up(rmc_client::SWING_BUTTON);
+        t.step();
+        assert_eq!(t.host_world().get_cell(cell), Some(MaterialId::AIR));
+        let replica = t.app().world().resource::<rmc_client::Replica>();
+        assert_eq!(replica.world().get_cell(cell), Some(MaterialId::AIR));
+        assert_eq!(
+            t.host().inventory(t.player_id()).map(|i| i.count(stone)),
+            Some(1)
+        );
+        let swung = t
+            .app()
+            .world()
+            .resource::<rmc_client::SwingState>()
+            .swings();
+        assert_eq!(swung, u64::from(swings), "no swing was wasted");
     }
 }

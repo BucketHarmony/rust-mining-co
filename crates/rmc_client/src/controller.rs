@@ -31,14 +31,20 @@
 //!   jumps when grounded (held, it jumps again on landing).
 //! - The mouse turns: yaw right for motion right, pitch clamped to
 //!   ±[`MAX_PITCH_DEG`].
+//!
+//! Once joined (a [`Replica`] exists), every third fixed step from the first
+//! ([`PLAYER_STATE_HZ`]) the plugin writes [`ToHost`]`(PlayerState)` with the
+//! feet, yaw and pitch after the step. Not while the fly camera is on.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
+use rmc_protocol::ClientMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::world::World;
 
 use crate::flycam::{FlyCam, MAX_PITCH_DEG};
 use crate::interp::InterpolatedEye;
+use crate::net::ToHost;
 use crate::render::GameCamera;
 use crate::replica::Replica;
 
@@ -58,6 +64,9 @@ pub const STEP_SMOOTH_S: f32 = 0.1;
 
 /// Rate of the fixed step the controller runs in (Bevy's default is 64 Hz).
 pub const FIXED_HZ: f64 = 60.0;
+
+/// Rate at which the player's position and view go to the host.
+pub const PLAYER_STATE_HZ: f64 = 20.0;
 
 /// Controller tuning.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -356,10 +365,12 @@ pub struct ControllerPlugin;
 impl Plugin for ControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ControllerConfig>()
+            .init_resource::<StateClock>()
+            .add_message::<ToHost>()
             .insert_resource(Time::<Fixed>::from_hz(FIXED_HZ))
             .add_systems(
                 FixedUpdate,
-                (move_players, record_eyes)
+                (move_players, record_eyes, report_state)
                     .chain()
                     .in_set(ControllerSystems::Move),
             )
@@ -411,6 +422,38 @@ fn record_eyes(
             }
         }
     }
+}
+
+/// Fixed steps the player has moved since joining, for [`report_state`].
+#[derive(Resource, Debug, Default)]
+struct StateClock {
+    steps: u64,
+}
+
+/// Every `FIXED_HZ / PLAYER_STATE_HZ` fixed steps the player moves (from
+/// the first), sends its feet, yaw and pitch to the host.
+fn report_state(
+    replica: Option<Res<Replica>>,
+    fly: Option<Res<FlyCam>>,
+    mut clock: ResMut<StateClock>,
+    players: Query<&Player>,
+    mut out: MessageWriter<ToHost>,
+) {
+    if replica.is_none() || fly_cam_on(fly) {
+        return;
+    }
+    let Some(player) = players.iter().next() else {
+        return;
+    };
+    let every = (FIXED_HZ / PLAYER_STATE_HZ).round().max(1.0) as u64;
+    if clock.steps.is_multiple_of(every) {
+        out.write(ToHost(ClientMsg::PlayerState {
+            pos: player.feet,
+            yaw: player.yaw,
+            pitch: player.pitch,
+        }));
+    }
+    clock.steps += 1;
 }
 
 fn look_players(
@@ -1189,6 +1232,79 @@ mod tests {
 
     fn player(app: &App, e: Entity) -> Player {
         app.world().get::<Player>(e).unwrap().clone()
+    }
+
+    /// The `PlayerState`s written each frame, with the player's state after
+    /// that frame's fixed step.
+    #[derive(Resource, Default)]
+    struct Reports(Vec<(u32, ClientMsg, Player)>);
+
+    fn record_reports(
+        mut frame: Local<u32>,
+        mut out: MessageReader<ToHost>,
+        players: Query<&Player>,
+        mut reports: ResMut<Reports>,
+    ) {
+        *frame += 1;
+        let player = players.single().unwrap().clone();
+        for ToHost(msg) in out.read() {
+            if matches!(msg, ClientMsg::PlayerState { .. }) {
+                reports.0.push((*frame, msg.clone(), player.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn player_state_sent_at_20_hz() {
+        let (mut app, _, _) = controller_app(floor_world(), Player::at(Vec3::new(16.0, 4.0, 16.0)));
+        app.init_resource::<Reports>()
+            .add_systems(Last, record_reports);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::new(30.0, -20.0);
+        // The turn applies in Update, after this frame's fixed step and its
+        // report; from the next frame on the report carries it.
+        app.update();
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::ZERO;
+        app.world_mut().resource_mut::<Reports>().0.clear();
+        // 2 s at one fixed step per frame: 40 states, one every 3 steps.
+        for _ in 0..120 {
+            app.update();
+        }
+        let reports = &app.world().resource::<Reports>().0;
+        assert_eq!(reports.len(), 40, "20 Hz for 2 s");
+        assert!(
+            reports.windows(2).all(|w| w[1].0 - w[0].0 == 3),
+            "evenly spaced: {:?}",
+            reports.iter().map(|r| r.0).collect::<Vec<_>>()
+        );
+        for (frame, msg, player) in reports {
+            assert_eq!(
+                *msg,
+                ClientMsg::PlayerState {
+                    pos: player.feet,
+                    yaw: player.yaw,
+                    pitch: player.pitch,
+                },
+                "frame {frame}: the feet and view after the step"
+            );
+        }
+        let last = &reports.last().unwrap().2;
+        assert!(last.yaw != 0.0 && last.pitch != 0.0);
+        assert!(last.feet.z < 15.0, "walked: {:?}", last.feet);
+
+        // Fly mode: the player is parked and nothing more is reported.
+        app.world_mut().resource_mut::<FlyCam>().enabled = true;
+        app.world_mut().resource_mut::<Reports>().0.clear();
+        for _ in 0..30 {
+            app.update();
+        }
+        assert!(app.world().resource::<Reports>().0.is_empty());
     }
 
     #[test]
