@@ -161,6 +161,7 @@ mod tests {
     use crate::chunk::Chunk;
     use crate::coords::{CellAabb, CellPos, LocalPos};
     use crate::world::World;
+    use proptest::prelude::*;
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 
@@ -220,6 +221,11 @@ mod tests {
     /// the whole edit.
     fn replay(before: &World, deltas: &[ChunkDelta]) -> World {
         let mut w = before.clone();
+        replay_in_place(&mut w, deltas);
+        w
+    }
+
+    fn replay_in_place(w: &mut World, deltas: &[ChunkDelta]) {
         for d in deltas {
             let pos = d.pos();
             let mut chunk = w.chunk(pos).expect("delta for a resident chunk").clone();
@@ -235,7 +241,6 @@ mod tests {
             chunk.revision = d.revision();
             w.insert_chunk(pos, chunk).unwrap();
         }
-        w
     }
 
     #[test]
@@ -790,5 +795,179 @@ mod tests {
         assert_eq!(w.get_cell(CellPos::new(63, 31, 31)), Some(MaterialId::AIR));
         assert_eq!(w.get_cell(CellPos::new(0, 7, 7)), Some(MaterialId::AIR));
         assert_eq!(w.get_cell(CellPos::new(40, 20, 20)), Some(stone));
+    }
+
+    /// Cells -32..=40 × -32..=-1 × -32..=31: 3 × 1 × 2 chunks, negative
+    /// coordinates inside, and the x = 1 chunk column cut by the max face.
+    /// One chunk layer keeps the case fast; chunk hashing dominates its cost.
+    fn determinism_bounds() -> CellAabb {
+        CellAabb::new(CellPos::new(-32, -32, -32), CellPos::new(40, -1, 31))
+    }
+
+    const DETERMINISM_CHUNKS: usize = 6;
+
+    /// Initial contents of one chunk: whether it is resident, its fill, and
+    /// a few scattered cells, as indices into the material table.
+    type ChunkSpec = (bool, u16, Vec<(u16, u16)>);
+
+    fn chunk_spec(materials: u16) -> impl Strategy<Value = ChunkSpec> {
+        (
+            proptest::bool::weighted(0.9),
+            0..materials,
+            proptest::collection::vec((any::<u16>(), 0..materials), 0..6),
+        )
+    }
+
+    fn build_chunk((_, fill, cells): &ChunkSpec) -> Chunk {
+        let mut chunk = Chunk::uniform(MaterialId(*fill));
+        for &(i, m) in cells {
+            chunk
+                .storage
+                .set(LocalPos::from_index(i % 32_768), MaterialId(m));
+        }
+        chunk
+    }
+
+    /// The same contents in a different `ChunkStorage` structure: a stray
+    /// palette entry (or Paletted instead of Uniform), so the replicas start
+    /// equal by content but not by representation.
+    fn restructure(mut chunk: Chunk, spare: MaterialId) -> Chunk {
+        let at = LocalPos::from_index(12_345);
+        let old = chunk.storage.get(at);
+        let other = if old == spare { MaterialId::AIR } else { spare };
+        chunk.storage.set(at, other);
+        chunk.storage.set(at, old);
+        chunk
+    }
+
+    fn coord(lo: i32, hi: i32) -> impl Strategy<Value = i32> {
+        lo..=hi
+    }
+
+    fn cell_pos() -> impl Strategy<Value = CellPos> {
+        // A margin past every face, so some shapes are partly or wholly outside.
+        (coord(-36, 44), coord(-35, 2), coord(-36, 35)).prop_map(|(x, y, z)| CellPos::new(x, y, z))
+    }
+
+    fn shape_strategy() -> impl Strategy<Value = Shape> {
+        prop_oneof![
+            3 => cell_pos().prop_map(Shape::Cell),
+            // Small boxes, including empty ones (a negative extent).
+            6 => (cell_pos(), -1..12i32, -1..12i32, -1..12i32).prop_map(|(min, dx, dy, dz)| {
+                Shape::Box { min, max: CellPos::new(min.0.x + dx, min.0.y + dy, min.0.z + dz) }
+            }),
+            5 => (cell_pos(), 0..8u16).prop_map(|(center, radius)| Shape::Sphere { center, radius }),
+            // Big enough to cross FULL_DELTA_THRESHOLD in one chunk.
+            1 => (coord(-36, 8), coord(-36, -4), coord(-36, 0)).prop_map(|(x, y, z)| Shape::Box {
+                min: CellPos::new(x, y, z),
+                max: CellPos::new(x + 31, y + 7, z + 31),
+            }),
+            // Over MAX_EDIT_CELLS: rejected.
+            1 => (cell_pos(), 20..=u16::MAX).prop_map(|(center, radius)| Shape::Sphere { center, radius }),
+        ]
+    }
+
+    /// Ops over every material id plus one past the table (rejected).
+    fn op_strategy(materials: u16) -> impl Strategy<Value = EditOp> {
+        let damage = prop_oneof![8 => 1..=40u16, 1 => Just(0u16), 1 => any::<u16>()];
+        prop_oneof![
+            (0..=materials).prop_map(|m| EditOp::Set(MaterialId(m))),
+            Just(EditOp::Remove),
+            damage.prop_map(EditOp::Damage),
+            (0..=materials).prop_map(|m| EditOp::Paint(MaterialId(m))),
+        ]
+    }
+
+    /// An op, a shape and how many times in a row it is issued (repeats let
+    /// damage accumulate to a break).
+    fn command_strategy(materials: u16) -> impl Strategy<Value = (EditOp, Shape, u8)> {
+        (
+            op_strategy(materials),
+            shape_strategy(),
+            prop_oneof![3 => Just(1u8), 1 => 2..=16u8],
+        )
+    }
+
+    /// Revision and `modified` of every resident chunk. Contents are
+    /// compared through [`World::hash`], which folds every chunk hash.
+    fn chunk_states(w: &World) -> Vec<(ChunkPos, u64, bool)> {
+        w.iter_chunks_sorted()
+            .map(|(p, c)| (p, c.revision, c.modified))
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(
+            std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(256)
+        ))]
+
+        /// SAD §14: the same command sequence on two worlds gives the same
+        /// world hash. The two worlds start with equal contents but insert
+        /// their chunks in different orders (and own separately seeded hash
+        /// maps) and hold structurally different storage. Every command must
+        /// give them identical results (status, deltas, yields), and a
+        /// replica fed only the deltas must hash the same at the end.
+        #[test]
+        fn determinism_proptest(
+            specs in proptest::collection::vec(chunk_spec(13), DETERMINISM_CHUNKS),
+            order in Just((0..DETERMINISM_CHUNKS).collect::<Vec<_>>()).prop_shuffle(),
+            commands in proptest::collection::vec(command_strategy(13), 1..32),
+        ) {
+            let table = phase1();
+            let materials = table.len() as u16;
+            prop_assert_eq!(materials, 13, "strategies assume the 13-entry Phase 1 table");
+            let spare = id(&table, "granite");
+            let bounds = determinism_bounds();
+            let positions: Vec<ChunkPos> = bounds.chunks().collect();
+            prop_assert_eq!(positions.len(), DETERMINISM_CHUNKS);
+
+            let mut a = World::new(table.clone(), bounds);
+            for (&pos, spec) in positions.iter().zip(&specs) {
+                if spec.0 {
+                    a.insert_chunk(pos, build_chunk(spec)).unwrap();
+                }
+            }
+            let mut b = World::new(table.clone(), bounds);
+            for &i in &order {
+                if specs[i].0 {
+                    let chunk = restructure(build_chunk(&specs[i]), spare);
+                    b.insert_chunk(positions[i], chunk).unwrap();
+                }
+            }
+            prop_assert_eq!(a.hash(), b.hash(), "equal contents before any command");
+            let mut replica = a.clone();
+
+            let mut seq = 0;
+            for &(op, shape, repeat) in &commands {
+                for _ in 0..repeat {
+                    seq += 1;
+                    let c = cmd(seq, op, shape);
+                    let ra = a.apply(&c);
+                    let rb = b.apply(&c);
+                    prop_assert_eq!(ra.command, c.id);
+                    prop_assert_eq!(&ra, &rb, "command {:?}", c);
+                    prop_assert!(
+                        ra.deltas.windows(2).all(|d| d[0].pos() < d[1].pos()),
+                        "deltas ascending by chunk"
+                    );
+                    prop_assert!(
+                        ra.yields.windows(2).all(|y| y[0].0 < y[1].0),
+                        "yields ascending by material"
+                    );
+                    replay_in_place(&mut replica, &ra.deltas);
+                }
+            }
+
+            let hash = a.hash();
+            prop_assert_eq!(b.hash(), hash);
+            prop_assert_eq!(replica.hash(), hash);
+            prop_assert_eq!(chunk_states(&a), chunk_states(&b));
+            // `modified` is host-side save state, not part of a delta.
+            let revisions = |w: &World| -> Vec<(ChunkPos, u64)> {
+                chunk_states(w).into_iter().map(|(p, rev, _)| (p, rev)).collect()
+            };
+            prop_assert_eq!(revisions(&replica), revisions(&a));
+            prop_assert_eq!(a.damage(), b.damage());
+        }
     }
 }
