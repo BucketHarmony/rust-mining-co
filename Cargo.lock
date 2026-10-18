@@ -5769,6 +5769,7 @@ name = "rmc_host"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "glam",
  "rmc_protocol",
  "rmc_world",
  "rmc_worldgen",
