@@ -3,6 +3,7 @@
 
 pub mod controller;
 pub mod flycam;
+pub mod interp;
 pub mod material;
 pub mod mesher;
 pub mod meshpipe;
@@ -15,6 +16,7 @@ pub use controller::{
     PLAYER_HEIGHT_M, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
+pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
     ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveFromAlpha, EmissiveMaterialPlugin,
 };

@@ -18,7 +18,8 @@
 //! [`ControllerPlugin`] moves every [`Player`] in `FixedUpdate`, reading only
 //! the [`Replica`] and `ButtonInput<KeyCode>`. Mouse look reads
 //! `AccumulatedMouseMotion` in `Update` (it accumulates per frame, not per
-//! fixed step), and the [`GameCamera`] then follows the player's eye. While
+//! fixed step), and the [`GameCamera`] then follows the player's eye,
+//! interpolated between the last two fixed steps ([`crate::interp`]). While
 //! the fly camera is on, the controller neither moves, turns nor follows.
 //!
 //! A grounded player that walks into a one-cell rise climbs it when the
@@ -37,6 +38,7 @@ use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::world::World;
 
 use crate::flycam::{FlyCam, MAX_PITCH_DEG};
+use crate::interp::InterpolatedEye;
 use crate::render::GameCamera;
 use crate::replica::Replica;
 
@@ -341,7 +343,8 @@ fn sweep(world: &World, aabb: Aabb, axis: usize, d: f32) -> Option<f32> {
 /// Systems of the controller.
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ControllerSystems {
-    /// `FixedUpdate`: moves the players.
+    /// `FixedUpdate`: moves the players, then records their eyes for
+    /// interpolation.
     Move,
     /// `Update`: mouse look, then the camera follows the eye.
     Look,
@@ -354,7 +357,12 @@ impl Plugin for ControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ControllerConfig>()
             .insert_resource(Time::<Fixed>::from_hz(FIXED_HZ))
-            .add_systems(FixedUpdate, move_players.in_set(ControllerSystems::Move))
+            .add_systems(
+                FixedUpdate,
+                (move_players, record_eyes)
+                    .chain()
+                    .in_set(ControllerSystems::Move),
+            )
             .add_systems(
                 Update,
                 (look_players, follow_player)
@@ -387,6 +395,24 @@ fn move_players(
     }
 }
 
+/// Pushes every player's eye after the fixed step into its
+/// [`InterpolatedEye`], adding one on the first step.
+fn record_eyes(
+    mut commands: Commands,
+    mut players: Query<(Entity, &Player, Option<&mut InterpolatedEye>)>,
+) {
+    for (entity, player, history) in &mut players {
+        match history {
+            Some(mut history) => history.push(player.eye()),
+            None => {
+                commands
+                    .entity(entity)
+                    .insert(InterpolatedEye::at(player.eye()));
+            }
+        }
+    }
+}
+
 fn look_players(
     mouse: Option<Res<AccumulatedMouseMotion>>,
     fly: Option<Res<FlyCam>>,
@@ -404,19 +430,24 @@ fn look_players(
     }
 }
 
+/// Puts the camera at the player's eye, interpolated at the fixed clock's
+/// overstep fraction. Until the first fixed step has run, at the eye. The
+/// rotation is not interpolated: mouse look applies every frame.
 fn follow_player(
     fly: Option<Res<FlyCam>>,
-    players: Query<&Player>,
+    fixed: Res<Time<Fixed>>,
+    players: Query<(&Player, Option<&InterpolatedEye>)>,
     mut cameras: Query<&mut Transform, With<GameCamera>>,
 ) {
     if fly_cam_on(fly) {
         return;
     }
-    let Some(player) = players.iter().next() else {
+    let Some((player, history)) = players.iter().next() else {
         return;
     };
+    let eye = history.map_or(player.eye(), |h| h.render_pos(fixed.overstep_fraction()));
     for mut transform in &mut cameras {
-        transform.translation = player.eye();
+        transform.translation = eye;
         transform.rotation = player.rotation();
     }
 }
