@@ -131,3 +131,14 @@ Decisions:
 - The SAD has no 64 MB row in §13; the budget comes from the feature title. The test also covers the 16-bit worst case, so edits cannot push a full 256-chunk world over the budget either.
 Next: M2 F020 (shapes with fixed iteration order and cell counts).
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 07:40 — F020 Shapes with fixed iteration order and cell counts — passed
+Done: New rmc_world::shape with Shape::{Cell(CellPos), Box { min, max } (inclusive), Sphere { center, radius: u16 } (dx²+dy²+dz² <= r²)}. It derives serde for the protocol. API: cells() -> ShapeCells, cell_count() -> u64, aabb() -> Option<CellAabb>. ShapeCells is a FusedIterator over x-runs per (y, z) row, so cells come out in ascending (y, z, x) order (= CellPos Ord). It never scans empty rows. Sphere row spans use integer square roots (u64::isqrt); the module has no floats.
+Tests added: shape::tests::{sphere_counts_r0_to_8, sphere_is_symmetric, box_is_inclusive, iteration_order_is_y_z_x}. Sphere counts match OEIS A000605 (1, 7, 33, 123, 257, 515, 925, 1419, 2109) and a brute-force scan of the bounding cube at three centers (one negative, one on a chunk border). Symmetry: three axis mirrors, five axis permutations, axis tips, and translation invariance. Box: single cell, both corners included, min > max on each axis is empty, i32-edge boxes, and a full-i32 box whose count saturates. Order: an explicit 2×2×2 box and r=1 sphere sequence, and strictly ascending for larger shapes. Also a sphere at the i32 edge.
+Decisions:
+- An empty Box (min > max on any axis) is allowed and yields nothing: count 0, aabb None. Shape is wire data, so it does not panic like CellAabb::new. F022 can reject it as "entirely outside".
+- Coordinates are i64 inside the iterator. Cells that would leave the i32 range are skipped (they are outside every world). cell_count() and aabb() describe the ideal shape (aabb clamped to i32), so cells().count() <= cell_count(). Validation therefore errs toward rejecting.
+- cell_count() is computed, not iterated: boxes are a saturating product, spheres are a sum of isqrt row spans (O(r²)). For a radius of up to 65535 that is too slow on a hostile command. F022 should reject big radii before counting (r >= 20 already exceeds MAX_EDIT_CELLS: 33,401 > 32,768) or check the aabb volume first.
+- Cell is iterated as a 1×1×1 box.
+Next: F021 (EditCommand Set/Remove/Paint via World::apply with deltas).
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
