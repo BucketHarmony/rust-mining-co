@@ -6,5 +6,8 @@ pub mod coords;
 pub mod damage;
 pub mod edit;
 pub mod materials;
+pub mod raycast;
 pub mod shape;
 pub mod world;
+
+pub use raycast::{Hit, raycast};
