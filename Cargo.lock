@@ -5751,6 +5751,7 @@ dependencies = [
  "bevy-inspector-egui",
  "bevy_egui",
  "crossbeam-channel",
+ "proptest",
  "rmc_protocol",
  "rmc_world",
  "thiserror 2.0.21",

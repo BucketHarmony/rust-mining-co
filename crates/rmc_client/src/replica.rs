@@ -76,6 +76,17 @@ impl Replica {
         }
     }
 
+    /// A replica holding `world`, for tests of systems that read it.
+    #[cfg(test)]
+    pub(crate) fn from_world(world: World) -> Self {
+        Self {
+            world,
+            player: PlayerId(1),
+            awaiting: BTreeSet::new(),
+            dirty: BTreeSet::new(),
+        }
+    }
+
     /// The replica world. Read-only: only host messages change it.
     pub fn world(&self) -> &World {
         &self.world

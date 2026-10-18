@@ -1,6 +1,7 @@
 //! Bevy client: replica, meshing, rendering, input, controller, HUD, debug UI.
 #![deny(unsafe_code)]
 
+pub mod controller;
 pub mod flycam;
 pub mod material;
 pub mod mesher;
@@ -9,6 +10,10 @@ pub mod net;
 pub mod render;
 pub mod replica;
 
+pub use controller::{
+    Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
+    PLAYER_HEIGHT_M, PLAYER_WIDTH_M, Player,
+};
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use material::{
     ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveFromAlpha, EmissiveMaterialPlugin,
