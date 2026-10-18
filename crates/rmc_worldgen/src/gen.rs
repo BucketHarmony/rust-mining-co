@@ -907,11 +907,11 @@ mod tests {
         let mut carved = 0;
         for pos in [ChunkPos::new(3, 1, 4), ChunkPos::new(-2, 2, 1)] {
             let base = g.base_volume(pos);
-            let v = g.volume(pos);
+            let v = g.ore_volume(pos);
             for (axis, step) in [(0, -1), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
                 let mut d = IVec3::ZERO;
                 d[axis] = step;
-                let n = g.volume(ChunkPos(pos.0 + d));
+                let n = g.ore_volume(ChunkPos(pos.0 + d));
                 for a in -1..=CHUNK_SIZE {
                     for b in -1..=CHUNK_SIZE {
                         let mut c = IVec3::ZERO;
