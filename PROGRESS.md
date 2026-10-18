@@ -51,3 +51,16 @@ Decisions:
 - SAD §5 says 0.5 m cells, so CELL_SIZE_M = 0.5.
 Next: F004 (MaterialTable from materials.ron), then F005.
 Blockers: none.
+
+## 2026-10-18 05:20 — F004 MaterialTable loading from materials.ron with tags and hash — passed
+Done: rmc_world::materials has MaterialId(u16) (serde transparent, AIR = 0), Phase {Air, Solid}, MaterialDef (the SAD §6 fields, `deny_unknown_fields`), and MaterialTable with load(path), from_ron_str, from_defs, hash, id(key), get(id), with_tag(tag) (id order), has_tag(id, tag), iter, len. Validation rejects: an empty table; more than 65536 entries; id != position; id 0 not phase Air; empty or duplicate keys; empty or duplicate tags within a material; emissive that is non-finite or negative. assets/materials.ron has the 13 Phase 1 materials. rmc_world now depends on ron (already pinned in the workspace, =0.12.2).
+Tests added: materials::tests::{loads_phase1_table, hash_is_stable, lookup_by_key_and_tag}.
+Decisions:
+- materials.ron is a bare RON list of MaterialDef with explicit `id`s. Each id must equal its index, so lookup is a Vec index and ids cannot drift silently.
+- The hash is xxh3_64 over a hand-written canonical encoding: a "rmc.materials.v1" prefix, LE integers, length-prefixed strings, tags in file order, emissive as f32 bits. It does not depend on RON whitespace or comments. hash_is_stable pins a golden value (0x839f6f476eb45041) for an inline 3-material fixture, not for the shipped asset, so tuning materials.ron does not break the test. Changing the encoding on purpose means bumping the v1 prefix and the golden value in a `test-fix:` commit.
+- Tags use only the SAD vocabulary: soil = topsoil/dirt/clay; stone = stone/granite/basalt; ore = coal_seam/copper_ore/iron_ore; crystal = glowcrystal; placeable = brass_plate. Bedrock and air have no tags. Ores are NOT tagged stone, so glowcrystal and ore placement (which filter on stone) never overwrite ores. Worldgen will pick specific strata/ore materials through keys in worldgen.ron (data, not code).
+- Hardness scale is designed for a pickaxe of roughly 10 damage per swing: topsoil 10, dirt 15, clay 20, stone 30, granite 45, basalt 60, coal 30, copper 40, iron 50, glowcrystal 20, brass 40. Bedrock is 65535 and diggable=false. Every diggable solid yields 1; air and bedrock yield 0. Only glowcrystal is emissive (2.0). Air color is (0,0,0,0); all solids are opaque.
+- Phase::Liquid ("reserved" in the SAD) is not a variant yet. Adding it later changes no existing encoding byte, because Air=0 and Solid=1 stay as they are.
+- The emissive validation compares f32 at load time. That is data validation, not world logic, so rule 3 does not apply.
+Next: F005 (scripts wired), then M1 F010.
+Blockers: none.
