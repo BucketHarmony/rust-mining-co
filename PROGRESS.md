@@ -142,3 +142,18 @@ Decisions:
 - Cell is iterated as a 1×1×1 box.
 Next: F021 (EditCommand Set/Remove/Paint via World::apply with deltas).
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 08:00 — F021 EditCommand Set/Remove/Paint via World::apply with deltas — passed
+Done: New rmc_world::edit with PlayerId(u32), CommandId { issuer, seq: u32 }, EditOp::{Set, Remove, Damage, Paint}, EditCommand (all serde, like Shape), RejectReason, EditStatus, ChunkDelta::{Cells, Full} (with pos()/revision()), EditResult and FULL_DELTA_THRESHOLD = 4096. World::apply(&EditCommand) -> EditResult in world.rs: it checks the op against the material table, then visits the shape's cells in (y, z, x) order. A cell is skipped when it is outside the bounds, its chunk is not resident, the op does not apply to its material (Remove: def not diggable; Paint: def not Solid), or it already holds the target. Changes are grouped per chunk in a BTreeMap, so deltas come out ascending by ChunkPos. Each changed chunk gets exactly one revision bump per command and modified = true. More than 4096 changed cells → the chunk is compacted and sent as Full (a clone of the world's compacted storage); otherwise Cells, sorted by local index.
+Tests added: edit::tests::{set_produces_cells_delta, paint_skips_air, remove_skips_undiggable, full_delta_over_threshold}. They cover: chunk-border boxes; exact change lists; unchanged cells and chunks keep their revision; a no-op command gives no deltas; non-resident and out-of-bounds cells are skipped; unknown materials are rejected with nothing changed; bedrock survives Remove; the exact 4096 (Cells) / 4097 (Full) boundary counted on changed cells, not shape cells; a whole-chunk fill gives Full(Uniform) next to a Cells neighbour. Every test also replays its deltas onto a copy of the world (a stand-in for F025 apply_delta) and checks the world hash matches.
+Decisions:
+- Set/Paint with a MaterialId that is not in the table rejects the whole command (RejectReason::UnknownMaterial). The SAD is silent; an unknown id in a replica would break meshing and collision.
+- EditOp::Damage is rejected with RejectReason::Unsupported until F023 adds the damage map. F023 should delete that variant once Damage is implemented.
+- Paint checks only phase (Solid), not diggable, so it repaints bedrock. Set overwrites anything, bedrock included. This follows SAD §8.2 literally: the diggable check is only for Damage/Remove.
+- Remove treats a cell whose id the table does not know as not diggable and skips it. Air has diggable: false in the table, so Remove skips air as well; it would be a no-op anyway.
+- Cells in a chunk that is in bounds but not resident are skipped, not created. The host world is fully generated, so this only matters for sparse test worlds.
+- `modified` stays true even if a later edit restores the worldgen contents (saving more is the safe side).
+- Whole-command validation (MAX_EDIT_CELLS, entirely outside bounds) is left to F022. Until then a huge Box iterates every cell. Damage clearing on Set/Paint/Remove is left to F023, which adds World.damage.
+- RejectReason derives thiserror::Error so the protocol (F030) can send it as text or as is. Result/delta types have no serde yet, because ChunkStorage has none; F030 picks the wire form.
+Next: F022 (validation: oversized and out-of-bounds commands rejected with no partial application).
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
