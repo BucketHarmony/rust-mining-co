@@ -16,7 +16,7 @@ use bevy::render::render_resource::{TextureFormat, TextureUsages};
 use bevy::time::TimeUpdateStrategy;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
-use rmc_client::{ClientMaterials, HostConnection, HostLink, NetPlugin, ToHost};
+use rmc_client::{ClientMaterials, HostConnection, HostLink, NetPlugin, ReplicaPlugin, ToHost};
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::CellAabb;
@@ -104,7 +104,7 @@ impl TestApp {
             app.add_plugins((MinimalPlugins, InputPlugin));
         }
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame_duration()))
-            .add_plugins(NetPlugin)
+            .add_plugins((NetPlugin, ReplicaPlugin))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
 
@@ -291,7 +291,7 @@ mod tests {
     use bevy::render::render_resource::{TextureFormat, TextureUsages};
     use bevy::render::renderer::{RenderAdapterInfo, RenderDevice};
     use bevy::window::Window;
-    use rmc_client::FromHost;
+    use rmc_client::{FromHost, Replica};
     use rmc_protocol::ServerMsg;
     use rmc_world::coords::CellPos;
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus};
@@ -451,6 +451,13 @@ mod tests {
                 .iter()
                 .all(|(_, m)| matches!(m, ServerMsg::ChunkSnapshot { .. }))
         );
+        let replica = t.app().world().resource::<Replica>();
+        assert_eq!(replica.player(), p);
+        assert_eq!(
+            replica.world().hash(),
+            t.host_world().hash(),
+            "replica joined"
+        );
 
         // One edit per frame: each step's tick applies exactly the edit the
         // client sent during the frame before, and that step's update
@@ -504,5 +511,11 @@ mod tests {
             assert_eq!(applied, want, "step {i}");
         }
         assert_eq!(t.host_ticks() - ticks0, 1 + cells.len() as u64 + 1);
+        let replica = t.app().world().resource::<Replica>();
+        assert_eq!(
+            replica.world().hash(),
+            t.host_world().hash(),
+            "replica follows edits"
+        );
     }
 }

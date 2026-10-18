@@ -71,6 +71,14 @@ pub struct FromHost(pub ServerMsg);
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct ToHost(pub ClientMsg);
 
+/// [`NetPlugin`]'s system sets.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NetSystems {
+    /// `PreUpdate`: turns waiting [`ServerMsg`]s into [`FromHost`] messages.
+    /// Handlers that must run in the same frame go after it.
+    Receive,
+}
+
 /// Moves messages between the [`HostConnection`] and [`FromHost`]/[`ToHost`].
 pub struct NetPlugin;
 
@@ -79,7 +87,7 @@ impl Plugin for NetPlugin {
         app.add_message::<FromHost>()
             .add_message::<ToHost>()
             .add_systems(Startup, send_hello)
-            .add_systems(PreUpdate, receive_from_host)
+            .add_systems(PreUpdate, receive_from_host.in_set(NetSystems::Receive))
             .add_systems(Last, send_to_host);
     }
 }
