@@ -667,3 +667,36 @@ Decisions:
 - The outline is near-black: white was nearly invisible on light stone.
 Next: F066 (E2E dig_cell_visible and latency_dig). `t.hud()` and `t.inventory()` exist. The crosshair is drawn at the image center (about 14 px), so dig_cell_visible's "pixel block under the crosshair changed" should sample a block around the center that is larger than the crosshair, or leave the crosshair pixels out.
 Blockers: none.
+
+## 2026-10-18 22:30 — F066 E2E: dig_cell_visible and latency_dig — passed
+Done: Two new scenarios in tests/e2e/tests/. Both use the same course in a 2 × 4 × 2 chunk world, high above the terrain:
+- a floor of a plain diggable solid at y = 100, cleared above;
+- a one-cell-thick wall at z = 36 holding TARGET (34, 104, 36), which is interior to its chunk on every axis;
+- the player's feet at (17.25, 50.5, 20.25), 1.75 m from the wall face.
+The wall is the first plain diggable solid that needs more than one swing (dirt, 2 swings). No production code changed.
+- dig_cell_visible:
+  - A backdrop wall at z = 30 sits 2.5 m behind the wall, out of reach. Its material is the plain solid with the largest luminance ratio to the wall (coal_seam).
+  - The view is pitched to the middle of the target face. Before the dig: HUD target = TARGET, material = the wall's key, 0 swings.
+  - The button is held until the replica cell is Air. Then: swings = hardness / damage; host and replica cell are Air; the client inventory, host inventory and HUD line equal the held count + yield_count; the HUD no longer targets the cell.
+  - After the hole is meshed at the chunk's current revision, the mean color of a 48 × 48 px block around the image center (minus a 17 × 17 crosshair square) changed by 94.8 (threshold 24).
+  - Screenshots are saved before (43) and after (71).
+- latency_dig: holds the button and records every step's swing count, replica cell, replica chunk revision and MeshQueue::meshed_revision.
+  - Before the breaking swing, nothing the client sees changes.
+  - The breaking swing goes out in frame 60, the replica applies the delta in frame 61, and the mesh is uploaded in frame 62. The test asserts a latency of at most 2 (MAX_LATENCY_STEPS). The screenshot is saved at 67.
+- Committed docs/screens/{dig_cell_visible-43,dig_cell_visible-71,latency_dig-67}.png, plus a refreshed walk_and_jump-195.png (it now shows the crosshair) in its own chore commit.
+Tests added: e2e:dig_cell_visible, e2e:latency_dig.
+- Neither needed new production code, so neither failed first for a missing feature. Each assertion was checked live instead:
+  - With a brass backdrop (chosen by RGB distance), dig_cell_visible failed on the color check (change 15.2 < 24).
+  - Setting MAX_LATENCY_STEPS to 1 made latency_dig fail with "visible 2 steps after the swing". It was reverted.
+- The reviewer subagent returned PASS. Its gaps were fixed: assert the backdrop cell was placed, assert the hole is meshed before the after screenshot, and assert 0 swings before the dig.
+Decisions:
+- "Visible delta" means the replica holds the broken cell and the cell's chunk has an uploaded mesh built from the replica's current chunk revision, so that step's rendered frame draws the hole. Latency counts from the step whose FixedUpdate sent the breaking swing.
+- The pipeline order (queue_dirty, poll_jobs, start_jobs, upload) makes 2 the minimum: delta in N+1, job started in N+1, polled and uploaded in N+2. The bound holds only if the mesh job finishes during frame N+1's render. That is likely on WARP/lavapipe, where a frame takes tens of ms and a chunk meshes in about 1 ms. A heavily loaded machine could see 3 (a spurious failure, never a vacuous pass).
+- The backdrop is chosen by log-luminance contrast, not RGB distance, because tonemapping compresses bright colors.
+- Helpers (settle, edit_boxes) are duplicated per scenario file, as in the existing scenarios. DigBot (SAD §12.3) was not added; the scenarios hold the button directly. F067's TunnelBot can introduce rmc_testkit::bots.
+- The scenarios pick materials with filters (phase, emissive, diggable, hardness, color), not keys.
+Next: F067 (E2E dig_tunnel with TunnelBot; host/replica hash equality; SAD §12.3, §12.4). Note:
+- scripts/screens.sh still copies stale PNGs from target/e2e into docs/screens; clear target/e2e/<name>* first.
+- In this harness, git checkout/restore of a file is denied, but plain rm of untracked files works.
+- The sky renders near-black above the 128-cell world (see walk_and_jump-195.png and the latency_dig hole). That was not touched here.
+Blockers: none.
