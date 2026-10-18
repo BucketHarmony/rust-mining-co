@@ -559,3 +559,36 @@ Decisions:
 - Input is still read per fixed step from ButtonInput (held keys). No input accumulation like the Bevy example's, because nothing uses just_pressed in FixedUpdate yet. F064's pickaxe swing should read held buttons too, or accumulate.
 Next: F063 (E2E walk_and_jump and step_up through injected input); its blockers F061, F062, F057 all pass.
 Blockers: none.
+
+## 2026-10-18 20:10 — F063 E2E: walk_and_jump and step_up through injected input — passed
+Done: New rmc_testkit::player (re-exported: PlayerSnapshot). `TestApp::spawn_player(feet)` spawns the one local `Player` (the game spawns none yet). `TestApp::player()` returns a `PlayerSnapshot { pos (feet), velocity, yaw, pitch, grounded, eye }` (SAD §12.2). `player_render_eye()` returns the `InterpolatedEye`. `player_penetration()` lists every blocking replica cell that shares volume with the box (uses controller::blocks and Aabb::overlaps_cell). New `rmc_testkit::e2e::run_scenario(t, name, body)`: if the body panics, it saves `<name>-fail-<frame>.png` (via try_screenshot, when the app still renders) and re-raises the panic, so a failing scenario leaves a screenshot (SAD §12.4). Both new scenarios use it.
+Tests added: e2e walk_and_jump and step_up (tests/e2e/tests/). Both run on a 2 × 4 × 2-chunk full-height world. The course is built with Edit boxes at y = 100 (floor top at 50.5 m), with everything above cleared. All movement comes from injected keys and mouse.
+- walk_and_jump:
+  - The player falls onto the floor.
+  - Holding W for 60 frames moves 4.30 m along -Z (≥ 2 m, ≤ walk speed, straight).
+  - Space for 3 frames: the player leaves the ground and rises 1.168 m (v²/2g = 1.225 within v·dt). It is 42 frames in the air (expected 2v/g ≈ 42) and lands where it took off. A released Space does not jump again.
+  - A mouse quarter turn right, then W, walks +X.
+  - Every frame the box overlaps no blocking cell, and the camera lies between the last two fixed-step eyes.
+- step_up has two lanes:
+  - Lane A: holding W (never Space) walks onto a one-cell ledge. There is exactly one rise of one cell, with no upward velocity, and the feet never go above the ledge. The camera rises at most a cell per STEP_SMOOTH_S. A two-cell wall standing on the ledge then stops the player exactly at face + SKIN + half width, walking and sprinting.
+  - Lane B: the player backs off with S (falling down the ledge) and strafes across with A. W then walks into a two-cell wall standing on the floor, which also stops them exactly, walking and sprinting, with no climb.
+  - No penetration on any frame.
+- Unit tests:
+  - player::tests::spawned_player_falls_onto_floor_and_walks (logic mode).
+  - e2e::tests::run_scenario_saves_screenshot_on_failure (render, 32³ world): a passing body saves nothing; a failing body re-raises its panic and leaves one readable PNG of the target's size. The test removes its file.
+- Mutation: with step-up disabled in controller::step, step_up failed ("walking onto the ledge within 120 frames", stuck at z = 20.301). The scenarios were written for behaviour that already exists (F060–F062), so there was no red stage before the mutation.
+- Times on WARP: walk_and_jump 61 s, step_up 191 s (about 600 rendered frames).
+- Screenshots: docs/screens/walk_and_jump-195.png shows the course floor and native terrain, with the near-black bedrock edge wall beyond (bedrock is (24, 22, 28), not a render fault). docs/screens/step_up-611.png shows the floor wall at left, and the ledge with its taller wall at right.
+Decisions:
+- The player is spawned by the scenario (`spawn_player`) rather than by the game, because no feature spawns one yet. F064 and later bots reuse it.
+- "A 2-cell wall stops them" is tested twice: on the ledge, where the wall is two cells above the ledge the player stands on, and from the floor.
+- Reviewer verdict: GAPS (minor). Fixed:
+  - No screenshot on failure: added run_scenario.
+  - A constant assert on the config: removed.
+  - No two-cell wall from the floor: added lane B.
+  - The step_up view showed only the wall top: it now pitches down and turns to show both lanes.
+- Not changed: boot_renders, fly_camera and emissive_glow still save a screenshot only on success. They could adopt run_scenario when next touched.
+- scripts/screens.sh copies every PNG in target/e2e, including stale ones from earlier sessions. Only this feature's two current shots were committed.
+- The protect-files hook denies a Write of Rust text containing #[ignore] to a scratch path outside tests/e2e (correct). A failed `cat head tail > file` truncated step_up.rs once; it was restored from the saved head.
+Next: F064 (pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz; SAD §11.5). Its tests are pickaxe::tests::{swing_respects_interval, swing_sends_damage_for_hit_cell, no_swing_beyond_reach}. F062 noted that swing input in FixedUpdate should read held buttons.
+Blockers: none.
