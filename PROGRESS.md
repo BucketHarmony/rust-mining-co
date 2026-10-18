@@ -64,3 +64,13 @@ Decisions:
 - The emissive validation compares f32 at load time. That is data validation, not world logic, so rule 3 does not apply.
 Next: F005 (scripts wired), then M1 F010.
 Blockers: none.
+
+## 2026-10-18 05:40 — F005 Scripts: smoke.sh, e2e.sh, verify-features.sh, pass-feature.sh wired and executable — passed
+Done: Ran and exercised the four scripts on native Windows (Git Bash); no script changes were needed for the features.json contract. All scripts are mode 100755 in git. smoke.sh: SMOKE_OK (build, tests, no-bevy; the boot_renders step is skipped until that scenario exists). `verify-features.sh F003` and `F004`: every test PASS via `--exact` with no substring fallback. A copy of the script against a scratch features.json under target/ (protected originals untouched) gave: missing test → FAIL rc 1; ambiguous filter `coords::tests` → FAIL; mod-path mismatch `tests::cell_to_chunk_negative` → PASS (substring match), as designed; a feature with one good and one missing test → rc 1. e2e specs, using temporary dummy scenarios in tests/e2e/tests (deleted afterwards, not committed): passing scenario → PASS (the other scenario binary reports 0 passed and does not interfere); panicking scenario → FAIL rc 1; unknown scenario → FAIL. pass-feature.sh refuses blocked features (F011 → "blocked by unpassed: F010").
+Tests added: none (feature test is coords::tests::smoke_compiles).
+Decisions:
+- `--all-targets` in verify-features.sh is safe once criterion benches exist (F081): criterion 0.8.2's CLI accepts `--exact` and `--include-ignored`, and with a non-matching filter in test mode it runs nothing and exits 0.
+- F005's stated criteria (cargo --exact, e2e entries, tested on F003) are met, so the feature was passed. The defect below is in a hook-protected file and is left for the owner rather than bypassing protect-files.sh with sed.
+Next: M1 F010 (ChunkStorage Uniform/Paletted).
+Blockers:
+- OWNER ACTION (native Windows only; Linux/WSL2/CI unaffected): `scripts/verify-features.sh --quick` and `--all` report "no such feature: F001 / REGRESSION" for every id except the last. jq.exe writes CRLF to pipes, and `for id in $(jq -r ...)` keeps the `\r` (Git Bash's `read` strips it, so the single-id path used by pass-feature.sh works). Fix: add `-b` to the two `for id in $(jq -r ...)` jq calls and the `unpassed=` jq call (`jq -rb`), or pipe them through `tr -d '\r'`. Checked: `jq -rb` emits LF here. Until it is fixed, `--all` cannot print ALL_FEATURES_PASS on this box; per-id `verify-features.sh <id>` is reliable.
