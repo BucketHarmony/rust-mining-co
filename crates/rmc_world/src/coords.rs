@@ -115,6 +115,58 @@ impl ChunkPos {
     }
 }
 
+/// Axis-aligned box of cells, inclusive on both ends (like `Shape::Box`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CellAabb {
+    pub min: CellPos,
+    pub max: CellPos,
+}
+
+impl CellAabb {
+    /// Phase 1 default world: 256 × 128 × 256 cells from the origin, which is
+    /// 8 × 4 × 8 chunks.
+    pub const PHASE1_DEFAULT: Self = Self {
+        min: CellPos::new(0, 0, 0),
+        max: CellPos::new(255, 127, 255),
+    };
+
+    /// Builds a box. Panics if `min` exceeds `max` on any axis.
+    pub fn new(min: CellPos, max: CellPos) -> Self {
+        assert!(
+            min.0.cmple(max.0).all(),
+            "CellAabb min {min:?} exceeds max {max:?}"
+        );
+        Self { min, max }
+    }
+
+    /// Whether `cell` lies inside the box.
+    pub fn contains(&self, cell: CellPos) -> bool {
+        self.min.0.cmple(cell.0).all() && cell.0.cmple(self.max.0).all()
+    }
+
+    /// Whether any cell of `chunk` lies inside the box.
+    pub fn intersects_chunk(&self, chunk: ChunkPos) -> bool {
+        let lo = chunk.origin_cell().0;
+        let hi = lo + IVec3::splat(CHUNK_MASK);
+        self.min.0.cmple(hi).all() && lo.cmple(self.max.0).all()
+    }
+
+    /// Every chunk that overlaps the box, in (y, z, x) order.
+    pub fn chunks(&self) -> impl Iterator<Item = ChunkPos> + use<> {
+        let lo = self.min.chunk().0;
+        let hi = self.max.chunk().0;
+        (lo.y..=hi.y).flat_map(move |y| {
+            (lo.z..=hi.z).flat_map(move |z| (lo.x..=hi.x).map(move |x| ChunkPos::new(x, y, z)))
+        })
+    }
+}
+
+impl Default for CellAabb {
+    fn default() -> Self {
+        Self::PHASE1_DEFAULT
+    }
+}
+
 impl LocalPos {
     /// Builds a local position. Panics in debug if a component is not in `0..32`.
     pub const fn new(x: u32, y: u32, z: u32) -> Self {
