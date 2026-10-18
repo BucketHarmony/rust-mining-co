@@ -2,3 +2,4 @@
 #![deny(unsafe_code)]
 
 pub mod coords;
+pub mod materials;

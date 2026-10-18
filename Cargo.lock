@@ -5809,6 +5809,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "proptest",
+ "ron",
  "serde",
  "thiserror 2.0.21",
  "tracing",

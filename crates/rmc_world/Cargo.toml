@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 glam.workspace = true
+ron.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
