@@ -5765,6 +5765,7 @@ dependencies = [
  "image",
  "rmc_client",
  "rmc_testkit",
+ "rmc_world",
 ]
 
 [[package]]

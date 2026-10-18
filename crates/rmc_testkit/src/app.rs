@@ -19,8 +19,8 @@ use bevy::transform::TransformPlugin;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use rmc_client::{
-    CameraStart, ClientMaterials, GameCamera, GameRenderPlugin, HostConnection, HostLink,
-    MeshPipelinePlugin, NetPlugin, ReplicaPlugin, ToHost,
+    CameraStart, ClientMaterials, FlyCamPlugin, GameCamera, GameRenderPlugin, HostConnection,
+    HostLink, MeshPipelinePlugin, NetPlugin, ReplicaPlugin, ToHost,
 };
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -117,6 +117,7 @@ impl TestApp {
                 ReplicaPlugin,
                 MeshPipelinePlugin,
                 GameRenderPlugin,
+                FlyCamPlugin,
             ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
