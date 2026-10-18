@@ -1,6 +1,6 @@
 # Rust Mining Co — overnight build report
 
-Generated 2026-10-18T13:10:54Z at commit 77c9436
+Generated 2026-10-18T16:03:19Z at commit d608fdb
 
 ## Feature status
 
@@ -46,7 +46,7 @@ Generated 2026-10-18T13:10:54Z at commit 77c9436
 | F057 | M5 | Fly camera (noclip) with keyboard/mouse; moves through solid cells | yes |
 | F058 | M5 | Emissive via ExtendedMaterial reading color alpha (optional; record if skipped) | yes |
 | F060 | M6 | Kinematic controller: swept AABB collision, gravity, walk | yes |
-| F061 | M6 | Jump and one-cell auto step-up | **no** |
+| F061 | M6 | Jump and one-cell auto step-up | yes |
 | F062 | M6 | FixedUpdate at 60 Hz with render interpolation | **no** |
 | F063 | M6 | E2E: walk_and_jump and step_up through injected input | **no** |
 | F064 | M6 | Pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz | **no** |
@@ -67,7 +67,7 @@ Generated 2026-10-18T13:10:54Z at commit 77c9436
 | F084 | M8 | Playtester report and screenshot gallery | **no** |
 | F085 | M8 | docs/REPORT.md via scripts/report.sh | **no** |
 
-**40 / 60 features passing.**
+**41 / 60 features passing.**
 
 ## How to play (Windows)
 
@@ -449,9 +449,24 @@ Done: New rmc_client::controller (re-exported: Aabb, ControllerConfig, Controlle
 --
 Blockers: none new. The Windows CRLF issue in verify-features.sh --all from F005 still stands, and so does the protect-files hook path issue.
 
+## 2026-10-18 16:05 — F061 Jump and one-cell auto step-up — passed
+Done: rmc_client::controller gains jump and step-up. `MoveInput.jump` (Space held). `ControllerConfig.jump_speed_mps` = 7.0 (apex v²/2g ≈ 1.23 m with gravity 20, so a running jump clears a two-cell ledge). In `step`, a player grounded after the last step and holding jump has its vertical velocity set to the jump speed before gravity, so holding jump in the air does nothing and holding it on the ground jumps again on landing. Step-up: when a horizontal sweep is blocked and the player was grounded both at the start of the step and after this step's vertical move, `step_up` sweeps the box up one cell (refused if anything is above the head), repeats the horizontal move from there, and keeps it only if it gets further than the blocked move. Then it sweeps down up to one cell to land. At most one step-up per step. All three moves go through `sweep`, so the no-penetration invariant holds. Smoothing: new `Player.step_offset_m` (≤ 0, visual only). A step-up subtracts the rise. Every step adds `CELL_SIZE_M / STEP_SMOOTH_S × dt` back, up to 0. `Player::eye()` includes the offset, so the camera rises a cell over 0.1 s (6 steps) while the feet snap. New public const `STEP_SMOOTH_S` = 0.1, re-exported.
+--
+- "When grounded" means grounded both before and after this step's vertical move. A falling player never climbs: on the step it lands it stays below the ledge, and it can climb on the next step (one 1/60 s frame later).
+- Step-up smoothing is a visual eye offset; the collision box snaps up one cell. F062's interpolation should interpolate `eye()` (feet + offset), not only the feet. PlayerState (F064) should send the feet, not the eye.
+- Holding Space bunny-hops (jumps again on each landing). Space is also fly-up in fly mode; the controller is skipped while FlyCam is on, so there is no conflict.
+--
+Blockers: none new. The Windows CRLF issue in verify-features.sh --all from F005 still stands (the user's uncommitted jq wrapper addresses it), and so does the protect-files hook path issue.
+Addendum (F061 session): the stop hook requires a clean tree, so the user's pending script fixes and .mailmap were committed unchanged as 65f9724, not left in the tree. They were committed rather than stashed because stashing would rewrite run-overnight.sh on disk while the driver may be running it. These were already on the approved Phase 2 list. Still to do from that list: confirm `scripts/verify-features.sh --all` prints ALL_FEATURES_PASS when every feature passes.
+
 ## Commits
 
 ```
+d608fdb chore(F061): progress addendum
+65f9724 chore: strip CRLF from jq output in scripts, parse claude -p JSON arrays, add .mailmap
+11cfd42 chore(F061): progress
+fc147f3 feat(F061): Jump and one-cell auto step-up
+5ef07ee chore: overnight report
 77c9436 chore(F060): progress
 053e138 feat(F060): Kinematic controller: swept AABB collision, gravity, walk
 75999fd chore(F058): progress
@@ -507,9 +522,4 @@ ca82070 chore(F030): progress
 bb9dd22 chore(F026): progress
 a7ef689 feat(F026): Voxel raycast (Amanatides-Woo)
 8231cd5 chore(F025): progress
-f1c2169 feat(F025): apply_delta with revision check and insert_chunk
-59a86b4 chore(F024): progress
-ead5159 feat(F024): Determinism: same command sequence yields identical world hash (proptest 1000)
-10f2526 chore(F023): progress
-a7264e4 feat(F023): Damage accumulation, break, yields, saturating, cleared by Set
 ```
