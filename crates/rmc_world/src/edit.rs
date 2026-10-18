@@ -14,6 +14,9 @@ use crate::shape::Shape;
 /// A chunk whose change count exceeds this gets a [`ChunkDelta::Full`].
 pub const FULL_DELTA_THRESHOLD: usize = 4096;
 
+/// A command whose shape has more cells than this is rejected whole (SAD §8.2).
+pub const MAX_EDIT_CELLS: u64 = 32_768;
+
 /// A connected player. The host assigns it in `Welcome`.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
@@ -83,6 +86,10 @@ pub enum RejectReason {
     UnknownMaterial(MaterialId),
     #[error("this edit op is not supported yet")]
     Unsupported,
+    #[error("shape has more than {MAX_EDIT_CELLS} cells")]
+    TooManyCells,
+    #[error("shape lies entirely outside the world bounds")]
+    OutsideBounds,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -554,5 +561,234 @@ mod tests {
         );
         let replayed = replay(&replay(&before, &r.deltas), &r2.deltas);
         assert_eq!(replayed.hash(), w.hash());
+    }
+
+    /// Applies `c` and checks it is rejected with `reason` and that the world
+    /// is untouched: same hash, revisions and `modified` flags.
+    fn assert_rejected(w: &mut World, c: &EditCommand, reason: RejectReason) {
+        let before = w.clone();
+        let r = w.apply(c);
+        assert_eq!(r.command, c.id);
+        assert_eq!(r.status, EditStatus::Rejected(reason), "{c:?}");
+        assert!(r.deltas.is_empty(), "rejected command has deltas");
+        assert!(r.yields.is_empty(), "rejected command has yields");
+        assert_eq!(w.hash(), before.hash(), "rejected command changed cells");
+        let flags = |w: &World| -> Vec<(ChunkPos, u64, bool)> {
+            w.iter_chunks_sorted()
+                .map(|(p, c)| (p, c.revision, c.modified))
+                .collect()
+        };
+        assert_eq!(flags(w), flags(&before));
+    }
+
+    fn sphere(center: (i32, i32, i32), radius: u16) -> Shape {
+        Shape::Sphere {
+            center: CellPos::new(center.0, center.1, center.2),
+            radius,
+        }
+    }
+
+    /// Number of cells a command changed, over all its deltas.
+    fn changed_cells(r: &EditResult) -> usize {
+        r.deltas.iter().map(|d| cells_delta(d).2.len()).sum()
+    }
+
+    #[test]
+    fn oversized_rejected_no_change() {
+        let mut w = two_chunk_world("stone");
+        let table = w.materials().clone();
+        let granite = id(&table, "granite");
+        // Edit something first, so revisions and `modified` are non-trivial.
+        w.apply(&cmd(1, EditOp::Set(granite), boxed((30, 0, 0), (33, 0, 0))));
+
+        // Exactly MAX_EDIT_CELLS is allowed; one more is not. Both rows are
+        // mostly outside the 64-cell-wide world, so only size decides.
+        let row = |len: i32| boxed((0, 1, 0), (len - 1, 1, 0));
+        assert_eq!(row(32_769).cell_count(), MAX_EDIT_CELLS + 1);
+        for op in [EditOp::Set(granite), EditOp::Remove, EditOp::Paint(granite)] {
+            assert_rejected(&mut w, &cmd(2, op, row(32_769)), RejectReason::TooManyCells);
+        }
+        assert_eq!(row(32_768).cell_count(), MAX_EDIT_CELLS);
+        let r = w.apply(&cmd(3, EditOp::Set(granite), row(32_768)));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert_eq!(changed_cells(&r), 64, "only the in-bounds cells change");
+
+        // Spheres: r = 19 has 28,671 cells, r = 20 has 33,401 (OEIS A000605).
+        assert_eq!(sphere((31, 15, 15), 19).cell_count(), 28_671);
+        assert_eq!(sphere((31, 15, 15), 20).cell_count(), 33_401);
+        let r = w.apply(&cmd(4, EditOp::Remove, sphere((31, 15, 15), 19)));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert!(!r.deltas.is_empty());
+        assert_rejected(
+            &mut w,
+            &cmd(5, EditOp::Set(granite), sphere((31, 15, 15), 20)),
+            RejectReason::TooManyCells,
+        );
+
+        // An oversized box entirely inside the bounds is rejected whole, not
+        // applied up to the limit: the world is 65,536 cells.
+        assert_rejected(
+            &mut w,
+            &cmd(6, EditOp::Set(granite), boxed((0, 0, 0), (63, 31, 31))),
+            RejectReason::TooManyCells,
+        );
+
+        // Hostile sizes are rejected quickly, without iterating or summing
+        // every row: the largest radius, and a box spanning all of i32.
+        let start = std::time::Instant::now();
+        assert_rejected(
+            &mut w,
+            &cmd(7, EditOp::Remove, sphere((31, 15, 15), u16::MAX)),
+            RejectReason::TooManyCells,
+        );
+        assert_rejected(
+            &mut w,
+            &cmd(
+                8,
+                EditOp::Remove,
+                boxed(
+                    (i32::MIN, i32::MIN, i32::MIN),
+                    (i32::MAX, i32::MAX, i32::MAX),
+                ),
+            ),
+            RejectReason::TooManyCells,
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "hostile shapes took {:?}",
+            start.elapsed()
+        );
+
+        // Size is checked before bounds: an oversized shape entirely outside
+        // reports TooManyCells.
+        assert_rejected(
+            &mut w,
+            &cmd(9, EditOp::Remove, boxed((100, 0, 0), (100, 0, 40_000))),
+            RejectReason::TooManyCells,
+        );
+    }
+
+    #[test]
+    fn entirely_outside_rejected() {
+        // Cells 0..=63 × 0..=31 × 0..=31.
+        let mut w = two_chunk_world("stone");
+        let table = w.materials().clone();
+        let granite = id(&table, "granite");
+        let ops = [EditOp::Set(granite), EditOp::Remove, EditOp::Paint(granite)];
+
+        let outside = [
+            // Just past each face.
+            Shape::Cell(CellPos::new(-1, 0, 0)),
+            Shape::Cell(CellPos::new(0, -1, 0)),
+            Shape::Cell(CellPos::new(0, 0, -1)),
+            Shape::Cell(CellPos::new(64, 31, 31)),
+            Shape::Cell(CellPos::new(63, 32, 31)),
+            Shape::Cell(CellPos::new(63, 31, 32)),
+            // Boxes beside the world, overlapping it on two axes.
+            boxed((64, 0, 0), (70, 31, 31)),
+            boxed((-10, -5, 0), (63, -1, 31)),
+            boxed((0, 0, 32), (63, 31, 40)),
+            // Far away, and at the i32 edges.
+            boxed((1000, 1000, 1000), (1003, 1003, 1003)),
+            Shape::Cell(CellPos::new(i32::MIN, i32::MIN, i32::MIN)),
+            sphere((i32::MAX, i32::MAX, i32::MAX), 3),
+            // A sphere whose bounding box overlaps the corner (0, 0, 0) but
+            // none of whose cells do: the nearest, (0, 0, 0), is at distance²
+            // 27 > 16.
+            sphere((-3, -3, -3), 4),
+            // An empty box (min > max) has no cells, so none inside.
+            boxed((5, 5, 5), (4, 5, 5)),
+        ];
+        assert_eq!(
+            sphere((-3, -3, -3), 4).aabb().unwrap().max,
+            CellPos::new(1, 1, 1)
+        );
+        for shape in outside {
+            for op in ops {
+                assert_rejected(&mut w, &cmd(1, op, shape), RejectReason::OutsideBounds);
+            }
+        }
+
+        // One cell inside is enough: the shape is not entirely outside.
+        for shape in [
+            Shape::Cell(CellPos::new(0, 0, 0)),
+            Shape::Cell(CellPos::new(63, 31, 31)),
+            sphere((-3, -3, -3), 6),
+            boxed((63, 31, 31), (70, 40, 40)),
+        ] {
+            let r = w.apply(&cmd(2, EditOp::Set(granite), shape));
+            assert_eq!(r.status, EditStatus::Applied, "{shape:?}");
+        }
+        assert_eq!(w.get_cell(CellPos::new(0, 0, 0)), Some(granite));
+        assert_eq!(w.get_cell(CellPos::new(1, 0, 0)), Some(granite));
+        assert_eq!(w.get_cell(CellPos::new(63, 31, 31)), Some(granite));
+
+        // A shape inside the bounds over a chunk that is not resident yet is
+        // not "outside": it applies and changes nothing there.
+        let mut sparse = World::new(table.clone(), CellAabb::PHASE1_DEFAULT);
+        sparse
+            .insert_chunk(ChunkPos::new(0, 0, 0), Chunk::uniform(granite))
+            .unwrap();
+        let r = sparse.apply(&cmd(3, EditOp::Remove, boxed((100, 0, 0), (101, 1, 1))));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert!(r.deltas.is_empty());
+    }
+
+    #[test]
+    fn partially_outside_applies_inside() {
+        // Cells 0..=63 × 0..=31 × 0..=31.
+        let mut w = two_chunk_world("stone");
+        let table = w.materials().clone();
+        let stone = id(&table, "stone");
+        let granite = id(&table, "granite");
+        let bounds = w.bounds();
+        let all_cells: Vec<CellPos> = boxed((0, 0, 0), (63, 31, 31)).cells().collect();
+
+        let shapes = [
+            // Over the min corner.
+            boxed((-4, -4, -4), (3, 3, 3)),
+            // Over the max corner, past every max face.
+            boxed((60, 28, 28), (70, 40, 40)),
+            // A sphere centred outside the world, poking in at the corner.
+            sphere((-3, -3, -3), 6),
+            // A sphere centred inside on the chunk border, cut by the y = 0
+            // and z = 31 faces.
+            sphere((31, 2, 30), 5),
+            // A row through the whole world and beyond on both sides.
+            boxed((-100, 7, 7), (200, 7, 7)),
+        ];
+        for (seq, shape) in (1..).zip(shapes) {
+            let mut w2 = w.clone();
+            let r = w2.apply(&cmd(seq, EditOp::Set(granite), shape));
+            assert_eq!(r.status, EditStatus::Applied, "{shape:?}");
+            assert!(r.yields.is_empty());
+
+            let inside: Vec<CellPos> = shape.cells().filter(|&c| bounds.contains(c)).collect();
+            assert!(!inside.is_empty());
+            assert!(inside.len() < shape.cell_count() as usize, "{shape:?}");
+            assert_eq!(changed_cells(&r), inside.len(), "{shape:?}");
+            for &c in &inside {
+                assert_eq!(w2.get_cell(c), Some(granite), "{c:?}");
+            }
+            // Every other cell of the world kept its material.
+            let granite_cells = all_cells
+                .iter()
+                .filter(|&&c| w2.get_cell(c) == Some(granite))
+                .count();
+            assert_eq!(granite_cells, inside.len(), "{shape:?}");
+            assert_eq!(replay(&w, &r.deltas).hash(), w2.hash());
+        }
+
+        // Applied for real, one after another, the edits accumulate. (The
+        // corner sphere then changes nothing: the first box already cleared
+        // its in-bounds cells.)
+        for (seq, shape) in (10..).zip(shapes) {
+            let r = w.apply(&cmd(seq, EditOp::Remove, shape));
+            assert_eq!(r.status, EditStatus::Applied, "{shape:?}");
+        }
+        assert_eq!(w.get_cell(CellPos::new(0, 0, 0)), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(CellPos::new(63, 31, 31)), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(CellPos::new(0, 7, 7)), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(CellPos::new(40, 20, 20)), Some(stone));
     }
 }

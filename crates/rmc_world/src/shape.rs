@@ -35,8 +35,8 @@ impl Shape {
     /// Number of cells in the shape, computed without iterating it.
     /// Saturates at `u64::MAX` (only reachable by enormous boxes).
     ///
-    /// A sphere costs O(radius²) integer square roots, so callers that bound
-    /// the count (edit validation) should reject large radii first.
+    /// A sphere costs O(radius²) integer square roots; to bound the count of
+    /// an untrusted shape use [`Shape::cell_count_exceeds`].
     pub fn cell_count(&self) -> u64 {
         match *self {
             Shape::Cell(_) => 1,
@@ -44,18 +44,23 @@ impl Shape {
                 let span = i64::from(max.0[axis]) - i64::from(min.0[axis]) + 1;
                 n.saturating_mul(span.max(0) as u64)
             }),
+            Shape::Sphere { radius, .. } => sphere_row_lengths(radius).sum(),
+        }
+    }
+
+    /// Whether the shape has more than `limit` cells. Unlike
+    /// [`Shape::cell_count`], a sphere stops summing rows once it is past the
+    /// limit; every row has at least one cell, so that costs O(limit) at any
+    /// radius. Edit validation uses this on untrusted shapes.
+    pub fn cell_count_exceeds(&self, limit: u64) -> bool {
+        match *self {
+            Shape::Cell(_) | Shape::Box { .. } => self.cell_count() > limit,
             Shape::Sphere { radius, .. } => {
-                let r2 = i64::from(radius) * i64::from(radius);
-                let r = i64::from(radius);
-                (-r..=r)
-                    .map(|dy| {
-                        let rem_y = r2 - dy * dy;
-                        let sz = isqrt(rem_y);
-                        (-sz..=sz)
-                            .map(|dz| 2 * isqrt(rem_y - dz * dz) as u64 + 1)
-                            .sum::<u64>()
-                    })
-                    .sum()
+                let mut n = 0u64;
+                sphere_row_lengths(radius).any(|len| {
+                    n += len;
+                    n > limit
+                })
             }
         }
     }
@@ -77,6 +82,18 @@ impl Shape {
             }
         }
     }
+}
+
+/// The length of each x-run of a sphere of `radius`, one per (y, z) row in
+/// (y, z) order. Every length is at least 1.
+fn sphere_row_lengths(radius: u16) -> impl Iterator<Item = u64> {
+    let r = i64::from(radius);
+    let r2 = r * r;
+    (-r..=r).flat_map(move |dy| {
+        let rem_y = r2 - dy * dy;
+        let sz = isqrt(rem_y);
+        (-sz..=sz).map(move |dz| 2 * isqrt(rem_y - dz * dz) as u64 + 1)
+    })
 }
 
 fn isqrt(v: i64) -> i64 {

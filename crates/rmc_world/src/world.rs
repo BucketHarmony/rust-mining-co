@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use crate::chunk::Chunk;
 use crate::coords::{CellAabb, CellPos, ChunkPos};
-use crate::edit::{ChunkDelta, EditCommand, EditResult, EditStatus, FULL_DELTA_THRESHOLD};
+use crate::edit::{
+    ChunkDelta, EditCommand, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
+    RejectReason,
+};
 use crate::materials::{MaterialId, MaterialTable};
 
 /// Errors from world mutation.
@@ -118,16 +121,35 @@ impl World {
         xxhash_rust::xxh3::xxh3_64(&buf)
     }
 
+    /// Whole-command checks (SAD §8.2). A command that fails any of them is
+    /// rejected by [`World::apply`] with nothing applied. In order: the op
+    /// must name a known material (and be supported), the shape must have at
+    /// most [`MAX_EDIT_CELLS`] cells, and at least one of its cells must lie
+    /// inside the bounds. Resident chunks do not matter here.
+    pub fn validate(&self, cmd: &EditCommand) -> Result<(), RejectReason> {
+        cmd.op.validate(&self.materials)?;
+        if cmd.shape.cell_count_exceeds(MAX_EDIT_CELLS) {
+            return Err(RejectReason::TooManyCells);
+        }
+        // At most MAX_EDIT_CELLS cells to scan, and it stops at the first hit.
+        if !cmd.shape.cells().any(|c| self.bounds.contains(c)) {
+            return Err(RejectReason::OutsideBounds);
+        }
+        Ok(())
+    }
+
     /// Applies an edit command (SAD §8.1–8.3) and returns the deltas a
     /// replica needs to reproduce it.
     ///
-    /// Cells are visited in shape order. A cell is skipped when it is outside
-    /// the bounds, its chunk is not resident, the op does not apply to its
-    /// material, or it already holds the target. Each changed chunk gets one
+    /// The command is first checked by [`World::validate`]; if that fails it
+    /// is rejected whole and nothing changes. Cells are then visited in shape
+    /// order. A cell is skipped when it is outside the bounds, its chunk is
+    /// not resident, the op does not apply to its material, or it already
+    /// holds the target. Each changed chunk gets one
     /// revision bump and is marked modified; its delta is `Full` (with the
     /// chunk compacted) when more than [`FULL_DELTA_THRESHOLD`] cells changed.
     pub fn apply(&mut self, cmd: &EditCommand) -> EditResult {
-        if let Err(reason) = cmd.op.validate(&self.materials) {
+        if let Err(reason) = self.validate(cmd) {
             tracing::debug!(command = ?cmd.id, %reason, "edit rejected");
             return EditResult::rejected(cmd.id, reason);
         }
