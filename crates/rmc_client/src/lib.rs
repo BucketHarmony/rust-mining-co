@@ -12,7 +12,7 @@ pub mod replica;
 
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
-    PLAYER_HEIGHT_M, PLAYER_WIDTH_M, Player,
+    PLAYER_HEIGHT_M, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use material::{

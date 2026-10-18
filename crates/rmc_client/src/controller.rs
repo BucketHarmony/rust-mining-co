@@ -21,8 +21,13 @@
 //! fixed step), and the [`GameCamera`] then follows the player's eye. While
 //! the fly camera is on, the controller neither moves, turns nor follows.
 //!
+//! A grounded player that walks into a one-cell rise climbs it when the
+//! space above is clear: the feet snap up one cell and the eye follows over
+//! [`STEP_SMOOTH_S`]. Two cells need a jump.
+//!
 //! - W / S walk forward and back along the yaw, D / A strafe, opposite keys
-//!   cancel and diagonals are as fast as one axis. Shift sprints.
+//!   cancel and diagonals are as fast as one axis. Shift sprints. Space
+//!   jumps when grounded (held, it jumps again on landing).
 //! - The mouse turns: yaw right for motion right, pitch clamped to
 //!   ±[`MAX_PITCH_DEG`].
 
@@ -46,6 +51,9 @@ pub const EYE_HEIGHT_M: f32 = 1.55;
 /// rounds into the cell it stopped at.
 pub const SKIN_M: f32 = 1e-3;
 
+/// Time over which the view catches up after a step-up, in seconds.
+pub const STEP_SMOOTH_S: f32 = 0.1;
+
 /// Rate of the fixed step the controller runs in (Bevy's default is 64 Hz).
 pub const FIXED_HZ: f64 = 60.0;
 
@@ -60,6 +68,8 @@ pub struct ControllerConfig {
     pub gravity_mps2: f32,
     /// Fastest fall, m/s.
     pub max_fall_mps: f32,
+    /// Upward speed a jump starts with, m/s.
+    pub jump_speed_mps: f32,
     /// Radians of turn per unit of mouse motion.
     pub sensitivity_rad: f32,
 }
@@ -71,6 +81,7 @@ impl Default for ControllerConfig {
             sprint_speed_mps: 6.5,
             gravity_mps2: 20.0,
             max_fall_mps: 40.0,
+            jump_speed_mps: 7.0,
             sensitivity_rad: 0.002,
         }
     }
@@ -89,6 +100,8 @@ pub struct Player {
     pub pitch: f32,
     /// Standing on a blocking cell after the last step.
     pub grounded: bool,
+    /// Visual eye offset in meters (zero or negative) left by a step-up.
+    pub step_offset_m: f32,
 }
 
 impl Player {
@@ -100,6 +113,7 @@ impl Player {
             yaw: 0.0,
             pitch: 0.0,
             grounded: false,
+            step_offset_m: 0.0,
         }
     }
 
@@ -108,9 +122,9 @@ impl Player {
         Aabb::of_feet(self.feet)
     }
 
-    /// The eye position.
+    /// The eye position, lowered by any step-up still being smoothed.
     pub fn eye(&self) -> Vec3 {
-        self.feet + Vec3::Y * EYE_HEIGHT_M
+        self.feet + Vec3::Y * (EYE_HEIGHT_M + self.step_offset_m)
     }
 
     /// The view rotation: yaw about world Y, then pitch, no roll.
@@ -153,6 +167,7 @@ pub struct MoveInput {
     /// +1 right, -1 left.
     pub right: f32,
     pub sprint: bool,
+    pub jump: bool,
 }
 
 impl MoveInput {
@@ -165,6 +180,7 @@ impl MoveInput {
             forward: axis(KeyCode::KeyW, KeyCode::KeyS),
             right: axis(KeyCode::KeyD, KeyCode::KeyA),
             sprint: keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+            jump: keys.pressed(KeyCode::Space),
         }
     }
 }
@@ -180,13 +196,18 @@ pub fn blocks(world: &World, cell: CellPos) -> bool {
     world.get_cell(cell).is_none() || world.is_solid(cell)
 }
 
-/// One fixed step of `dt` seconds: gravity, walk input, then the swept move.
+/// One fixed step of `dt` seconds: jump, gravity, walk input, then the swept
+/// move.
 ///
 /// The horizontal velocity is the walk input along the yaw at walk or
-/// sprint speed (no acceleration); gravity adds to the vertical velocity up
-/// to [`ControllerConfig::max_fall_mps`]. The box then moves along Y, X and
-/// Z in turn. An axis that hits a blocking cell stops [`SKIN_M`] short of it
-/// and loses its velocity; a blocked fall leaves the player grounded.
+/// sprint speed (no acceleration). A grounded player holding jump starts
+/// rising at [`ControllerConfig::jump_speed_mps`]; gravity adds to the
+/// vertical velocity up to [`ControllerConfig::max_fall_mps`]. The box then
+/// moves along Y, X and Z in turn. An axis that hits a blocking cell stops
+/// [`SKIN_M`] short of it and loses its velocity; a blocked fall leaves the
+/// player grounded. A player grounded before and after the vertical move
+/// that is blocked horizontally climbs one cell if that gets it further (see
+/// [`step_up`]), at most once per step.
 pub fn step(
     world: &World,
     player: &mut Player,
@@ -205,10 +226,18 @@ pub fn step(
     };
     player.velocity.x = wish.x * speed;
     player.velocity.z = wish.z * speed;
+    if input.jump && player.grounded {
+        player.velocity.y = config.jump_speed_mps;
+    }
     player.velocity.y = (player.velocity.y - config.gravity_mps2 * dt).max(-config.max_fall_mps);
+    player.step_offset_m = (player.step_offset_m + CELL_SIZE_M / STEP_SMOOTH_S * dt).min(0.0);
 
     let delta = player.velocity * dt;
+    // Step-up needs the player standing before and after the vertical move:
+    // never from the air, nor on the step it lands.
+    let was_grounded = player.grounded;
     player.grounded = false;
+    let mut stepped = false;
     for axis in [1, 0, 2] {
         let d = delta[axis];
         if d == 0.0 {
@@ -216,6 +245,11 @@ pub fn step(
         }
         match sweep(world, player.aabb(), axis, d) {
             Some(stop) => {
+                let can_step = axis != 1 && was_grounded && player.grounded && !stepped;
+                if can_step && step_up(world, player, axis, d, stop) {
+                    stepped = true;
+                    continue;
+                }
                 player.feet[axis] = stop;
                 player.velocity[axis] = 0.0;
                 if axis == 1 && d < 0.0 {
@@ -225,6 +259,35 @@ pub fn step(
             None => player.feet[axis] += d,
         }
     }
+}
+
+/// Tries to climb onto what stopped a grounded horizontal move of `d`
+/// meters along `axis` at `stop`: lifts the box one cell (if the space above
+/// is clear), repeats the move there, then lowers it back onto whatever is
+/// below, at most one cell. Keeps the result and returns `true` only if the
+/// lifted move gets further than `stop`. The feet snap up; the eye follows
+/// over [`STEP_SMOOTH_S`] through [`Player::step_offset_m`].
+fn step_up(world: &World, player: &mut Player, axis: usize, d: f32, stop: f32) -> bool {
+    let s = CELL_SIZE_M;
+    if sweep(world, player.aabb(), 1, s).is_some() {
+        return false;
+    }
+    let mut lifted = player.feet + Vec3::Y * s;
+    let reach = sweep(world, Aabb::of_feet(lifted), axis, d);
+    let to = reach.unwrap_or(lifted[axis] + d);
+    if (to - stop) * d.signum() <= 0.0 {
+        return false;
+    }
+    lifted[axis] = to;
+    let landed = sweep(world, Aabb::of_feet(lifted), 1, -s);
+    lifted.y = landed.unwrap_or(lifted.y - s);
+    player.step_offset_m -= lifted.y - player.feet.y;
+    player.feet = lifted;
+    if reach.is_some() {
+        player.velocity[axis] = 0.0;
+    }
+    player.grounded = landed.is_some();
+    true
 }
 
 /// Moves `aabb` by `d` meters along `axis` (0 = X, 1 = Y, 2 = Z) through the
@@ -462,6 +525,7 @@ mod tests {
         forward: 1.0,
         right: 0.0,
         sprint: false,
+        jump: false,
     };
 
     #[test]
@@ -678,6 +742,290 @@ mod tests {
         );
     }
 
+    const JUMP: MoveInput = MoveInput {
+        forward: 0.0,
+        right: 0.0,
+        sprint: false,
+        jump: true,
+    };
+
+    #[test]
+    fn jump_leaves_ground_and_lands() {
+        // Space is the jump key.
+        let mut keys = ButtonInput::<KeyCode>::default();
+        assert!(!MoveInput::from_keys(&keys).jump);
+        keys.press(KeyCode::Space);
+        assert!(MoveInput::from_keys(&keys).jump);
+
+        let world = floor_world();
+        let config = ControllerConfig::default();
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 16.0));
+        run(&world, &mut player, MoveInput::default(), 5);
+        assert!(player.grounded);
+        let rest = player.feet;
+
+        // One step with jump held leaves the ground going up.
+        run(&world, &mut player, JUMP, 1);
+        assert!(!player.grounded, "airborne after the jump");
+        assert!(player.feet.y > rest.y, "rises: {}", player.feet.y);
+        assert!(player.velocity.y > 0.0);
+
+        // Holding jump in the air adds nothing: gravity alone slows the rise.
+        let mut apex = player.feet.y;
+        for i in 0..10 {
+            let v = player.velocity.y;
+            run(&world, &mut player, JUMP, 1);
+            assert!(!player.grounded, "air step {i}");
+            assert!(
+                (player.velocity.y - (v - config.gravity_mps2 * DT)).abs() < 1e-4,
+                "air step {i}: no second jump, {} after {v}",
+                player.velocity.y
+            );
+            apex = apex.max(player.feet.y);
+        }
+
+        // Released, it rises to v² / 2g and lands where it started.
+        let mut airborne = 11;
+        while !player.grounded {
+            run(&world, &mut player, MoveInput::default(), 1);
+            apex = apex.max(player.feet.y);
+            airborne += 1;
+            assert!(airborne < 200, "never landed: {:?}", player.feet);
+        }
+        let height = apex - rest.y;
+        let expected = config.jump_speed_mps.powi(2) / (2.0 * config.gravity_mps2);
+        assert!(
+            (height - expected).abs() < config.jump_speed_mps * DT,
+            "jump height {height} m, expected about {expected}"
+        );
+        assert!(height > 1.0, "a jump clears two cells: {height}");
+        let flight = 2.0 * config.jump_speed_mps / config.gravity_mps2 / DT;
+        assert!(
+            (airborne as f32 - flight).abs() <= 2.0,
+            "{airborne} steps in the air, expected about {flight}"
+        );
+        assert!(
+            (player.feet.y - rest.y).abs() <= 2.0 * SKIN_M,
+            "lands on the floor: {}",
+            player.feet.y
+        );
+        assert_eq!(player.velocity.y, 0.0);
+        assert_eq!((player.feet.x, player.feet.z), (rest.x, rest.z));
+
+        // Not holding jump, it stays down.
+        run(&world, &mut player, MoveInput::default(), 30);
+        assert!(player.grounded && (player.feet.y - rest.y).abs() <= 2.0 * SKIN_M);
+
+        // A two-cell (1 m) ledge is out of step-up's reach but a running
+        // jump gets on top of it.
+        let mut world = floor_world();
+        let id = stone(&world);
+        fill(&mut world, (20, 4, 0), (63, 5, 63), id); // top 3.0 m, face x = 10 m
+        let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2; // +X
+        run(&world, &mut player, MoveInput::default(), 5);
+        run(
+            &world,
+            &mut player,
+            MoveInput {
+                jump: true,
+                ..FORWARD
+            },
+            1,
+        );
+        run(&world, &mut player, FORWARD, 120);
+        assert!(player.grounded);
+        assert!(
+            (player.feet.y - 3.0).abs() <= 2.0 * SKIN_M && player.feet.x > 10.3,
+            "on the ledge: {:?}",
+            player.feet
+        );
+    }
+
+    /// Walks `player` with `input` for `steps` steps, checking that it never
+    /// penetrates, never moves upward on its own (no jump), and that its eye
+    /// never rises faster than a cell per [`STEP_SMOOTH_S`]. Returns the steps
+    /// at which the feet rose.
+    fn walk_up(world: &World, player: &mut Player, input: MoveInput, steps: u32) -> Vec<u32> {
+        let max_eye_rise = CELL_SIZE_M / STEP_SMOOTH_S * DT + 1e-4;
+        let mut rose = Vec::new();
+        for i in 0..steps {
+            let (feet, eye) = (player.feet, player.eye());
+            run(world, player, input, 1);
+            assert!(
+                player.velocity.y <= 0.0,
+                "step {i}: no upward velocity without jumping"
+            );
+            if player.feet.y > feet.y + 1e-4 {
+                rose.push(i);
+                assert!(player.grounded, "step {i}: lands on the step");
+                assert!(
+                    (player.feet.y - feet.y - CELL_SIZE_M).abs() <= 2.0 * SKIN_M,
+                    "step {i}: rises one cell, {} -> {}",
+                    feet.y,
+                    player.feet.y
+                );
+            }
+            let eye_rise = player.eye().y - eye.y;
+            assert!(
+                eye_rise <= max_eye_rise,
+                "step {i}: the eye jumps {eye_rise} m"
+            );
+        }
+        rose
+    }
+
+    #[test]
+    fn steps_up_one_cell() {
+        let mut world = floor_world();
+        let id = stone(&world);
+        // A one-cell ledge from x = 10 m on: top 2.5 m.
+        fill(&mut world, (20, 4, 0), (63, 4, 63), id);
+        let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2; // +X
+        run(&world, &mut player, MoveInput::default(), 5);
+        assert!(player.grounded);
+
+        let rose = walk_up(&world, &mut player, FORWARD, 60);
+        assert_eq!(rose.len(), 1, "one step-up: {rose:?}");
+        assert!(player.grounded);
+        assert!(
+            (player.feet.y - 2.5).abs() <= 2.0 * SKIN_M,
+            "on the ledge: {}",
+            player.feet.y
+        );
+        let config = ControllerConfig::default();
+        assert!(
+            player.feet.x > 8.0 + 0.9 * config.walk_speed_mps,
+            "the step barely slows the walk: x {}",
+            player.feet.x
+        );
+        assert!((player.feet.z - 16.0).abs() < 1e-4, "no drift");
+
+        // The view catches up with the body within STEP_SMOOTH_S.
+        let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2;
+        run(&world, &mut player, MoveInput::default(), 5);
+        let mut i = 0;
+        while player.feet.y < 2.25 {
+            run(&world, &mut player, FORWARD, 1);
+            i += 1;
+            assert!(i < 60, "never stepped up");
+        }
+        assert!(
+            player.eye().y < player.feet.y + EYE_HEIGHT_M - 0.4,
+            "the eye starts low: {} vs feet {}",
+            player.eye().y,
+            player.feet.y
+        );
+        let smooth_steps = (STEP_SMOOTH_S / DT).round() as u32;
+        run(&world, &mut player, FORWARD, smooth_steps - 1);
+        assert!(
+            player.eye().y < player.feet.y + EYE_HEIGHT_M,
+            "still smoothing"
+        );
+        run(&world, &mut player, FORWARD, 2);
+        assert_eq!(player.step_offset_m, 0.0, "smoothed in about 0.1 s");
+        assert_eq!(player.eye(), player.feet + Vec3::Y * EYE_HEIGHT_M);
+
+        // A staircase of one-cell steps, each 1 m deep, along -Z.
+        let mut world = floor_world();
+        for k in 0..4 {
+            let z_max = 23 - 2 * k; // faces at z = 12, 11, 10, 9 m
+            fill(&mut world, (0, 4 + k, 0), (63, 4 + k, z_max), id);
+        }
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 14.0));
+        run(&world, &mut player, MoveInput::default(), 5);
+        let rose = walk_up(&world, &mut player, FORWARD, 120);
+        assert_eq!(rose.len(), 4, "four step-ups: {rose:?}");
+        assert!(
+            (player.feet.y - 4.0).abs() <= 2.0 * SKIN_M,
+            "at the top: {}",
+            player.feet.y
+        );
+
+        // Sprinting diagonally into a step corner climbs it once.
+        let mut world = floor_world();
+        fill(&mut world, (0, 4, 0), (23, 4, 23), id); // x, z < 12 m
+        let mut player = Player::at(Vec3::new(14.0, 2.0, 14.0));
+        player.yaw = std::f32::consts::FRAC_PI_4; // -X and -Z
+        run(&world, &mut player, MoveInput::default(), 5);
+        let rose = walk_up(
+            &world,
+            &mut player,
+            MoveInput {
+                sprint: true,
+                ..FORWARD
+            },
+            60,
+        );
+        assert_eq!(rose.len(), 1, "{rose:?}");
+        assert!((player.feet.y - 2.5).abs() <= 2.0 * SKIN_M);
+        assert!(
+            player.feet.x < 11.0 && player.feet.z < 11.0,
+            "{:?}",
+            player.feet
+        );
+    }
+
+    #[test]
+    fn two_cell_wall_blocks() {
+        let id = stone(&floor_world());
+        // A two-cell wall (top 3.0 m), a one-cell ledge under a ceiling that
+        // leaves no headroom over the player, and one with a ceiling only
+        // over the ledge. None of them can be climbed by walking.
+        let ledge: CellBox = ((20, 4, 0), (63, 4, 63));
+        let cases: [(&str, Vec<CellBox>); 3] = [
+            ("two-cell wall", vec![((20, 4, 0), (63, 5, 63))]),
+            // 4.0 m over x < 10 m only: the head is at 3.7.
+            ("no headroom", vec![ledge, ((0, 8, 0), (19, 8, 63))]),
+            (
+                "ceiling over the ledge",
+                vec![ledge, ((20, 8, 0), (63, 8, 63))],
+            ),
+        ];
+        for (name, boxes) in cases {
+            let mut world = floor_world();
+            for (min, max) in boxes {
+                fill(&mut world, min, max, id);
+            }
+            let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+            player.yaw = -std::f32::consts::FRAC_PI_2; // +X
+            run(&world, &mut player, MoveInput::default(), 5);
+            for sprint in [false, true] {
+                let input = MoveInput { sprint, ..FORWARD };
+                let rose = walk_up(&world, &mut player, input, 90);
+                assert!(rose.is_empty(), "{name}: climbed at steps {rose:?}");
+                let face = player.aabb().max.x;
+                assert!(
+                    (10.0 - 2.0 * SKIN_M..=10.0).contains(&face),
+                    "{name}: stopped at the face, {face}"
+                );
+                assert!(player.grounded, "{name}");
+                assert!((player.feet.y - 2.0).abs() <= 2.0 * SKIN_M, "{name}");
+                assert_eq!(player.step_offset_m, 0.0, "{name}");
+            }
+        }
+
+        // In the air there is no step-up: falling beside a one-cell ledge
+        // while walking into it lands below the ledge, not on it.
+        let mut world = floor_world();
+        fill(&mut world, (20, 4, 0), (63, 4, 63), id);
+        let mut player = Player::at(Vec3::new(9.69, 2.4, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2;
+        let mut i = 0;
+        while !player.grounded {
+            run(&world, &mut player, FORWARD, 1);
+            i += 1;
+            assert!(i < 60, "never landed");
+        }
+        assert!(
+            (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M,
+            "lands below the ledge: {:?}",
+            player.feet
+        );
+    }
+
     #[test]
     fn walls_at_the_world_edge_and_unloaded_chunks_block() {
         // A floor-only world: the bounds stop the player at x = 0.
@@ -718,7 +1066,7 @@ mod tests {
 
     /// Inclusive cell box (min, max).
     type CellBox = ((i32, i32, i32), (i32, i32, i32));
-    /// Yaw, forward, right, sprint, launch upward, frames held.
+    /// Yaw, forward, right, sprint, launch upward and hold jump, frames held.
     type ScriptLeg = (f32, i8, i8, bool, bool, u8);
 
     /// Random walls and boxes in a one-chunk world, a free start, and a
@@ -770,7 +1118,7 @@ mod tests {
                     // A kick in any direction, faster than walking.
                     player.velocity.y = 12.0;
                 }
-                let input = MoveInput { forward: forward as f32, right: right as f32, sprint };
+                let input = MoveInput { forward: forward as f32, right: right as f32, sprint, jump: launch };
                 for _ in 0..frames {
                     step(&world, &mut player, input, &config, DT);
                     prop_assert!(player.feet.is_finite());
