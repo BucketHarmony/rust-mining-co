@@ -216,30 +216,23 @@ mod tests {
         }
     }
 
-    /// Replays deltas onto a copy of the chunks they name, cell by cell. A
-    /// stand-in for `World::apply_delta` (F025) that checks the deltas carry
-    /// the whole edit.
+    /// Replays deltas onto a copy of `before` through `World::apply_delta`,
+    /// checking that the deltas carry the whole edit.
     fn replay(before: &World, deltas: &[ChunkDelta]) -> World {
         let mut w = before.clone();
         replay_in_place(&mut w, deltas);
         w
     }
 
+    /// Like a replica: every delta names a resident chunk at the next
+    /// revision (`Full` included, though `apply_delta` does not require it).
     fn replay_in_place(w: &mut World, deltas: &[ChunkDelta]) {
         for d in deltas {
             let pos = d.pos();
-            let mut chunk = w.chunk(pos).expect("delta for a resident chunk").clone();
+            let chunk = w.chunk(pos).expect("delta for a resident chunk");
             assert_eq!(d.revision(), chunk.revision + 1, "revision for {pos:?}");
-            match d {
-                ChunkDelta::Cells { changes, .. } => {
-                    for &(i, m) in changes {
-                        chunk.storage.set(LocalPos::from_index(i), m);
-                    }
-                }
-                ChunkDelta::Full { storage, .. } => chunk.storage = storage.clone(),
-            }
-            chunk.revision = d.revision();
-            w.insert_chunk(pos, chunk).unwrap();
+            w.apply_delta(d)
+                .unwrap_or_else(|e| panic!("delta for {pos:?}: {e}"));
         }
     }
 

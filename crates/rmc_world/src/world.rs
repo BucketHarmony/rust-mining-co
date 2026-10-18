@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use crate::chunk::Chunk;
-use crate::coords::{CellAabb, CellPos, ChunkPos};
+use crate::chunk::{Chunk, ChunkStorage};
+use crate::coords::{CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use crate::damage::DamageMap;
 use crate::edit::{
     ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
@@ -18,6 +18,23 @@ use crate::materials::{MaterialId, MaterialTable};
 pub enum WorldError {
     #[error("chunk {0:?} lies entirely outside the world bounds")]
     ChunkOutOfBounds(ChunkPos),
+}
+
+/// Why [`World::apply_delta`] refused a delta. A refused delta changes nothing.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DeltaError {
+    #[error("chunk {0:?} lies entirely outside the world bounds")]
+    OutOfBounds(ChunkPos),
+    #[error("chunk {0:?} is not resident")]
+    NotResident(ChunkPos),
+    #[error("revision gap in chunk {pos:?}: local revision {local}, delta revision {got}")]
+    RevisionGap { pos: ChunkPos, local: u64, got: u64 },
+    #[error("cell index {index} in chunk {pos:?} is outside the chunk")]
+    BadIndex { pos: ChunkPos, index: u16 },
+    #[error("material {id:?} in chunk {pos:?} is not in the material table")]
+    UnknownMaterial { pos: ChunkPos, id: MaterialId },
+    #[error("storage for chunk {0:?} is malformed")]
+    MalformedStorage(ChunkPos),
 }
 
 /// Chunks keyed by position, bounded by a [`CellAabb`].
@@ -245,6 +262,92 @@ impl World {
         }
     }
 
+    /// Applies a delta produced by [`World::apply`] on another world (SAD §7,
+    /// §8.5). The whole delta is checked before anything is written, so a
+    /// refused delta changes nothing.
+    ///
+    /// `Cells` needs a resident chunk whose revision is exactly one below
+    /// the delta's; anything else is a [`DeltaError::RevisionGap`], which a
+    /// replica repairs with `RequestChunk`. Its indices must lie inside the
+    /// chunk and its materials in the table. Changes are written in order.
+    ///
+    /// `Full` replaces the chunk whatever its local revision, and makes an
+    /// in-bounds chunk resident if it was not. Its storage must be well
+    /// formed and every material it uses must be in the table; it is
+    /// stored compacted.
+    ///
+    /// Either way the chunk takes the delta's revision and is marked
+    /// modified (as it is on the world that produced the delta), and damage
+    /// on the overwritten cells is cleared.
+    pub fn apply_delta(&mut self, delta: &ChunkDelta) -> Result<(), DeltaError> {
+        let pos = delta.pos();
+        if !self.bounds.intersects_chunk(pos) {
+            return Err(DeltaError::OutOfBounds(pos));
+        }
+        let known = |id: MaterialId| {
+            if self.materials.get(id).is_some() {
+                Ok(())
+            } else {
+                Err(DeltaError::UnknownMaterial { pos, id })
+            }
+        };
+        match delta {
+            ChunkDelta::Cells {
+                revision, changes, ..
+            } => {
+                let chunk = self.chunks.get(&pos).ok_or(DeltaError::NotResident(pos))?;
+                if chunk.revision.checked_add(1) != Some(*revision) {
+                    return Err(DeltaError::RevisionGap {
+                        pos,
+                        local: chunk.revision,
+                        got: *revision,
+                    });
+                }
+                for &(index, id) in changes {
+                    if usize::from(index) >= CHUNK_VOLUME {
+                        return Err(DeltaError::BadIndex { pos, index });
+                    }
+                    known(id)?;
+                }
+                let chunk = self.chunks.get_mut(&pos).expect("checked resident");
+                for &(index, id) in changes {
+                    let local = LocalPos::from_index(index);
+                    chunk.storage.set(local, id);
+                    self.damage.clear(CellPos::from_chunk_local(pos, local));
+                }
+                chunk.revision = *revision;
+                chunk.modified = true;
+            }
+            ChunkDelta::Full {
+                revision, storage, ..
+            } => {
+                if !storage.is_well_formed() {
+                    return Err(DeltaError::MalformedStorage(pos));
+                }
+                let mut storage = storage.clone();
+                storage.compact();
+                match &storage {
+                    ChunkStorage::Uniform(id) => known(*id)?,
+                    // Compacted, so the palette holds only materials in use.
+                    ChunkStorage::Paletted { palette, .. } => {
+                        palette.iter().try_for_each(|&id| known(id))?
+                    }
+                }
+                self.damage.clear_chunk(pos);
+                self.chunks.insert(
+                    pos,
+                    Chunk {
+                        storage,
+                        revision: *revision,
+                        modified: true,
+                    },
+                );
+            }
+        }
+        tracing::debug!(?pos, revision = delta.revision(), "delta applied");
+        Ok(())
+    }
+
     /// Makes `chunk` resident at `pos`, replacing and returning any previous
     /// chunk there. Rejects a chunk with no cell inside the bounds.
     pub fn insert_chunk(
@@ -264,8 +367,9 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::ChunkStorage;
-    use crate::coords::{CHUNK_SIZE, LocalPos};
+    use crate::coords::CHUNK_SIZE;
+    use crate::edit::{CommandId, PlayerId};
+    use crate::shape::Shape;
     use proptest::prelude::*;
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
@@ -561,5 +665,640 @@ mod tests {
         assert!(worst < BUDGET, "16-bit world uses {worst} bytes");
         assert!(worst - uniform >= 256 * 32768 * 2);
         eprintln!("256 chunks: uniform {uniform} bytes, 16-bit {worst} bytes");
+    }
+
+    fn edit(seq: u32, op: EditOp, shape: Shape) -> EditCommand {
+        let issuer = PlayerId(3);
+        EditCommand {
+            id: CommandId { issuer, seq },
+            issuer,
+            op,
+            shape,
+        }
+    }
+
+    fn boxed(min: (i32, i32, i32), max: (i32, i32, i32)) -> Shape {
+        Shape::Box {
+            min: CellPos::new(min.0, min.1, min.2),
+            max: CellPos::new(max.0, max.1, max.2),
+        }
+    }
+
+    fn cell_in(pos: ChunkPos, x: u32, y: u32, z: u32) -> CellPos {
+        CellPos::from_chunk_local(pos, LocalPos::new(x, y, z))
+    }
+
+    /// Everything a refused delta must leave alone: every chunk's storage,
+    /// revision and `modified` flag, the resident set and the damage map.
+    fn assert_unchanged(w: &World, before: &World, what: &str) {
+        let now: Vec<(ChunkPos, &Chunk)> = w.iter_chunks_sorted().collect();
+        let then: Vec<(ChunkPos, &Chunk)> = before.iter_chunks_sorted().collect();
+        assert_eq!(now, then, "{what}: chunks changed");
+        assert_eq!(w.damage(), before.damage(), "{what}: damage changed");
+        assert_eq!(w.hash(), before.hash(), "{what}: hash changed");
+    }
+
+    /// A paletted chunk with stone below y = 8, granite in one column, dirt
+    /// on top: several palette entries and content on the chunk faces.
+    fn layered_chunk(table: &MaterialTable, salt: u32) -> Chunk {
+        let mut c = Chunk::uniform(id(table, "stone"));
+        let granite = id(table, "granite");
+        let dirt = id(table, "dirt");
+        for y in 0..CHUNK_SIZE as u32 {
+            c.storage
+                .set(LocalPos::new(salt % 32, y, (salt / 3) % 32), granite);
+        }
+        for x in 0..CHUNK_SIZE as u32 {
+            for z in 0..CHUNK_SIZE as u32 {
+                c.storage.set(LocalPos::new(x, 31, z), dirt);
+                if (x + z + salt).is_multiple_of(5) {
+                    c.storage.set(LocalPos::new(x, 30, z), MaterialId::AIR);
+                }
+            }
+        }
+        c
+    }
+
+    /// Small-bounds world with every chunk resident: mixed paletted and
+    /// uniform chunks, including air and bedrock.
+    fn replica_test_world(table: &Arc<MaterialTable>) -> World {
+        let mut w = World::new(table.clone(), small_bounds());
+        for (i, pos) in small_bounds().chunks().enumerate() {
+            let chunk = match i % 4 {
+                0 => Chunk::uniform(id(table, "stone")),
+                1 => layered_chunk(table, i as u32 * 7),
+                2 => Chunk::uniform(MaterialId::AIR),
+                _ if pos.0.y < 0 => {
+                    let mut c = layered_chunk(table, i as u32);
+                    for x in 0..CHUNK_SIZE as u32 {
+                        for z in 0..CHUNK_SIZE as u32 {
+                            c.storage.set(LocalPos::new(x, 0, z), id(table, "bedrock"));
+                        }
+                    }
+                    c
+                }
+                _ => Chunk::uniform(id(table, "granite")),
+            };
+            w.insert_chunk(pos, chunk).unwrap();
+        }
+        w
+    }
+
+    #[test]
+    fn apply_delta_requires_next_revision() {
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let granite = id(&table, "granite");
+        let coal = id(&table, "coal_seam");
+        let p = ChunkPos::new(0, 0, -1);
+        let mut w = World::new(table.clone(), small_bounds());
+        for pos in small_bounds().chunks() {
+            let mut c = Chunk::uniform(stone);
+            if pos == p {
+                c.revision = 3;
+            }
+            w.insert_chunk(pos, c).unwrap();
+        }
+        let cells = |revision: u64, changes: Vec<(u16, MaterialId)>| ChunkDelta::Cells {
+            pos: p,
+            revision,
+            changes,
+        };
+        let a = LocalPos::new(1, 2, 3);
+        let b = LocalPos::new(31, 31, 31);
+        let at = |l: LocalPos| CellPos::from_chunk_local(p, l);
+
+        // Stale, repeated, skipped and far revisions are gaps; nothing changes.
+        let before = w.clone();
+        for got in [0, 1, 2, 3, 5, 6, 100, u64::MAX] {
+            assert_eq!(
+                w.apply_delta(&cells(got, vec![(a.index(), granite)])),
+                Err(DeltaError::RevisionGap {
+                    pos: p,
+                    local: 3,
+                    got
+                }),
+                "revision {got}"
+            );
+            assert_unchanged(&w, &before, &format!("revision {got}"));
+        }
+
+        // The next revision applies every change, in order.
+        assert_eq!(
+            w.apply_delta(&cells(4, vec![(a.index(), granite), (b.index(), coal)])),
+            Ok(())
+        );
+        let ch = w.chunk(p).unwrap();
+        assert_eq!((ch.revision, ch.modified), (4, true));
+        assert_eq!(w.get_cell(at(a)), Some(granite));
+        assert_eq!(w.get_cell(at(b)), Some(coal));
+        assert_eq!(w.get_cell(at(LocalPos::new(1, 2, 4))), Some(stone));
+        // Other chunks are untouched.
+        for (pos, c) in w.iter_chunks_sorted().filter(|(pos, _)| *pos != p) {
+            assert_eq!((c.revision, c.modified), (0, false), "{pos:?}");
+            assert_eq!(c.storage, ChunkStorage::Uniform(stone), "{pos:?}");
+        }
+
+        // The same delta again is now stale.
+        let before = w.clone();
+        assert_eq!(
+            w.apply_delta(&cells(4, vec![(a.index(), stone)])),
+            Err(DeltaError::RevisionGap {
+                pos: p,
+                local: 4,
+                got: 4
+            })
+        );
+        assert_unchanged(&w, &before, "repeat");
+
+        // A bad index or unknown material anywhere in the list refuses the
+        // whole delta, including the valid changes before it.
+        for (changes, err) in [
+            (
+                vec![(a.index(), stone), (32768, granite)],
+                DeltaError::BadIndex {
+                    pos: p,
+                    index: 32768,
+                },
+            ),
+            (
+                vec![(a.index(), stone), (u16::MAX, granite)],
+                DeltaError::BadIndex {
+                    pos: p,
+                    index: u16::MAX,
+                },
+            ),
+            (
+                vec![(a.index(), stone), (b.index(), MaterialId(999))],
+                DeltaError::UnknownMaterial {
+                    pos: p,
+                    id: MaterialId(999),
+                },
+            ),
+        ] {
+            assert_eq!(w.apply_delta(&cells(5, changes)), Err(err.clone()));
+            assert_unchanged(&w, &before, &format!("{err}"));
+        }
+
+        // A revision gap is reported before content problems.
+        assert_eq!(
+            w.apply_delta(&cells(9, vec![(40000, MaterialId(999))])),
+            Err(DeltaError::RevisionGap {
+                pos: p,
+                local: 4,
+                got: 9
+            })
+        );
+        assert_unchanged(&w, &before, "gap and bad content");
+
+        // Consecutive deltas keep applying; a later change to the same cell wins.
+        assert_eq!(
+            w.apply_delta(&cells(5, vec![(a.index(), coal), (a.index(), stone)])),
+            Ok(())
+        );
+        assert_eq!(w.get_cell(at(a)), Some(stone));
+        assert_eq!(w.chunk(p).unwrap().revision, 5);
+        // An empty change list still takes its revision.
+        assert_eq!(w.apply_delta(&cells(6, Vec::new())), Ok(()));
+        assert_eq!(w.chunk(p).unwrap().revision, 6);
+
+        // Out of bounds, and in bounds but not resident.
+        let far = ChunkPos::new(5, 0, 0);
+        let before = w.clone();
+        assert_eq!(
+            w.apply_delta(&ChunkDelta::Cells {
+                pos: far,
+                revision: 1,
+                changes: vec![(0, granite)],
+            }),
+            Err(DeltaError::OutOfBounds(far))
+        );
+        assert_unchanged(&w, &before, "out of bounds");
+        let mut sparse = World::new(table.clone(), small_bounds());
+        sparse.insert_chunk(p, Chunk::uniform(stone)).unwrap();
+        let missing = ChunkPos::new(1, 0, 1);
+        let sparse_before = sparse.clone();
+        assert_eq!(
+            sparse.apply_delta(&ChunkDelta::Cells {
+                pos: missing,
+                revision: 1,
+                changes: vec![(0, granite)],
+            }),
+            Err(DeltaError::NotResident(missing))
+        );
+        assert_unchanged(&sparse, &sparse_before, "not resident");
+        assert_eq!(sparse.chunk_count(), 1);
+
+        // A chunk at the last revision can take no further Cells delta.
+        let mut top = Chunk::uniform(stone);
+        top.revision = u64::MAX;
+        sparse.insert_chunk(p, top).unwrap();
+        let sparse_before = sparse.clone();
+        for got in [0, u64::MAX] {
+            assert_eq!(
+                sparse.apply_delta(&cells(got, vec![(0, granite)])),
+                Err(DeltaError::RevisionGap {
+                    pos: p,
+                    local: u64::MAX,
+                    got
+                })
+            );
+        }
+        assert_unchanged(&sparse, &sparse_before, "u64::MAX");
+
+        // Applied changes clear damage on the cells they write; other damage
+        // in the chunk, and damage under refused deltas, is kept.
+        let hit = |w: &mut World, seq, c: CellPos| {
+            let r = w.apply(&edit(seq, EditOp::Damage(10), Shape::Cell(c)));
+            assert_eq!(r.status, EditStatus::Applied);
+            assert!(r.deltas.is_empty());
+        };
+        let d1 = LocalPos::new(4, 4, 4);
+        let d2 = LocalPos::new(5, 4, 4);
+        hit(&mut w, 1, at(d1));
+        hit(&mut w, 2, at(d2));
+        assert_eq!(w.damage().len(), 2);
+        assert!(w.apply_delta(&cells(8, vec![(d1.index(), coal)])).is_err());
+        assert_eq!(w.damage().len(), 2);
+        assert_eq!(w.apply_delta(&cells(7, vec![(d1.index(), coal)])), Ok(()));
+        assert_eq!(w.damage().get(at(d1)), 0);
+        assert_eq!(w.damage().get(at(d2)), 10);
+        assert_eq!(w.damage().len(), 1);
+    }
+
+    #[test]
+    fn apply_full_delta_replaces() {
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let granite = id(&table, "granite");
+        let coal = id(&table, "coal_seam");
+        let dirt = id(&table, "dirt");
+        let p = ChunkPos::new(1, -1, 0);
+        let q = ChunkPos::new(0, -1, 0);
+        let mut w = World::new(table.clone(), small_bounds());
+        for pos in small_bounds().chunks() {
+            w.insert_chunk(pos, layered_chunk(&table, 5)).unwrap();
+        }
+        // Give p a revision and q some damage via real edits.
+        for seq in 0..2 {
+            let r = w.apply(&edit(
+                seq,
+                EditOp::Set(coal),
+                Shape::Cell(cell_in(p, seq, 0, 0)),
+            ));
+            assert_eq!(r.deltas.len(), 1);
+        }
+        assert_eq!(w.chunk(p).unwrap().revision, 2);
+        let dmg = |w: &mut World, seq, c| {
+            w.apply(&edit(seq, EditOp::Damage(1), Shape::Cell(c)));
+        };
+        dmg(&mut w, 10, cell_in(p, 3, 3, 3));
+        dmg(&mut w, 11, cell_in(p, 9, 1, 0));
+        dmg(&mut w, 12, cell_in(q, 3, 3, 3));
+        assert_eq!(w.damage().len(), 3);
+
+        // A non-canonical storage: an unused palette entry, cells in odd order.
+        let mut s = Chunk::uniform(granite).storage;
+        s.set(LocalPos::new(0, 0, 0), dirt);
+        s.set(LocalPos::new(0, 0, 0), granite);
+        for i in (0..32768u16).step_by(97) {
+            s.set(LocalPos::from_index(i), stone);
+        }
+        let mut canonical = s.clone();
+        canonical.compact();
+        assert_ne!(s, canonical, "the test storage starts out non-canonical");
+
+        let before_q = w.chunk(q).unwrap().clone();
+        assert_eq!(
+            w.apply_delta(&ChunkDelta::Full {
+                pos: p,
+                revision: 3,
+                storage: s.clone(),
+            }),
+            Ok(())
+        );
+        let ch = w.chunk(p).unwrap();
+        assert_eq!((ch.revision, ch.modified), (3, true));
+        assert_eq!(ch.storage, canonical, "stored compacted");
+        assert_eq!(ch.hash(), s.hash());
+        for i in (0..32768u16).step_by(13) {
+            let l = LocalPos::from_index(i);
+            assert_eq!(
+                w.get_cell(CellPos::from_chunk_local(p, l)),
+                Some(s.get(l)),
+                "{l:?}"
+            );
+        }
+        // Damage in p is gone; the neighbour keeps its damage and contents.
+        assert_eq!(w.damage().len(), 1);
+        assert_eq!(w.damage().get(cell_in(q, 3, 3, 3)), 1);
+        assert_eq!(w.chunk(q), Some(&before_q));
+
+        // Full replaces whatever the local revision is: ahead, far ahead, behind.
+        for rev in [4, 50, 7, u64::MAX] {
+            let storage = ChunkStorage::Uniform(if rev % 2 == 0 { stone } else { coal });
+            assert_eq!(
+                w.apply_delta(&ChunkDelta::Full {
+                    pos: p,
+                    revision: rev,
+                    storage: storage.clone(),
+                }),
+                Ok(())
+            );
+            let ch = w.chunk(p).unwrap();
+            assert_eq!((ch.revision, ch.modified), (rev, true));
+            assert_eq!(ch.storage, storage);
+        }
+        // A paletted storage holding one material comes out Uniform.
+        let mut one = ChunkStorage::Uniform(dirt);
+        one.set(LocalPos::new(2, 2, 2), stone);
+        one.set(LocalPos::new(2, 2, 2), dirt);
+        w.apply_delta(&ChunkDelta::Full {
+            pos: p,
+            revision: 1,
+            storage: one,
+        })
+        .unwrap();
+        assert_eq!(w.chunk(p).unwrap().storage, ChunkStorage::Uniform(dirt));
+
+        // A Full delta makes an in-bounds chunk resident.
+        let mut sparse = World::new(table.clone(), small_bounds());
+        assert_eq!(
+            sparse.apply_delta(&ChunkDelta::Full {
+                pos: q,
+                revision: 9,
+                storage: s.clone(),
+            }),
+            Ok(())
+        );
+        assert_eq!(sparse.chunk_count(), 1);
+        let ch = sparse.chunk(q).unwrap();
+        assert_eq!((ch.revision, ch.modified), (9, true));
+        assert_eq!(ch.storage, canonical);
+
+        // Refused: out of bounds, malformed storage, unknown materials in use.
+        let before = w.clone();
+        let full = |pos, storage| ChunkDelta::Full {
+            pos,
+            revision: 2,
+            storage,
+        };
+        let far = ChunkPos::new(0, 1, 2);
+        assert_eq!(
+            w.apply_delta(&full(far, ChunkStorage::Uniform(stone))),
+            Err(DeltaError::OutOfBounds(far))
+        );
+        assert_unchanged(&w, &before, "out of bounds");
+
+        let paletted =
+            |palette: Vec<MaterialId>, bits: u8, data: Vec<u64>| ChunkStorage::Paletted {
+                palette,
+                bits,
+                data,
+            };
+        // Cell 0 uses slot 3 of a 3-entry palette.
+        let mut past_end = vec![0u64; 1024];
+        past_end[0] = 0b11;
+        for bad in [
+            paletted(vec![stone, granite], 3, vec![0; 1536]),
+            paletted(vec![stone, granite], 0, Vec::new()),
+            paletted(vec![stone, granite], 32, vec![0; 16384]),
+            paletted(vec![stone, granite], 1, vec![0; 511]),
+            paletted(vec![stone, granite], 1, vec![0; 513]),
+            paletted(Vec::new(), 1, vec![0; 512]),
+            paletted(vec![stone, granite, coal], 1, vec![0; 512]),
+            paletted(vec![stone, granite, coal], 2, past_end),
+        ] {
+            assert_eq!(
+                w.apply_delta(&full(p, bad.clone())),
+                Err(DeltaError::MalformedStorage(p)),
+                "{bad:?}"
+            );
+            assert_unchanged(&w, &before, "malformed");
+        }
+        assert_eq!(
+            w.apply_delta(&full(p, ChunkStorage::Uniform(MaterialId(4242)))),
+            Err(DeltaError::UnknownMaterial {
+                pos: p,
+                id: MaterialId(4242)
+            })
+        );
+        let mut unknown = ChunkStorage::Uniform(stone);
+        unknown.set(LocalPos::new(31, 0, 31), MaterialId(777));
+        assert_eq!(
+            w.apply_delta(&full(p, unknown)),
+            Err(DeltaError::UnknownMaterial {
+                pos: p,
+                id: MaterialId(777)
+            })
+        );
+        assert_unchanged(&w, &before, "unknown material");
+
+        // An unknown id in an unused palette slot is compacted away.
+        let mut unused = ChunkStorage::Uniform(stone);
+        unused.set(LocalPos::new(0, 0, 0), MaterialId(777));
+        unused.set(LocalPos::new(1, 0, 0), granite);
+        unused.set(LocalPos::new(0, 0, 0), stone);
+        assert_eq!(w.apply_delta(&full(p, unused.clone())), Ok(()));
+        let mut expect = unused;
+        expect.compact();
+        assert_eq!(w.chunk(p).unwrap().storage, expect);
+    }
+
+    /// A replica fed only the deltas from `apply` stays identical to the
+    /// world that produced them: hash, contents, revisions and `modified`.
+    #[test]
+    fn apply_delta_matches_apply_command() {
+        let table = phase1();
+        let mut host = replica_test_world(&table);
+        let mut replica = replica_test_world(&table);
+        assert_eq!(host.hash(), replica.hash());
+        let keys = [
+            "air",
+            "topsoil",
+            "dirt",
+            "stone",
+            "granite",
+            "coal_seam",
+            "glowcrystal",
+            "bedrock",
+        ];
+        let m = |k: &str| id(&table, k);
+
+        // Scripted commands covering every op, borders, Full deltas, breaks,
+        // no-op commands and rejected commands.
+        let mut cmds = vec![
+            edit(
+                0,
+                EditOp::Set(m("granite")),
+                boxed((28, -4, -4), (35, 3, 3)),
+            ),
+            edit(
+                1,
+                EditOp::Remove,
+                Shape::Sphere {
+                    center: CellPos::new(0, 0, 0),
+                    radius: 6,
+                },
+            ),
+            edit(
+                2,
+                EditOp::Paint(m("coal_seam")),
+                boxed((-32, -32, -32), (-1, -1, -1)),
+            ),
+            // Whole-chunk fills: Full deltas, one to Uniform.
+            edit(3, EditOp::Set(m("dirt")), boxed((-32, 0, 0), (-1, 31, 31))),
+            edit(
+                4,
+                EditOp::Set(m("stone")),
+                boxed((0, -32, 32), (31, -1, 63)),
+            ),
+            edit(
+                5,
+                EditOp::Paint(m("granite")),
+                boxed((32, 0, 32), (63, 31, 63)),
+            ),
+            // Set to what is already there: no delta.
+            edit(6, EditOp::Set(m("dirt")), boxed((-32, 0, 0), (-1, 31, 31))),
+            // Rejected: too many cells, entirely outside, unknown material.
+            edit(
+                7,
+                EditOp::Set(m("stone")),
+                boxed((-32, -32, -32), (63, 31, 63)),
+            ),
+            edit(8, EditOp::Remove, boxed((100, 0, 0), (110, 5, 5))),
+            edit(
+                9,
+                EditOp::Set(MaterialId(999)),
+                Shape::Cell(CellPos::new(1, 1, 1)),
+            ),
+            // Bedrock survives Remove and Damage.
+            edit(10, EditOp::Remove, boxed((-32, -32, -32), (63, -32, 63))),
+        ];
+        // Damage until a sphere of mixed material breaks, crossing borders.
+        for seq in 11..20 {
+            cmds.push(edit(
+                seq,
+                EditOp::Damage(7),
+                Shape::Sphere {
+                    center: CellPos::new(32, -1, 31),
+                    radius: 4,
+                },
+            ));
+        }
+
+        // Then pseudo-random commands from a fixed-seed LCG.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        for seq in 20..260 {
+            let mut coord = |lo: i32, hi: i32| lo - 2 + next((hi - lo + 5) as u64) as i32;
+            let c = CellPos::new(coord(-32, 63), coord(-32, 31), coord(-32, 63));
+            let material = m(keys[next(keys.len() as u64) as usize]);
+            let op = match next(4) {
+                0 => EditOp::Set(material),
+                1 => EditOp::Remove,
+                2 => EditOp::Damage([1, 15, 30, 60, u16::MAX][next(5) as usize]),
+                _ => EditOp::Paint(material),
+            };
+            let shape = match next(4) {
+                0 => Shape::Cell(c),
+                1 => Shape::Sphere {
+                    center: c,
+                    radius: next(7) as u16,
+                },
+                2 => {
+                    let ext = CellPos::new(
+                        c.0.x + next(9) as i32,
+                        c.0.y + next(9) as i32,
+                        c.0.z + next(9) as i32,
+                    );
+                    Shape::Box { min: c, max: ext }
+                }
+                // Big slabs: above FULL_DELTA_THRESHOLD in one chunk.
+                _ => Shape::Box {
+                    min: c,
+                    max: CellPos::new(c.0.x + 31, c.0.y + 7, c.0.z + 31),
+                },
+            };
+            cmds.push(edit(seq, op, shape));
+        }
+
+        let (mut cells, mut fulls, mut rejected, mut breaks) = (0, 0, 0, 0);
+        let mut last_full: Option<ChunkPos> = None;
+        for (n, c) in cmds.iter().enumerate() {
+            let r = host.apply(c);
+            if r.status != EditStatus::Applied {
+                rejected += 1;
+            }
+            if !r.yields.is_empty() {
+                breaks += 1;
+            }
+            for d in &r.deltas {
+                match d {
+                    ChunkDelta::Cells { .. } => cells += 1,
+                    ChunkDelta::Full { pos, .. } => {
+                        fulls += 1;
+                        last_full = Some(*pos);
+                    }
+                }
+                assert_eq!(replica.apply_delta(d), Ok(()), "command {n}: {d:?}");
+            }
+            // Revisions and `modified` everywhere; contents of the touched chunks.
+            let host_state: Vec<(ChunkPos, u64, bool)> = host
+                .iter_chunks_sorted()
+                .map(|(p, ch)| (p, ch.revision, ch.modified))
+                .collect();
+            let replica_state: Vec<(ChunkPos, u64, bool)> = replica
+                .iter_chunks_sorted()
+                .map(|(p, ch)| (p, ch.revision, ch.modified))
+                .collect();
+            assert_eq!(host_state, replica_state, "command {n}");
+            for d in &r.deltas {
+                let (h, rep) = (
+                    host.chunk(d.pos()).unwrap(),
+                    replica.chunk(d.pos()).unwrap(),
+                );
+                assert_eq!(h.hash(), rep.hash(), "command {n}, chunk {:?}", d.pos());
+            }
+            if n % 40 == 0 {
+                assert_eq!(host.hash(), replica.hash(), "command {n}");
+            }
+            // Replaying a command's deltas a second time is refused (Cells)
+            // or harmless (Full), so a duplicated message cannot corrupt.
+            if n % 17 == 0 {
+                for d in &r.deltas {
+                    if let ChunkDelta::Cells { pos, revision, .. } = d {
+                        assert_eq!(
+                            replica.apply_delta(d),
+                            Err(DeltaError::RevisionGap {
+                                pos: *pos,
+                                local: *revision,
+                                got: *revision
+                            })
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(host.hash(), replica.hash());
+        assert!(replica.damage().is_empty(), "replicas never hold damage");
+        if let Some(p) = last_full {
+            // Both sides compact the same way, so storage matches exactly.
+            assert_eq!(
+                host.chunk(p).unwrap().storage,
+                replica.chunk(p).unwrap().storage
+            );
+        }
+        // The script must exercise every path it claims to.
+        assert!(cells >= 50, "{cells} Cells deltas");
+        assert!(fulls >= 5, "{fulls} Full deltas");
+        assert!(rejected >= 3, "{rejected} rejected");
+        assert!(breaks >= 1, "{breaks} commands broke cells");
+        eprintln!("{cells} Cells, {fulls} Full, {rejected} rejected, {breaks} breaking");
     }
 }

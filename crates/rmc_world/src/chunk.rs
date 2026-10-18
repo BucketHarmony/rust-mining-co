@@ -131,6 +131,28 @@ impl ChunkStorage {
         }
     }
 
+    /// Whether the other methods can use this storage without panicking: a
+    /// `Paletted` chunk needs an allowed bit width, exactly the data words
+    /// for `CHUNK_VOLUME` cells, a non-empty palette that fits the width,
+    /// and every cell's slot inside the palette. Storage built by
+    /// [`set`](Self::set) always is; storage from the wire may not be.
+    pub fn is_well_formed(&self) -> bool {
+        match self {
+            ChunkStorage::Uniform(_) => true,
+            ChunkStorage::Paletted {
+                palette,
+                bits,
+                data,
+            } => {
+                PALETTE_BITS.contains(bits)
+                    && data.len() == packed_len(*bits)
+                    && !palette.is_empty()
+                    && palette.len() <= 1 << *bits
+                    && (0..CHUNK_VOLUME).all(|i| read_packed(data, *bits, i) < palette.len())
+            }
+        }
+    }
+
     /// Bytes this storage owns on the heap: the allocated capacity of the
     /// palette and data vectors. `Uniform` owns none.
     pub fn heap_bytes(&self) -> usize {
