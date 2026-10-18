@@ -791,3 +791,28 @@ Next: F071 (brush ops through EditCommand: Set on the face-normal side, Remove/P
 - CommandSeq is shared with the pickaxe.
 - The raycast returns face_normal ZERO when the eye starts inside a solid cell; ignore Set then.
 Blockers: none.
+
+## 2026-10-18 23:10 — F071 Brush ops through EditCommand: Set on face-normal side, Remove/Paint on hit, Box and Sphere — passed
+Done:
+- rmc_client::editor: `brush_command(&EditorState, &MaterialTable, Hit) -> Option<(EditOp, Shape)>` and the `apply_brush` system (Update, in EditorSystems, after editor_keys, FlyCamSystems, ControllerSystems::Look and drop_player_after_flying).
+  - Set(brush material) targets `hit.cell + face_normal`; a hit with a zero normal (ray starts inside the cell) sends nothing.
+  - Remove and Paint(brush material) target the hit cell.
+  - Shape centers on the target: Cell; Box min/max = target ∓ size; Sphere { center, radius: size }.
+  - Set/Paint with no brush material (no solid material in the table) send nothing.
+- While the editor is open, a just-pressed `BRUSH_BUTTON` (left mouse) sends one normal `ClientMsg::Edit(EditCommand)` with an id from the shared `CommandSeq`. Holding does not repeat.
+- The ray is cast within `BRUSH_REACH_M` (32 m): from the GameCamera transform while the fly camera is on, else from the player's eye.
+- The pickaxe does not swing while `EditorState::open` (pickaxe.rs reads `Option<Res<EditorState>>`).
+- EditorPlugin now registers ToHost and CommandSeq itself (idempotent with PickaxePlugin).
+- docs/CONTROLS.md: new `## Brush` section (left mouse row and notes). It is a separate section because the Editor section's test allows only EDITOR_BINDINGS keys there.
+- lib.rs re-exports BRUSH_BUTTON, BRUSH_REACH_M and brush_command.
+Tests added: editor::tests::{set_targets_adjacent_cell, remove_targets_hit_cell, sphere_brush_sends_sphere_shape}.
+- Written first against a stub brush_command (always None) and an ungated pickaxe. They failed for that reason: no edit on click, and Damage sent where Remove was expected.
+- One uncommitted harness bug was fixed before the commit: the hold loop called `app.update()` without clearing just_pressed (MinimalPlugins has no InputPlugin). It now uses the same `frame()` helper as the rest of the file. That helper now also clears `ButtonInput<MouseButton>` when present. No assertion changed.
+- The tests also apply each sent command to a copy of the world (placed in front, removed, painted, whole sphere cleared), check the shared sequence with the pickaxe, the fly-camera ray origin (6 m, beyond pickaxe reach), the zero-normal case, sky, and a closed editor.
+Decisions:
+- Brush reach is 32 m (`BRUSH_REACH_M`), not the pickaxe's 3 m. The SAD gives no number. A debug editor needs to reach across a room, and host reach validation is a Phase 1 no-op hook.
+- One edit per click (just_pressed in Update), not per held frame. "Left click applies" (SAD §11.6) reads as a click. It also keeps a held button from flooding the host with Box/Sphere commands.
+- The brush does not refuse a Set that overlaps the player's box. SAD §8.2 lets Set overwrite and says nothing about players. F074 (place_and_climb) should aim at a cell beside the player.
+- The HUD's PickTarget still uses the pickaxe reach; the targeted-cell gizmo at brush reach is F073's business.
+Next: F072 (egui panel: bevy_egui + bevy-inspector-egui; confirm versions for the pinned Bevy minor on crates.io first).
+Blockers: none.
