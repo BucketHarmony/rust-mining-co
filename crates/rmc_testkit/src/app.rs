@@ -19,9 +19,9 @@ use bevy::transform::TransformPlugin;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use rmc_client::{
-    CameraStart, ClientInventory, ClientMaterials, ControllerPlugin, FlyCamPlugin, GameCamera,
-    GameRenderPlugin, HostConnection, HostLink, HudPlugin, HudState, MeshPipelinePlugin, NetPlugin,
-    Pickaxe, PickaxePlugin, ReplicaPlugin, ToHost,
+    CameraStart, ClientInventory, ClientMaterials, ControllerPlugin, EditorPlugin, EditorState,
+    FlyCamPlugin, GameCamera, GameRenderPlugin, HostConnection, HostLink, HudPlugin, HudState,
+    MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, ToHost,
 };
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -126,6 +126,7 @@ impl TestApp {
                 ControllerPlugin,
                 PickaxePlugin,
                 HudPlugin,
+                EditorPlugin,
             ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(Pickaxe(tools.pickaxe))
@@ -221,6 +222,15 @@ impl TestApp {
     /// What the HUD shows after the last step.
     pub fn hud(&self) -> HudState {
         self.app.world().resource::<HudState>().clone()
+    }
+
+    /// The debug editor's state, as the keys and the panel set it. Changes
+    /// take effect on the next step.
+    pub fn editor(&mut self) -> &mut EditorState {
+        self.app
+            .world_mut()
+            .resource_mut::<EditorState>()
+            .into_inner()
     }
 
     /// The local player's inventory as the client knows it (the host's

@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod controller;
+pub mod editor;
 pub mod flycam;
 pub mod hud;
 pub mod interp;
@@ -16,6 +17,10 @@ pub mod replica;
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
     PLAYER_HEIGHT_M, PLAYER_STATE_HZ, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,
+};
+pub use editor::{
+    BrushOp, BrushShape, EDITOR_BINDINGS, EditorAction, EditorPlugin, EditorState, EditorSystems,
+    GizmoToggles, MAX_BRUSH_SIZE, SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY, free_feet_near,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use hud::{
