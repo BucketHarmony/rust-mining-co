@@ -98,6 +98,21 @@ pub struct CaveParams {
     pub worm: WormCaves,
 }
 
+/// Step 4: one ore. It replaces cells tagged `stone` where its 3D noise
+/// exceeds `threshold`, within its depth range.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OreVein {
+    /// Material key; it must carry the `ore` tag.
+    pub material: String,
+    /// Depth range under the surface cell (0 = topmost solid cell, as for
+    /// strata), both ends included.
+    pub min_depth: i32,
+    pub max_depth: i32,
+    /// Noise is in about [-1, 1]; a value above 1 turns the ore off.
+    pub threshold: f32,
+    pub noise: NoiseParams,
+}
+
 /// Everything worldgen reads besides the seed and the material table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenParams {
@@ -106,6 +121,8 @@ pub struct GenParams {
     pub soil: Vec<SoilLayer>,
     pub strata: StrataParams,
     pub caves: CaveParams,
+    /// Step 4. Where two ores overlap, the earlier one wins.
+    pub ores: Vec<OreVein>,
 }
 
 #[derive(Debug, Error)]
@@ -263,6 +280,28 @@ impl GenParams {
         }
         c.worm.a.validate("caves.worm.a")?;
         c.worm.b.validate("caves.worm.b")?;
+
+        for (i, ore) in self.ores.iter().enumerate() {
+            let field = format!("ores[{i}]");
+            check_cells(&format!("{field}.min_depth"), ore.min_depth)?;
+            check_cells(&format!("{field}.max_depth"), ore.max_depth)?;
+            if ore.min_depth > ore.max_depth {
+                return Err(invalid(
+                    field,
+                    format!(
+                        "min_depth {} exceeds max_depth {}",
+                        ore.min_depth, ore.max_depth
+                    ),
+                ));
+            }
+            if !ore.threshold.is_finite() {
+                return Err(invalid(
+                    format!("{field}.threshold"),
+                    format!("{} must be finite", ore.threshold),
+                ));
+            }
+            ore.noise.validate(&format!("{field}.noise"))?;
+        }
         Ok(())
     }
 
@@ -294,6 +333,7 @@ mod tests {
         assert_eq!(p.soil.len(), 2);
         assert_eq!(p.strata.layers.len(), 3);
         assert_eq!(p.strata.layers[2].until_depth, None);
+        assert_eq!(p.ores.len(), 3);
 
         // Each broken copy is refused with an Invalid error.
         let broken: Vec<(&str, Edit)> = vec![
@@ -374,6 +414,27 @@ mod tests {
                 "zero worm frequency",
                 Box::new(|p| p.caves.worm.b.frequency = 0.0),
             ),
+            ("negative ore depth", Box::new(|p| p.ores[0].min_depth = -1)),
+            (
+                "huge ore depth",
+                Box::new(|p| p.ores[2].max_depth = MAX_CELLS + 1),
+            ),
+            (
+                "ore min > max",
+                Box::new(|p| p.ores[1].min_depth = p.ores[1].max_depth + 1),
+            ),
+            (
+                "nan ore threshold",
+                Box::new(|p| p.ores[0].threshold = f32::NAN),
+            ),
+            (
+                "inf ore threshold",
+                Box::new(|p| p.ores[1].threshold = f32::INFINITY),
+            ),
+            (
+                "nine ore octaves",
+                Box::new(|p| p.ores[2].noise.octaves = 9),
+            ),
         ];
         for (name, edit) in broken {
             let mut p = phase1();
@@ -396,6 +457,13 @@ mod tests {
         p.caves.surface_margin = 0;
         p.caves.blob.threshold = 2.0;
         p.caves.worm.radius = 0.0;
+        p.validate().unwrap();
+
+        // No ores, or an ore at a single depth, is fine.
+        let mut p = phase1();
+        p.ores[0].max_depth = p.ores[0].min_depth;
+        p.validate().unwrap();
+        p.ores.clear();
         p.validate().unwrap();
 
         assert!(matches!(
@@ -447,6 +515,15 @@ mod tests {
             Box::new(|p| p.caves.worm.a.octaves += 1),
             Box::new(|p| p.caves.worm.b.frequency *= 0.5),
             Box::new(|p| std::mem::swap(&mut p.caves.worm.a, &mut p.caves.worm.b)),
+            Box::new(|p| p.ores[0].material = "iron_ore".into()),
+            Box::new(|p| p.ores[0].min_depth += 1),
+            Box::new(|p| p.ores[1].max_depth += 1),
+            Box::new(|p| p.ores[2].threshold += 0.01),
+            Box::new(|p| p.ores[2].noise.frequency *= 2.0),
+            Box::new(|p| p.ores.swap(0, 1)),
+            Box::new(|p| {
+                p.ores.pop();
+            }),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

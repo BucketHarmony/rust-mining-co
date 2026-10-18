@@ -17,6 +17,8 @@ pub const LAYER_CAVE_BLOB: u32 = 0x0300;
 /// Layer ids of the two worm tunnel noises.
 pub const LAYER_CAVE_WORM_A: u32 = 0x0301;
 pub const LAYER_CAVE_WORM_B: u32 = 0x0302;
+/// Layer id of ore `i` is `LAYER_ORE + i`.
+pub const LAYER_ORE: u32 = 0x0400;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in

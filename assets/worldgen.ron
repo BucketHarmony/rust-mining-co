@@ -47,4 +47,16 @@
             b: (frequency: 0.035, octaves: 1),
         ),
     ),
+    // Replace cells tagged "stone" (never soil, air or another ore) where
+    // the ore's 3D noise exceeds its threshold, at depths
+    // min_depth..=max_depth under the surface cell. Where two ores overlap,
+    // the earlier one wins. Materials need the "ore" tag.
+    ores: [
+        (material: "coal_seam", min_depth: 6, max_depth: 40,
+         threshold: 0.7, noise: (frequency: 0.12, octaves: 1)),
+        (material: "copper_ore", min_depth: 16, max_depth: 64,
+         threshold: 0.75, noise: (frequency: 0.15, octaves: 1)),
+        (material: "iron_ore", min_depth: 36, max_depth: 84,
+         threshold: 0.75, noise: (frequency: 0.15, octaves: 1)),
+    ],
 )

@@ -1,4 +1,4 @@
-//! Chunk generation (SAD §9): surface, strata and caves so far.
+//! Chunk generation (SAD §9): surface, strata, caves and ores so far.
 //!
 //! Steps run over a 34³ [`Volume`] (the chunk plus a 1-cell border) so later
 //! steps can read neighbors; only the inner 32³ is written to the chunk.
@@ -8,15 +8,17 @@ use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
 use crate::noise::{
-    LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_SOIL, LAYER_STRATA, LAYER_SURFACE,
-    NoiseLayer,
+    LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_ORE, LAYER_SOIL, LAYER_STRATA,
+    LAYER_SURFACE, NoiseLayer,
 };
 use crate::params::{GenError, GenParams};
 
 /// Tag every soil layer material must carry.
 pub const SOIL_TAG: &str = "soil";
-/// Tag every stratum material must carry.
+/// Tag every stratum material must carry, and the only cells ores replace.
 pub const STONE_TAG: &str = "stone";
+/// Tag every ore material must carry.
+pub const ORE_TAG: &str = "ore";
 
 /// Edge length of the generation volume: a chunk plus a 1-cell border.
 pub const VOLUME_SIZE: i32 = CHUNK_SIZE + 2;
@@ -96,6 +98,14 @@ impl Caves {
     }
 }
 
+struct Ore {
+    material: MaterialId,
+    min_depth: i32,
+    max_depth: i32,
+    threshold: f32,
+    noise: NoiseLayer,
+}
+
 /// Generation for one seed, parameter set and material table. Build it
 /// once and call [`Generator::generate`] for each chunk; it is `Sync`, so
 /// chunks can generate in parallel.
@@ -107,6 +117,10 @@ pub struct Generator {
     boundary_amplitude: i32,
     strata: Vec<Stratum>,
     caves: Caves,
+    /// Top priority first.
+    ores: Vec<Ore>,
+    /// Whether each material id carries the `stone` tag.
+    stone: Vec<bool>,
 }
 
 fn resolve(
@@ -181,6 +195,22 @@ impl Generator {
             worm_a: NoiseLayer::new(seed, LAYER_CAVE_WORM_A, &c.worm.a),
             worm_b: NoiseLayer::new(seed, LAYER_CAVE_WORM_B, &c.worm.b),
         };
+        let ores = params
+            .ores
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                Ok(Ore {
+                    material: resolve(materials, format!("ores[{i}]"), &o.material, ORE_TAG)?,
+                    min_depth: o.min_depth,
+                    max_depth: o.max_depth,
+                    threshold: o.threshold,
+                    noise: NoiseLayer::new(seed, LAYER_ORE + i as u32, &o.noise),
+                })
+            })
+            .collect::<Result<_, GenError>>()?;
+        // Ids equal table positions.
+        let stone = materials.iter().map(|d| d.has_tag(STONE_TAG)).collect();
         Ok(Self {
             surface_base: params.surface.base_height,
             surface_amplitude: params.surface.amplitude,
@@ -189,6 +219,8 @@ impl Generator {
             boundary_amplitude: st.boundary_amplitude,
             strata,
             caves,
+            ores,
+            stone,
         })
     }
 
@@ -202,7 +234,9 @@ impl Generator {
     /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
     /// writes its inner 32³.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
-        self.cave_volume(pos)
+        let mut volume = self.cave_volume(pos);
+        self.place_ores(pos, &mut volume);
+        volume
     }
 
     /// Steps 1–3 (surface, soil, strata, caves) over the chunk's 34³ volume.
@@ -230,6 +264,42 @@ impl Generator {
                     let i = Volume::index(x, y, z);
                     if volume.cells[i] != MaterialId::AIR && self.caves.is_cave(cx, cy, cz) {
                         volume.cells[i] = MaterialId::AIR;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Step 4: replaces `stone`-tagged cells with the first ore whose depth
+    /// range holds the cell and whose noise exceeds its threshold.
+    fn place_ores(&self, pos: ChunkPos, volume: &mut Volume) {
+        if self.ores.is_empty() {
+            return;
+        }
+        let origin = pos.origin_cell().0;
+        for z in -1..=CHUNK_SIZE {
+            for x in -1..=CHUNK_SIZE {
+                let (cx, cz) = (origin.x + x, origin.z + z);
+                let surface = i64::from(volume.surface[Volume::column(x, z)]);
+                for y in -1..=CHUNK_SIZE {
+                    let cy = origin.y + y;
+                    let depth = surface - i64::from(cy);
+                    let i = Volume::index(x, y, z);
+                    let cell = volume.cells[i];
+                    if !self
+                        .stone
+                        .get(usize::from(cell.0))
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let ore = self.ores.iter().find(|o| {
+                        (i64::from(o.min_depth)..=i64::from(o.max_depth)).contains(&depth)
+                            && o.noise.sample_3d(cx, cy, cz) > o.threshold
+                    });
+                    if let Some(ore) = ore {
+                        volume.cells[i] = ore.material;
                     }
                 }
             }
@@ -853,6 +923,194 @@ mod tests {
         assert!(carved > 0, "no cave crosses a chunk face");
     }
 
+    /// `p` with every ore everywhere in its depth range (threshold below any
+    /// noise value), so only depth and tags decide.
+    fn ores_everywhere(p: &GenParams) -> GenParams {
+        let mut p = p.clone();
+        for ore in &mut p.ores {
+            ore.threshold = -2.0;
+        }
+        p
+    }
+
+    /// The shipped table with dirt tagged both `soil` and `stone`.
+    fn stony_dirt_table() -> MaterialTable {
+        let text = std::fs::read_to_string(MATERIALS_PATH).unwrap();
+        let from = r#"key: "dirt", phase: Solid, tags: ["soil"]"#;
+        assert!(text.contains(from));
+        let to = r#"key: "dirt", phase: Solid, tags: ["soil", "stone"]"#;
+        MaterialTable::from_ron_str(&text.replace(from, to)).unwrap()
+    }
+
+    #[test]
+    fn ores_only_replace_stone_tag() {
+        let shipped_table = materials();
+        let shipped = params();
+        let ores: Vec<MaterialId> = shipped
+            .ores
+            .iter()
+            .map(|o| id(&shipped_table, &o.material))
+            .collect();
+        // SAD §6 Phase 1 ores.
+        assert_eq!(
+            ores,
+            ["coal_seam", "copper_ore", "iron_ore"].map(|k| id(&shipped_table, k))
+        );
+        let (lo, hi) = (
+            i64::from(shipped.ores.iter().map(|o| o.min_depth).min().unwrap()),
+            i64::from(shipped.ores.iter().map(|o| o.max_depth).max().unwrap()),
+        );
+        // Every ore everywhere from the surface cell down, so soil and air
+        // are in range too.
+        let mut shallow = ores_everywhere(&shipped);
+        for ore in &mut shallow.ores {
+            ore.min_depth = 0;
+        }
+        let stony_dirt = stony_dirt_table();
+        let dirt = id(&stony_dirt, "dirt");
+
+        let mut sparse_count = vec![0usize; ores.len()];
+        let mut sparse_stone = 0;
+        // In the "everywhere" runs: stone replaced, other solid cells kept
+        // in range, and (stone-tagged) dirt replaced.
+        let (mut replaced, mut kept, mut dirt_replaced) = (0, 0, 0);
+        let runs = [
+            (&shipped, &shipped_table),
+            (&shallow, &shipped_table),
+            (&shallow, &stony_dirt),
+        ];
+        for (k, (p, table)) in runs.into_iter().enumerate() {
+            for seed in [9, 0xFACE] {
+                let g = Generator::new(seed, p, table).unwrap();
+                for (cx, cz) in [(1, 2), (4, 4), (6, 1), (-2, 5)] {
+                    for cy in 0..WORLD_CHUNKS_Y {
+                        let pos = ChunkPos::new(cx, cy, cz);
+                        let before = g.cave_volume(pos);
+                        let after = g.volume(pos);
+                        for_each_cell(&g, pos, |x, y, z, depth| {
+                            let (b, a) = (before.get(x, y, z), after.get(x, y, z));
+                            let at = || format!("run {k} seed {seed} {pos:?} ({x}, {y}, {z})");
+                            if !table.has_tag(b, STONE_TAG) {
+                                assert_eq!(a, b, "{}: replaced non-stone {b:?}", at());
+                                let in_range = (0..=hi).contains(&depth);
+                                kept += usize::from(k > 0 && in_range && b != MaterialId::AIR);
+                                return;
+                            }
+                            if a != b {
+                                assert!(ores.contains(&a), "{}: {a:?} is not an ore", at());
+                                assert!(table.has_tag(a, ORE_TAG), "{}", at());
+                                assert!(!table.has_tag(a, STONE_TAG), "{}", at());
+                            }
+                            if k == 0 {
+                                if let Some(i) = ores.iter().position(|&o| o == a) {
+                                    sparse_count[i] += 1;
+                                }
+                                sparse_stone += usize::from((lo..=hi).contains(&depth));
+                            } else if (0..=hi).contains(&depth) {
+                                assert_ne!(a, b, "{}: stone left at depth {depth}", at());
+                                replaced += 1;
+                                dirt_replaced += usize::from(b == dirt);
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        // Shipped ores are sparse but present, every one of them.
+        let total: usize = sparse_count.iter().sum();
+        assert!(
+            sparse_count.iter().all(|&n| n > 200),
+            "ore cells per ore: {sparse_count:?}"
+        );
+        assert!(
+            total * 100 < sparse_stone * 15,
+            "ores are {total} of {sparse_stone} stone cells in range"
+        );
+        // Soil in range stays; stone in range all goes.
+        assert!(
+            kept > 10_000 && replaced > 100_000,
+            "{kept} kept, {replaced} replaced"
+        );
+        // The tag decides, not the key: stone-tagged dirt is replaced too.
+        assert!(dirt_replaced > 1000, "{dirt_replaced} dirt cells replaced");
+    }
+
+    #[test]
+    fn ores_respect_depth_range() {
+        let table = materials();
+        let shipped = params();
+        let ores: Vec<MaterialId> = shipped
+            .ores
+            .iter()
+            .map(|o| id(&table, &o.material))
+            .collect();
+        let range = |p: &GenParams, i: usize| {
+            i64::from(p.ores[i].min_depth)..=i64::from(p.ores[i].max_depth)
+        };
+        // Each shipped range starts under the cave margin and ends above
+        // y = 0 wherever the surface is at its lowest.
+        let lowest = i64::from(shipped.surface.base_height - shipped.surface.amplitude);
+        for i in 0..ores.len() {
+            let r = range(&shipped, i);
+            assert!(*r.start() > i64::from(shipped.caves.surface_margin));
+            assert!(*r.end() <= lowest, "ore {i} reaches under the world");
+        }
+        let everywhere = ores_everywhere(&shipped);
+
+        // Depths at which each ore occurs, per run.
+        let mut seen = vec![vec![BTreeSet::new(); ores.len()]; 2];
+        for (k, p) in [&shipped, &everywhere].into_iter().enumerate() {
+            for seed in [17, 1 << 50] {
+                let g = Generator::new(seed, p, &table).unwrap();
+                for (cx, cz) in [(2, 2), (5, 6), (0, 7)] {
+                    for cy in 0..WORLD_CHUNKS_Y {
+                        let pos = ChunkPos::new(cx, cy, cz);
+                        let before = g.cave_volume(pos);
+                        let after = g.volume(pos);
+                        for_each_cell(&g, pos, |x, y, z, depth| {
+                            let (b, a) = (before.get(x, y, z), after.get(x, y, z));
+                            let at = || {
+                                format!("run {k} seed {seed} {pos:?} ({x}, {y}, {z}) depth {depth}")
+                            };
+                            if let Some(i) = ores.iter().position(|&o| o == a) {
+                                assert!(range(p, i).contains(&depth), "{}: {a:?}", at());
+                                seen[k][i].insert(depth);
+                            }
+                            if k == 1 && table.has_tag(b, STONE_TAG) {
+                                // The first ore whose range holds the depth.
+                                let want = (0..ores.len())
+                                    .find(|&i| range(p, i).contains(&depth))
+                                    .map_or(b, |i| ores[i]);
+                                assert_eq!(a, want, "{}", at());
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        let [sparse_seen, all_seen] = &seen[..] else {
+            unreachable!()
+        };
+        for (i, (sparse, all)) in sparse_seen.iter().zip(all_seen).enumerate() {
+            let r = range(&shipped, i);
+            // Everywhere: each ore fills its range end to end, except where
+            // an earlier ore's range overlaps it.
+            let first = (0..i).fold(*r.start(), |d, j| {
+                let rj = range(&shipped, j);
+                if rj.contains(&d) { *rj.end() + 1 } else { d }
+            });
+            assert_eq!(all.first(), Some(&first), "ore {i}: {all:?}");
+            assert_eq!(all.last(), Some(r.end()), "ore {i}: {all:?}");
+            // Shipped: the ore spreads over most of its range.
+            let span = r.end() - r.start() + 1;
+            assert!(
+                sparse.len() as i64 * 2 > span,
+                "ore {i} occurs at only {} of {span} depths",
+                sparse.len()
+            );
+        }
+    }
+
     #[test]
     fn generator_checks_materials() {
         let table = materials();
@@ -873,6 +1131,18 @@ mod tests {
         assert!(matches!(
             Generator::new(1, &p, &table),
             Err(GenError::MissingTag { tag: STONE_TAG, .. })
+        ));
+        let mut p = params();
+        p.ores[1].material = "granite".into();
+        assert!(matches!(
+            Generator::new(1, &p, &table),
+            Err(GenError::MissingTag { tag: ORE_TAG, .. })
+        ));
+        let mut p = params();
+        p.ores[2].material = "gold_ore".into();
+        assert!(matches!(
+            Generator::new(1, &p, &table),
+            Err(GenError::UnknownMaterial { ref key, .. }) if key == "gold_ore"
         ));
         let mut p = params();
         p.strata.layers.clear();
