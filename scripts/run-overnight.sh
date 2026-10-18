@@ -47,8 +47,14 @@ for i in $(seq 1 "$MAX_ITER"); do
   after="$(git rev-parse HEAD 2>/dev/null || echo none)"
   log "iteration $i done rc=$rc subtype=$subtype turns=$turns cost=$cost head=$after"
 
-  if echo "$result" | grep -q "ALL_FEATURES_PASS"; then
-    log "all features pass"; break
+  # The marker must be a line of its own (prose that mentions it does not count),
+  # and features.json must agree that nothing unskipped is still unpassed.
+  if echo "$result" | tr -d '\r' | grep -qxE '[[:space:]]*ALL_FEATURES_PASS[[:space:]]*'; then
+    left="$(jq -r '[.features[] | select(.passes != true and (.skipped // false) != true)] | length' features.json)"
+    if [ "$left" = "0" ]; then
+      log "all features pass"; break
+    fi
+    log "ALL_FEATURES_PASS printed but $left features are unpassed; continuing"
   fi
 
   errtext="$(jq -r '(if type=="array" then .[-1] else . end) | [.result // "", .error // "", (.errors // [] | join(" "))] | join(" ")' "logs/run-$i.json" 2>/dev/null; cat "logs/run-$i.err" 2>/dev/null)"
