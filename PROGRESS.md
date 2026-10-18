@@ -31,3 +31,13 @@ Decisions:
 - Running scripts/pass-feature.sh makes jq rewrite `§` escapes in features.json as literal `§`. The JSON is semantically the same; this comes from the script, and the file was not edited by hand.
 Next: F002 (no-Bevy check script + CI workflow skeleton), then F003/F004/F005.
 Blockers: none.
+
+## 2026-10-18 04:40 — F002 No-Bevy dependency check script and CI workflow skeleton — passed
+Done: Hardened scripts/check-no-bevy.sh. A missing `crates/<core>` directory or a failing `cargo tree` now fails the check; before, both counted as "Bevy-free" because stderr was discarded and the loop `continue`d. On failure it lists the offending bevy crates (deduplicated, first 10). Checked both ways: it passes on the current tree (rc 0). With `bevy.workspace = true` injected into rmc_world `[dependencies]` it fails for all four core crates (rc 1), since the others reach rmc_world transitively. The same line under `[dev-dependencies]` is ignored, which is correct per `-e normal`. The manifest and Cargo.lock were restored afterwards. .github/workflows/ci.yml parses as YAML (PyYAML); jobs linux and windows.
+Tests added: none (feature test is the existing coords::tests::smoke_compiles).
+Decisions:
+- CI "End-to-end" steps (linux lavapipe, windows WARP) got `if: hashFiles('tests/e2e/tests/*.rs') != ''`. Without it, `scripts/e2e.sh` exits 101 ("no test target matches pattern `*`") until the first scenario lands at F056, and CI is red on every push. The guard lifts itself once a scenario exists. scripts/e2e.sh itself is unchanged.
+- The no-Bevy check stays on `-e normal` as the SAD §4 says. Dev-dependencies and build-dependencies are not checked.
+- On native Windows, jq in pass-feature.sh writes features.json with CRLF. Git normalizes it to LF on commit (warning only).
+Next: F003 (coordinate conversions), then F004, F005.
+Blockers: none.
