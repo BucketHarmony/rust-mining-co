@@ -7,6 +7,7 @@ pub mod damage;
 pub mod edit;
 pub mod materials;
 pub mod raycast;
+pub mod save;
 pub mod shape;
 pub mod world;
 

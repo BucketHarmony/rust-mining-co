@@ -1,6 +1,8 @@
 //! Chunk storage (SAD §7): a 32³ block of cells, either one material or a
 //! bit-packed palette.
 
+use serde::{Deserialize, Serialize};
+
 use crate::coords::{CHUNK_VOLUME, LocalPos};
 use crate::materials::MaterialId;
 
@@ -43,7 +45,10 @@ impl Chunk {
 ///
 /// `PartialEq` is structural: a `Uniform` chunk and an equivalent `Paletted`
 /// chunk compare unequal. Compare contents cell by cell, or by [`ChunkStorage::hash`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The serde form is structural too; storage decoded from outside the
+/// process must pass [`ChunkStorage::is_well_formed`] before use.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkStorage {
     /// Every cell holds this material.
     Uniform(MaterialId),
