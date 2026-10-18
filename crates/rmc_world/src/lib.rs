@@ -5,10 +5,12 @@ pub mod chunk;
 pub mod coords;
 pub mod damage;
 pub mod edit;
+pub mod inventory;
 pub mod materials;
 pub mod raycast;
 pub mod save;
 pub mod shape;
 pub mod world;
 
+pub use inventory::Inventory;
 pub use raycast::{Hit, raycast};

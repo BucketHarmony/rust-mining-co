@@ -11,11 +11,19 @@
 //! it gets `Rejected` and stays out. Until a player has joined, the host
 //! ignores everything else it sends and sends it nothing but replies to
 //! `Hello`.
+//!
+//! Each joined player has an [`Inventory`]. When an applied edit yields
+//! materials, they go to the player that sent it, and that player then gets
+//! an `Inventory` message with its new totals. A `RequestChunk` (a replica
+//! repairing a revision gap) is answered with a `ChunkSnapshot` of that
+//! chunk, to the requester only.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
+use rmc_world::coords::ChunkPos;
 use rmc_world::edit::{EditCommand, EditStatus, PlayerId};
+use rmc_world::inventory::Inventory;
 use rmc_world::world::World;
 use tracing::{debug, info};
 
@@ -38,6 +46,8 @@ pub struct Host {
     transport: Box<dyn Transport>,
     /// Players that sent a matching `Hello`, ascending.
     joined: BTreeSet<PlayerId>,
+    /// What each joined player has collected.
+    inventories: BTreeMap<PlayerId, Inventory>,
 }
 
 impl Host {
@@ -47,6 +57,7 @@ impl Host {
             config,
             transport,
             joined: BTreeSet::new(),
+            inventories: BTreeMap::new(),
         }
     }
 
@@ -67,6 +78,11 @@ impl Host {
         self.joined.contains(&player)
     }
 
+    /// The materials `player` has collected, if it has joined.
+    pub fn inventory(&self, player: PlayerId) -> Option<&Inventory> {
+        self.inventories.get(&player)
+    }
+
     fn handle(&mut self, player: PlayerId, msg: ClientMsg) {
         match msg {
             ClientMsg::Hello {
@@ -79,9 +95,7 @@ impl Host {
             ClientMsg::Edit(cmd) => self.edit(player, cmd),
             // Single player: there is nobody to relay positions to.
             ClientMsg::PlayerState { .. } => {}
-            ClientMsg::RequestChunk(pos) => {
-                debug!(player = player.0, ?pos, "RequestChunk not handled yet");
-            }
+            ClientMsg::RequestChunk(pos) => self.request_chunk(player, pos),
             ClientMsg::SaveRequest => {
                 debug!(player = player.0, "SaveRequest not handled yet");
             }
@@ -136,6 +150,7 @@ impl Host {
             );
         }
         self.joined.insert(player);
+        self.inventories.entry(player).or_default();
         info!(
             player = player.0,
             chunks = self.world.chunk_count(),
@@ -157,10 +172,44 @@ impl Host {
         }
         // Players that have not joined hold no snapshots to apply deltas to,
         // so the result goes to joined players only, not Recipient::All.
+        let yields = result.yields.clone();
         let msg = ServerMsg::Applied(result);
         for &p in &self.joined {
             self.transport.send(Recipient::One(p), msg.clone());
         }
+        if !yields.is_empty() {
+            let inventory = self.inventories.entry(player).or_default();
+            inventory.add_all(&yields);
+            let items = inventory.items();
+            self.transport
+                .send(Recipient::One(player), ServerMsg::Inventory { items });
+        }
+    }
+
+    /// Sends `player` a snapshot of the chunk at `pos`, so its replica can
+    /// repair a revision gap. A chunk the host does not hold has nothing to
+    /// send, and the request is ignored.
+    fn request_chunk(&mut self, player: PlayerId, pos: ChunkPos) {
+        let Some(chunk) = self.world.chunk(pos) else {
+            debug!(
+                player = player.0,
+                ?pos,
+                "RequestChunk for a non-resident chunk ignored"
+            );
+            return;
+        };
+        debug!(
+            player = player.0,
+            ?pos,
+            revision = chunk.revision,
+            "chunk resent"
+        );
+        let msg = ServerMsg::ChunkSnapshot {
+            pos,
+            revision: chunk.revision,
+            storage: chunk.storage.clone(),
+        };
+        self.transport.send(Recipient::One(player), msg);
     }
 }
 
@@ -350,6 +399,28 @@ mod tests {
         assert_eq!(replica.chunk_count(), world.chunk_count());
         assert_eq!(replica.hash(), world.hash());
         replica
+    }
+
+    /// `results` (what `player` receives) with an `Inventory` message after
+    /// each of `player`'s own applied results that yields, carrying its
+    /// running totals, as the host sends them.
+    fn with_inventories(results: &[ServerMsg], player: PlayerId) -> Vec<ServerMsg> {
+        let mut inventory = Inventory::new();
+        let mut out = Vec::new();
+        for msg in results {
+            out.push(msg.clone());
+            let ServerMsg::Applied(r) = msg else {
+                continue;
+            };
+            if r.status == EditStatus::Applied && r.command.issuer == player && !r.yields.is_empty()
+            {
+                inventory.add_all(&r.yields);
+                out.push(ServerMsg::Inventory {
+                    items: inventory.items(),
+                });
+            }
+        }
+        out
     }
 
     /// Applies every delta of every `Applied` message to `replica`, checking
@@ -791,17 +862,23 @@ mod tests {
                 .cloned()
                 .map(ServerMsg::Applied)
                 .collect();
-            // The breaking Damage yields, and from F034 the issuer then also
-            // gets an Inventory message; those are not edit results.
-            let got: Vec<ServerMsg> = ep
-                .drain()
+            let got = ep.drain();
+            assert_eq!(
+                got,
+                with_inventories(&want, ep.player()),
+                "{:?}",
+                ep.player()
+            );
+            let results: Vec<ServerMsg> = got
                 .into_iter()
                 .filter(|m| !matches!(m, ServerMsg::Inventory { .. }))
                 .collect();
-            assert_eq!(got, want, "{:?}", ep.player());
-            replay(&mut replicas[i], &got);
+            assert_eq!(results, want, "{:?}", ep.player());
+            replay(&mut replicas[i], &results);
             assert_eq!(replicas[i].hash(), host.world().hash());
         }
+        // Only the breaking Damage yields, so its issuer alone got an inventory.
+        assert_eq!(expected.iter().filter(|r| !r.yields.is_empty()).count(), 1);
 
         // Order holds across ticks too: commands split over two ticks, then
         // two ticks with nothing inbound.
@@ -844,5 +921,174 @@ mod tests {
             assert_eq!(replicas[i].hash(), host.world().hash());
         }
         assert_eq!(watcher.player(), PlayerId(3));
+    }
+
+    #[test]
+    fn inventory_accumulates_yields() {
+        let world = test_world();
+        let mut reference = world.clone();
+        let stone = mat(&world, "stone");
+        let dirt = mat(&world, "dirt");
+        let granite = mat(&world, "granite");
+        let copper = mat(&world, "copper_ore");
+        let (mut host, eps) = host_with(world, 3);
+        let [a, b, c] = &eps[..] else { unreachable!() };
+
+        // Nobody has an inventory before joining; a joined player starts empty.
+        assert!(eps.iter().all(|ep| host.inventory(ep.player()).is_none()));
+        a.send(hello(host.world())).unwrap();
+        b.send(hello(host.world())).unwrap();
+        host.tick();
+        assert_join(&host, a.player(), &a.drain());
+        assert_join(&host, b.player(), &b.drain());
+        assert_eq!(host.inventory(a.player()), Some(&Inventory::new()));
+        assert_eq!(host.inventory(b.player()), Some(&Inventory::new()));
+        assert!(host.inventory(c.player()).is_none());
+
+        let cell = |x, y, z| Shape::Cell(CellPos::new(x, y, z));
+        let script: Vec<(&ClientEndpoint, ClientMsg)> = vec![
+            // A stone cell breaks at once.
+            (a, edit(1, 0, EditOp::Damage(u16::MAX), cell(10, 3, 10))),
+            // Damage below the hardness: no break, no yield.
+            (a, edit(1, 1, EditOp::Damage(1), cell(11, 3, 10))),
+            // The rest of stone's hardness (30) breaks it.
+            (a, edit(1, 2, EditOp::Damage(29), cell(11, 3, 10))),
+            // b breaks 3 × 2 × 2 copper cells.
+            (
+                b,
+                edit(
+                    2,
+                    0,
+                    EditOp::Damage(u16::MAX),
+                    Shape::Box {
+                        min: CellPos::new(40, 2, 40),
+                        max: CellPos::new(42, 3, 41),
+                    },
+                ),
+            ),
+            // Two stone and two copper cells across a chunk border.
+            (
+                a,
+                edit(
+                    1,
+                    3,
+                    EditOp::Damage(u16::MAX),
+                    Shape::Box {
+                        min: CellPos::new(30, 5, 40),
+                        max: CellPos::new(33, 5, 40),
+                    },
+                ),
+            ),
+            // Remove and Set never yield.
+            (a, edit(1, 4, EditOp::Remove, cell(12, 3, 10))),
+            (a, edit(1, 5, EditOp::Set(granite), cell(10, 3, 10))),
+            // The placed granite breaks and yields granite.
+            (a, edit(1, 6, EditOp::Damage(u16::MAX), cell(10, 3, 10))),
+            // b claims to be a; the dirt goes to b.
+            (b, edit(1, 50, EditOp::Damage(u16::MAX), cell(5, 40, 5))),
+            // c never joined: ignored, no inventory.
+            (c, edit(3, 0, EditOp::Damage(u16::MAX), cell(13, 3, 10))),
+            // Rejected: too many cells.
+            (
+                a,
+                edit(
+                    1,
+                    7,
+                    EditOp::Damage(u16::MAX),
+                    Shape::Box {
+                        min: CellPos::new(-64, 0, -64),
+                        max: CellPos::new(63, 63, 63),
+                    },
+                ),
+            ),
+            // Air yields nothing.
+            (a, edit(1, 8, EditOp::Damage(u16::MAX), cell(-20, 50, -20))),
+            (b, edit(2, 1, EditOp::Damage(u16::MAX), cell(41, 4, 40))),
+            // 33 stone cells (r = 2).
+            (
+                a,
+                edit(
+                    1,
+                    9,
+                    EditOp::Damage(u16::MAX),
+                    Shape::Sphere {
+                        center: CellPos::new(20, 10, 20),
+                        radius: 2,
+                    },
+                ),
+            ),
+        ];
+
+        // Expected: the reference applies what the host accepts, in order.
+        // Applied results go to both joined players, rejections only to the
+        // issuer, and after each yielding result its issuer gets its totals.
+        let mut want = [Vec::new(), Vec::new()];
+        let mut inventories = [Inventory::new(), Inventory::new()];
+        let mut inventory_msgs = 0;
+        for (ep, msg) in &script {
+            ep.send(msg.clone()).unwrap();
+            let me = ep.player();
+            if me == c.player() {
+                continue;
+            }
+            let ClientMsg::Edit(mut cmd) = msg.clone() else {
+                unreachable!()
+            };
+            cmd.issuer = me;
+            cmd.id.issuer = me;
+            let r = reference.apply(&cmd);
+            let mine = usize::from(me != a.player());
+            if r.status == EditStatus::Applied {
+                want[0].push(ServerMsg::Applied(r.clone()));
+                want[1].push(ServerMsg::Applied(r.clone()));
+            } else {
+                assert!(r.yields.is_empty());
+                want[mine].push(ServerMsg::Applied(r.clone()));
+            }
+            if !r.yields.is_empty() {
+                inventories[mine].add_all(&r.yields);
+                inventory_msgs += 1;
+                want[mine].push(ServerMsg::Inventory {
+                    items: inventories[mine].items(),
+                });
+            }
+        }
+        assert_eq!(inventory_msgs, 8);
+        host.tick();
+
+        assert_eq!(host.world().hash(), reference.hash());
+        assert_eq!(a.drain(), want[0]);
+        assert_eq!(b.drain(), want[1]);
+        assert!(c.drain().is_empty());
+
+        // The totals, counted by hand (ids ascend: stone, granite, copper).
+        let inv_a = host.inventory(a.player()).unwrap();
+        assert_eq!(inv_a, &inventories[0]);
+        assert_eq!(inv_a.items(), vec![(stone, 37), (granite, 1), (copper, 2)]);
+        let inv_b = host.inventory(b.player()).unwrap();
+        assert_eq!(inv_b, &inventories[1]);
+        assert_eq!(inv_b.items(), vec![(dirt, 1), (copper, 13)]);
+        assert!(host.inventory(c.player()).is_none());
+
+        // Totals carry over to later ticks: the next message is cumulative.
+        a.send(edit(1, 10, EditOp::Damage(u16::MAX), cell(14, 3, 10)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 2);
+        assert!(matches!(&to_a[0], ServerMsg::Applied(r) if r.yields == vec![(stone, 1)]));
+        let mut expected_a = inventories[0].clone();
+        expected_a.add(stone, 1);
+        assert_eq!(expected_a.count(stone), 38);
+        assert_eq!(
+            to_a[1],
+            ServerMsg::Inventory {
+                items: expected_a.items()
+            }
+        );
+        assert_eq!(host.inventory(a.player()), Some(&expected_a));
+        // b sees the result but not a's inventory, and keeps its own.
+        assert_eq!(b.drain().len(), 1);
+        assert_eq!(host.inventory(b.player()), Some(&inventories[1]));
     }
 }

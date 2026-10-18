@@ -6,7 +6,15 @@
 //! [`World::insert_chunk`], and `Applied` writes each delta through
 //! [`World::apply_delta`]. Nothing else touches its cells, so a replica that
 //! saw every message the host sent to its player holds the host's world.
+//!
+//! If a message was lost, the next delta for an affected chunk has a revision
+//! more than one ahead of the replica's. The replica then queues a
+//! `RequestChunk` for that chunk (collected with [`Replica::take_requests`])
+//! and ignores the chunk's deltas until its snapshot arrives. The host
+//! handles messages in order, so that snapshot already holds every change
+//! the ignored deltas carried, and the deltas after it apply on top.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
@@ -14,8 +22,10 @@ use rmc_world::chunk::Chunk;
 use rmc_world::chunk::ChunkStorage;
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::PlayerId;
+use rmc_world::inventory::Inventory;
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::{DeltaError, World};
+use tracing::debug;
 
 /// Why [`Replica::handle`] could not use a message.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -45,6 +55,11 @@ pub struct Replica {
     player: Option<PlayerId>,
     world: Option<World>,
     rejected: Option<String>,
+    /// Chunks with a revision gap whose snapshot has not arrived yet.
+    awaiting: BTreeSet<ChunkPos>,
+    /// Messages for the host that [`Replica::take_requests`] has not taken.
+    requests: Vec<ClientMsg>,
+    inventory: Inventory,
 }
 
 impl Replica {
@@ -55,6 +70,9 @@ impl Replica {
             player: None,
             world: None,
             rejected: None,
+            awaiting: BTreeSet::new(),
+            requests: Vec::new(),
+            inventory: Inventory::new(),
         }
     }
 
@@ -81,6 +99,24 @@ impl Replica {
         self.rejected.as_deref()
     }
 
+    /// Takes the messages the replica needs sent to the host, in the order
+    /// they arose: one `RequestChunk` per chunk with a revision gap.
+    pub fn take_requests(&mut self) -> Vec<ClientMsg> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// Whether the replica is waiting for a snapshot of `pos` after a
+    /// revision gap. Deltas for that chunk are ignored until it arrives.
+    pub fn is_awaiting(&self, pos: ChunkPos) -> bool {
+        self.awaiting.contains(&pos)
+    }
+
+    /// The player's materials, as of the last `Inventory` message (empty
+    /// before the first one and after a `Welcome`).
+    pub fn inventory(&self) -> &Inventory {
+        &self.inventory
+    }
+
     /// Applies one message from the host.
     ///
     /// - `Welcome` starts a fresh, empty world with the host's bounds (a
@@ -90,16 +126,25 @@ impl Replica {
     /// - `ChunkSnapshot` makes the chunk resident with the host's storage and
     ///   revision, replacing any copy already held. Its storage must be well
     ///   formed and every palette entry must be in the material table.
+    ///   A snapshot of a chunk the replica was waiting for ends the wait.
     /// - `Applied` applies each delta in order. A rejected result has none.
-    ///   Deltas the world refuses are reported together after the others
-    ///   have been applied; a refused delta changes nothing.
-    /// - `Inventory`, `PlayerStates` and `Saved` do not touch the world.
+    ///   A delta for a chunk the replica is waiting for is ignored. A delta
+    ///   more than one revision ahead of the chunk is a gap: the replica
+    ///   queues a `RequestChunk` and waits for that chunk's snapshot, and
+    ///   this is not an error. Other deltas the world refuses (including
+    ///   stale ones, at or below the chunk's revision) are reported together
+    ///   after the others have been applied; a refused delta changes nothing.
+    /// - `Inventory` replaces the replica's inventory.
+    /// - `PlayerStates` and `Saved` do not touch the replica.
     pub fn handle(&mut self, msg: ServerMsg) -> Result<(), ReplicaError> {
         match msg {
             ServerMsg::Welcome { player, bounds, .. } => {
                 self.player = Some(player);
                 self.world = Some(World::new(Arc::clone(&self.materials), bounds));
                 self.rejected = None;
+                self.awaiting.clear();
+                self.requests.clear();
+                self.inventory = Inventory::new();
             }
             ServerMsg::Rejected { reason } => {
                 if self.world.is_none() {
@@ -132,6 +177,7 @@ impl Replica {
                 world
                     .insert_chunk(pos, chunk)
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
+                self.awaiting.remove(&pos);
             }
             ServerMsg::Applied(result) => {
                 if result.deltas.is_empty() {
@@ -141,16 +187,30 @@ impl Replica {
                     .world
                     .as_mut()
                     .ok_or(ReplicaError::NotJoined("Applied"))?;
-                let refused: Vec<DeltaError> = result
-                    .deltas
-                    .iter()
-                    .filter_map(|delta| world.apply_delta(delta).err())
-                    .collect();
+                let mut refused = Vec::new();
+                for delta in &result.deltas {
+                    let pos = delta.pos();
+                    if self.awaiting.contains(&pos) {
+                        continue;
+                    }
+                    match world.apply_delta(delta) {
+                        Ok(()) => {}
+                        Err(DeltaError::RevisionGap { local, got, .. }) if got > local => {
+                            debug!(?pos, local, got, "revision gap, requesting chunk");
+                            self.awaiting.insert(pos);
+                            self.requests.push(ClientMsg::RequestChunk(pos));
+                        }
+                        Err(e) => refused.push(e),
+                    }
+                }
                 if !refused.is_empty() {
                     return Err(ReplicaError::Deltas(refused));
                 }
             }
-            ServerMsg::Inventory { .. } | ServerMsg::PlayerStates(_) | ServerMsg::Saved { .. } => {}
+            ServerMsg::Inventory { items } => {
+                self.inventory = Inventory::from_items(&items);
+            }
+            ServerMsg::PlayerStates(_) | ServerMsg::Saved { .. } => {}
         }
         Ok(())
     }
@@ -506,6 +566,37 @@ mod tests {
                 .world()
                 .unwrap_or_else(|| panic!("{:?} has no world", self.ep.player()))
         }
+
+        /// Drains what the host sent and feeds the replica every message for
+        /// which `keep` is true; the others are lost. Returns all the drained
+        /// messages, lost ones included.
+        fn pump_lossy(&mut self, mut keep: impl FnMut(&ServerMsg) -> bool) -> Vec<ServerMsg> {
+            let me = self.ep.player();
+            let msgs = self.ep.drain();
+            for msg in &msgs {
+                if !keep(msg) {
+                    continue;
+                }
+                let msg = if self.wire {
+                    decode_server(&encode_server(msg).expect("encodes")).expect("decodes")
+                } else {
+                    msg.clone()
+                };
+                if let Err(e) = self.replica.handle(msg) {
+                    panic!("{me:?}: replica refused a host message: {e}");
+                }
+            }
+            msgs
+        }
+
+        /// Sends the replica's pending requests to the host and returns them.
+        fn send_requests(&mut self) -> Vec<ClientMsg> {
+            let requests = self.replica.take_requests();
+            for msg in &requests {
+                self.ep.send(msg.clone()).unwrap();
+            }
+            requests
+        }
     }
 
     /// Every resident chunk has the host's revision, and nothing else is resident.
@@ -642,6 +733,272 @@ mod tests {
         // The late joiner started from an edited world, not the initial one.
         assert!(late_snapshot_revision > 100, "{late_snapshot_revision}");
         assert!(clients[2].next_seq > 1_000);
+    }
+
+    #[test]
+    fn gap_repaired_by_request_chunk() {
+        let world = initial_world();
+        let stone = mat(&world, "stone");
+        let granite = mat(&world, "granite");
+        let clay = mat(&world, "clay");
+        let basalt = mat(&world, "basalt");
+        let brass = mat(&world, "brass_plate");
+        let ids: Vec<MaterialId> = world.materials().iter().map(|d| d.id).collect();
+        let mut transport = ChannelTransport::new();
+        // a receives everything; b, over the wire codec, loses the Applied
+        // messages each step chooses to drop.
+        let mut a = Client::new(transport.connect(), false);
+        let mut b = Client::new(transport.connect(), true);
+        let mut host = Host::new(world, CONFIG, Box::new(transport));
+        let mut stats = Stats::default();
+        a.join();
+        b.join();
+        host.tick();
+        a.pump(&mut stats);
+        b.pump_lossy(|_| true);
+        assert_identical(host.world(), &b);
+
+        let p = ChunkPos::new(0, 0, 0);
+        let q = ChunkPos::new(-1, 0, 0);
+        let r = ChunkPos::new(0, 0, -1);
+        let rev = |w: &World, pos| w.chunk(pos).unwrap().revision;
+        let cell = |x, y, z| Shape::Cell(CellPos::new(x, y, z));
+
+        // E1 changes p and q; b loses it. Nothing tells b yet.
+        a.send_edit(
+            EditOp::Set(granite),
+            Shape::Box {
+                min: CellPos::new(-2, 10, 5),
+                max: CellPos::new(1, 10, 5),
+            },
+        );
+        host.tick();
+        a.pump(&mut stats);
+        let lost = b.pump_lossy(|_| false);
+        assert!(
+            matches!(&lost[..], [ServerMsg::Applied(res)] if res.deltas.len() == 2),
+            "{lost:?}"
+        );
+        assert_eq!(rev(b.world(), p) + 1, rev(host.world(), p));
+        assert_eq!(rev(b.world(), q) + 1, rev(host.world(), q));
+        assert!(b.replica.take_requests().is_empty());
+
+        // E2 changes p: b sees the gap, asks for p and leaves p alone. A gap
+        // is repaired, not an error.
+        a.send_edit(EditOp::Set(clay), cell(5, 12, 5));
+        host.tick();
+        a.pump(&mut stats);
+        b.pump_lossy(|_| true);
+        assert!(b.replica.is_awaiting(p));
+        assert!(!b.replica.is_awaiting(q) && !b.replica.is_awaiting(r));
+        assert_eq!(rev(b.world(), p) + 2, rev(host.world(), p));
+        let held = b.replica.take_requests();
+        assert_eq!(held, vec![ClientMsg::RequestChunk(p)]);
+        assert!(b.replica.take_requests().is_empty(), "taken once");
+
+        // E3 changes p and r before the request reaches the host: p's delta
+        // is ignored without a second request, r's applies.
+        a.send_edit(
+            EditOp::Set(brass),
+            Shape::Box {
+                min: CellPos::new(5, 13, -1),
+                max: CellPos::new(5, 13, 0),
+            },
+        );
+        host.tick();
+        a.pump(&mut stats);
+        let e3 = b.pump_lossy(|_| true);
+        assert_eq!(e3.len(), 1);
+        assert!(b.replica.is_awaiting(p));
+        assert_eq!(rev(b.world(), p) + 3, rev(host.world(), p));
+        assert_eq!(rev(b.world(), r), rev(host.world(), r));
+        assert_eq!(
+            b.world().chunk(r).unwrap().hash(),
+            host.world().chunk(r).unwrap().hash()
+        );
+        assert!(b.replica.take_requests().is_empty());
+
+        // In one tick: E3b (p) arrives before b's request, E4 (p) after it.
+        // b ignores E3b, takes the snapshot (which includes E3b) and applies
+        // E4 on top. a gets the two results and no snapshot.
+        a.send_edit(EditOp::Set(basalt), cell(7, 12, 5));
+        for msg in &held {
+            b.ep.send(msg.clone()).unwrap();
+        }
+        a.send_edit(EditOp::Set(granite), cell(6, 12, 5));
+        host.tick();
+        let to_a = a.ep.drain();
+        assert_eq!(to_a.len(), 2);
+        assert!(to_a.iter().all(|m| matches!(m, ServerMsg::Applied(_))));
+        for msg in to_a {
+            a.replica.handle(msg).unwrap();
+        }
+        let to_b = b.pump_lossy(|_| true);
+        assert_eq!(to_b.len(), 3);
+        assert!(matches!(to_b[0], ServerMsg::Applied(_)));
+        let ServerMsg::ChunkSnapshot { pos, revision, .. } = &to_b[1] else {
+            panic!("expected a snapshot, got {:?}", to_b[1]);
+        };
+        assert_eq!((*pos, *revision + 1), (p, rev(host.world(), p)));
+        assert!(matches!(to_b[2], ServerMsg::Applied(_)));
+        assert!(!b.replica.is_awaiting(p));
+        assert_eq!(rev(b.world(), p), rev(host.world(), p));
+        assert_eq!(
+            b.world().chunk(p).unwrap().hash(),
+            host.world().chunk(p).unwrap().hash()
+        );
+        assert_eq!(b.world().get_cell(CellPos::new(7, 12, 5)), Some(basalt));
+        assert_eq!(b.world().get_cell(CellPos::new(6, 12, 5)), Some(granite));
+        assert!(b.replica.take_requests().is_empty());
+
+        // q is still one edit behind: a gap only shows on the next delta.
+        assert_eq!(rev(b.world(), q) + 1, rev(host.world(), q));
+        assert_ne!(b.world().hash(), host.world().hash());
+
+        // A duplicated old result is refused and reported, and needs no
+        // repair: the replica already holds newer chunks.
+        let before = b.world().hash();
+        let ServerMsg::Applied(old) = e3[0].clone() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            b.replica.handle(ServerMsg::Applied(old)),
+            Err(ReplicaError::Deltas(refused)) if refused.len() == 2
+        ));
+        assert_eq!(b.world().hash(), before);
+        assert!(!b.replica.is_awaiting(p) && !b.replica.is_awaiting(r));
+        assert!(b.replica.take_requests().is_empty());
+
+        // b breaks a stone cell in q itself: its own result shows the gap,
+        // its inventory still arrives, and the snapshot repairs q.
+        b.send_edit(EditOp::Damage(u16::MAX), cell(-5, 10, 5));
+        host.tick();
+        a.pump(&mut stats);
+        let msgs = b.pump_lossy(|_| true);
+        assert!(matches!(
+            msgs[..],
+            [ServerMsg::Applied(_), ServerMsg::Inventory { .. }]
+        ));
+        assert!(b.replica.is_awaiting(q));
+        assert_eq!(b.replica.inventory().items(), vec![(stone, 1)]);
+        assert_eq!(Some(b.replica.inventory()), host.inventory(b.ep.player()));
+        assert_eq!(b.send_requests(), vec![ClientMsg::RequestChunk(q)]);
+        host.tick();
+        assert!(a.ep.drain().is_empty(), "the snapshot goes to b only");
+        let msgs = b.pump_lossy(|_| true);
+        assert!(matches!(msgs[..], [ServerMsg::ChunkSnapshot { pos, .. }] if pos == q));
+        assert!(!b.replica.is_awaiting(q));
+        assert_identical(host.world(), &a);
+        assert_identical(host.world(), &b);
+
+        // The host answers a request for a resident chunk with its snapshot,
+        // to the requester only, and ignores chunks it does not hold.
+        for pos in [r, MISSING[0], ChunkPos::new(100, 0, 0)] {
+            a.ep.send(ClientMsg::RequestChunk(pos)).unwrap();
+        }
+        host.tick();
+        let host_r = host.world().chunk(r).unwrap();
+        assert_eq!(
+            a.ep.drain(),
+            vec![ServerMsg::ChunkSnapshot {
+                pos: r,
+                revision: host_r.revision,
+                storage: host_r.storage.clone(),
+            }]
+        );
+        assert!(b.ep.drain().is_empty());
+
+        // Random edits from both players while b loses one Applied in eight.
+        // b sends its requests after every tick.
+        let mut rng = Rng(0x0F03_4000_5EED_0001);
+        let unknown = MaterialId(1000);
+        let (mut dropped, mut requests) = (0, 0);
+        let mut sent = 0;
+        while sent < 3_000 {
+            for _ in 0..1 + rng.below(8) {
+                let (op, shape) = random_edit(&mut rng, &ids, unknown);
+                if rng.below(2) == 0 {
+                    a.send_edit(op, shape);
+                } else {
+                    b.send_edit(op, shape);
+                }
+                sent += 1;
+            }
+            host.tick();
+            a.pump(&mut stats);
+            b.pump_lossy(|m| {
+                let lose = matches!(m, ServerMsg::Applied(_)) && rng.below(8) == 0;
+                dropped += u32::from(lose);
+                !lose
+            });
+            requests += b.send_requests().len();
+            for (pos, chunk) in host.world().iter_chunks_sorted() {
+                assert!(rev(b.world(), pos) <= chunk.revision);
+            }
+        }
+        assert_identical(host.world(), &a);
+
+        // Touch every chunk so each remaining gap shows, then deliver
+        // everything until b has nothing left to ask for.
+        let sweep: Vec<(CellPos, MaterialId)> = host
+            .world()
+            .iter_chunks_sorted()
+            .map(|(pos, _)| {
+                let at = pos.origin_cell();
+                let m = if host.world().get_cell(at) == Some(brass) {
+                    stone
+                } else {
+                    brass
+                };
+                (at, m)
+            })
+            .collect();
+        for (at, m) in sweep {
+            a.send_edit(EditOp::Set(m), Shape::Cell(at));
+        }
+        let mut rounds = 0;
+        loop {
+            host.tick();
+            a.pump(&mut stats);
+            b.pump_lossy(|_| true);
+            let sent = b.send_requests();
+            requests += sent.len();
+            if sent.is_empty() {
+                break;
+            }
+            rounds += 1;
+            assert!(rounds < 4, "repair does not settle");
+        }
+        assert!(
+            host.world()
+                .iter_chunks_sorted()
+                .all(|(pos, _)| !b.replica.is_awaiting(pos))
+        );
+        assert_identical(host.world(), &a);
+        assert_identical(host.world(), &b);
+        assert!(dropped > 100, "{dropped}");
+        assert!(requests > 20, "{requests}");
+        assert_eq!(Some(b.replica.inventory()), host.inventory(b.ep.player()));
+
+        // A new Welcome starts over: nothing awaited, nothing to request.
+        a.send_edit(EditOp::Set(clay), cell(5, 12, 5));
+        host.tick();
+        b.pump_lossy(|_| false);
+        a.send_edit(EditOp::Set(basalt), cell(5, 12, 5));
+        host.tick();
+        b.pump_lossy(|_| true);
+        assert!(b.replica.is_awaiting(p));
+        b.replica
+            .handle(ServerMsg::Welcome {
+                player: b.ep.player(),
+                seed: CONFIG.seed,
+                bounds: bounds(),
+                gen_params_hash: CONFIG.gen_params_hash,
+            })
+            .unwrap();
+        assert!(!b.replica.is_awaiting(p));
+        assert!(b.replica.take_requests().is_empty());
+        assert!(b.replica.inventory().is_empty());
     }
     #[test]
     fn handle_edge_cases() {
