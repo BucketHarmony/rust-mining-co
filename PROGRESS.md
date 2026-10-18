@@ -107,3 +107,17 @@ Decisions:
 - hash() on a Paletted chunk allocates a compacted copy (at most 64 KiB data). That is fine for world hashing at test and handshake rates. Revisit in F082 if profiling shows it.
 Next: F013 (World with bounds, chunk map, get_cell/is_solid, iter_chunks_sorted, world hash).
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 07:00 — F013 World with bounds, chunk map, get_cell/is_solid, iter_chunks_sorted, world hash — passed
+Done: New rmc_world::world with World { chunks: HashMap<ChunkPos, Chunk>, materials: Arc<MaterialTable>, bounds: CellAabb } and WorldError::ChunkOutOfBounds. API: new(materials, bounds) (empty), bounds(), materials(), get_cell, is_solid, chunk(pos), chunk_count, iter_chunks_sorted, hash, insert_chunk. New coords::CellAabb { min, max } (inclusive like Shape::Box, serde for Welcome/save header) with PHASE1_DEFAULT = (0,0,0)..=(255,127,255) (8×4×8 = 256 chunks, also its Default), new (asserts min <= max), contains, intersects_chunk, and chunks() (every overlapping chunk in (y, z, x) order).
+Tests added: world::tests::{get_cell_out_of_bounds_is_none, iter_sorted_is_deterministic (proptest: random insertion order and subset over a 3×2×3-chunk world with negative coords), world_hash_independent_of_insert_order, iter_sorted_orders_y_then_z_then_x}. Proptest also passes with PROPTEST_CASES=1000 (0.1 s).
+Decisions:
+- get_cell returns None when the cell is outside the bounds OR its chunk is not resident (for example a replica before the snapshot arrives). It does not fall back to AIR. is_solid is false for None and for ids the table does not know. A chunk that straddles the bounds is resident, but its out-of-bounds cells read as None.
+- Default bounds start at the origin with y up: cells 0..=255 × 0..=127 × 0..=255. The SAD gives only the size, so the origin is the conservative choice.
+- insert_chunk returns Result<Option<Chunk>, WorldError>: the previous chunk, or ChunkOutOfBounds when no cell of the chunk is inside the bounds (the chunk is then not stored). The SAD lists no return type; rejecting is safer than storing unreachable chunks. It does not touch revision, modified or compaction; the caller's chunk is stored as is.
+- World::hash = xxh3_64 over "rmc.world.v1" + for each chunk in iter_chunks_sorted: pos x,y,z (i32 LE) + chunk.hash() (u64 LE). Bounds, material table, revisions and `modified` are not hashed (the SAD says it folds (pos, chunk.hash())). Material agreement is checked separately through the Hello hash. No golden value is pinned; the hash is never persisted.
+- iter_chunks_sorted collects and sorts the keys on each call (O(n log n), 256 chunks in Phase 1). Revisit in F082 if it matters.
+- The damage map (BTreeMap<CellPos, u16>) is left for F023, where it is first used; adding it now would be dead code under -D warnings.
+- Deleted the proptest-regressions/world.txt seed that the deliberate todo!() stub failure wrote; it recorded only the stub panic.
+Next: F014 (256 uniform-stone chunks under 64 MB), then M2 F020 shapes.
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
