@@ -6,6 +6,7 @@
 //! chunk.
 
 use glam::IVec3;
+use rayon::prelude::*;
 use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
@@ -305,6 +306,32 @@ impl Generator {
         let chunk = Chunk::new(self.volume(pos).to_storage());
         tracing::debug!(?pos, "chunk generated");
         chunk
+    }
+
+    /// The world bounds from [`GenParams::bounds`].
+    pub fn bounds(&self) -> CellAabb {
+        self.shell.bounds
+    }
+
+    /// Every chunk that overlaps the world bounds, generated in parallel,
+    /// in the bounds' (y, z, x) chunk order.
+    pub fn generate_world(&self) -> Vec<(ChunkPos, Chunk)> {
+        self.generate_chunks(self.bounds().chunks())
+    }
+
+    /// The chunks at `positions`, generated in parallel (rayon) and
+    /// returned in the order given.
+    pub fn generate_chunks(
+        &self,
+        positions: impl IntoIterator<Item = ChunkPos>,
+    ) -> Vec<(ChunkPos, Chunk)> {
+        let positions: Vec<ChunkPos> = positions.into_iter().collect();
+        let chunks: Vec<(ChunkPos, Chunk)> = positions
+            .into_par_iter()
+            .map(|pos| (pos, self.generate(pos)))
+            .collect();
+        tracing::info!(chunks = chunks.len(), "chunks generated");
+        chunks
     }
 
     /// Every step over the chunk's 34³ volume; [`Generator::generate`]
@@ -1767,5 +1794,85 @@ mod tests {
         let result =
             std::panic::catch_unwind(|| generate_chunk(1, ChunkPos::new(0, 0, 0), &p, &table));
         assert!(result.is_err(), "generate_chunk accepted invalid params");
+    }
+
+    #[test]
+    fn generate_world_256_under_10s_dev() {
+        let table = materials();
+        let p = params();
+        assert_eq!(p.bounds.aabb(), CellAabb::PHASE1_DEFAULT);
+        let expected: Vec<ChunkPos> = CellAabb::PHASE1_DEFAULT.chunks().collect();
+        assert_eq!(expected.len(), 256);
+
+        let start = std::time::Instant::now();
+        let g = Generator::new(45, &p, &table).expect("shipped params fit the table");
+        let world = g.generate_world();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "256 chunks took {elapsed:?} on {} rayon threads, bound 10 s",
+            rayon::current_num_threads()
+        );
+        let positions: Vec<ChunkPos> = world.iter().map(|&(pos, _)| pos).collect();
+        assert_eq!(positions, expected, "chunks in the bounds' (y, z, x) order");
+        assert_eq!(g.bounds(), CellAabb::PHASE1_DEFAULT);
+
+        // The world is a real one: unmodified revision-0 chunks that fill
+        // a World, with every step of SAD §9 present somewhere.
+        let mut w = rmc_world::world::World::new(
+            std::sync::Arc::new(table.clone()),
+            CellAabb::PHASE1_DEFAULT,
+        );
+        let mut seen = BTreeSet::new();
+        for (pos, chunk) in &world {
+            assert_eq!(chunk.revision, 0, "{pos:?}");
+            assert!(!chunk.modified, "{pos:?}");
+            for i in 0..CHUNK_VOLUME as u16 {
+                seen.insert(chunk.storage.get(LocalPos::from_index(i)));
+            }
+            assert!(w.insert_chunk(*pos, chunk.clone()).unwrap().is_none());
+        }
+        for key in [
+            "air",
+            "topsoil",
+            "dirt",
+            "stone",
+            "granite",
+            "basalt",
+            "coal_seam",
+            "copper_ore",
+            "iron_ore",
+            "glowcrystal",
+            "bedrock",
+        ] {
+            assert!(seen.contains(&id(&table, key)), "no {key} in the world");
+        }
+
+        // Parallel output equals sequential generation and does not depend
+        // on the thread count or scheduling: the same chunks from a
+        // 3-thread pool, and a hash-picked sample generated one by one.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
+        let again = pool.install(|| g.generate_world());
+        assert!(again == world, "3-thread pool gave a different world");
+        let reversed: Vec<ChunkPos> = expected.iter().rev().copied().collect();
+        let backwards = g.generate_chunks(reversed.iter().copied());
+        assert_eq!(backwards.len(), 256);
+        for ((pos, chunk), want) in backwards.iter().zip(&reversed) {
+            assert_eq!(pos, want, "generate_chunks keeps the order given");
+            let i = expected.iter().position(|p| p == pos).unwrap();
+            assert!(*chunk == world[i].1, "{pos:?} differs by order");
+        }
+        let sample: BTreeSet<usize> = (0..32u64)
+            .map(|k| (cell_hash(45, 0x45, k as i32, 0, 0) % 256) as usize)
+            .collect();
+        assert!(sample.len() >= 16, "sample of {}", sample.len());
+        for i in sample {
+            let (pos, chunk) = &world[i];
+            assert!(*chunk == g.generate(*pos), "{pos:?} differs from generate");
+        }
+        assert!(g.generate_chunks([]).is_empty());
     }
 }
