@@ -56,6 +56,7 @@ settings.
 | `F3` | Toggle targeted-cell gizmo |
 | `F4` | Toggle mesh-queue gizmo |
 | `F5` | Save the world |
+| `F8` | Regenerate the world from the seed |
 | `F9` | Load the saved world |
 
 - Brush size is a radius in cells, from 1 to 15. A Sphere has that radius. A

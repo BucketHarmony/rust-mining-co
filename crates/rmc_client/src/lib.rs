@@ -10,6 +10,7 @@ pub mod material;
 pub mod mesher;
 pub mod meshpipe;
 pub mod net;
+pub mod panel;
 pub mod pickaxe;
 pub mod render;
 pub mod replica;
@@ -39,6 +40,10 @@ pub use meshpipe::{
 };
 pub use net::{
     ClientMaterials, CommandSeq, FromHost, HostConnection, HostLink, NetPlugin, NetSystems, ToHost,
+};
+pub use panel::{
+    EditorPanelPlugin, EditorStats, HostTickTime, PANEL_TITLE, PanelView, STATS_WINDOW_S,
+    brush_summary, editor_panel,
 };
 pub use pickaxe::{
     PickTarget, Pickaxe, PickaxePlugin, PickaxeSystems, SWING_BUTTON, SWING_SLACK, SwingState,

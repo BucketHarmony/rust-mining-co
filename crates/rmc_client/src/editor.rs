@@ -27,7 +27,7 @@
 //! changes. The pickaxe does not swing while the editor is open.
 
 use bevy::prelude::*;
-use rmc_protocol::ClientMsg;
+use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::{EditCommand, EditOp};
 use rmc_world::materials::{MaterialId, MaterialTable};
@@ -38,7 +38,8 @@ use rmc_world::{Hit, raycast};
 use crate::controller::{Aabb, ControllerSystems, EYE_HEIGHT_M, Player, blocks};
 use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::interp::InterpolatedEye;
-use crate::net::{ClientMaterials, CommandSeq, ToHost};
+use crate::net::{ClientMaterials, CommandSeq, FromHost, ToHost};
+use crate::panel::{EditorStats, HostTickTime, sample_stats};
 use crate::render::GameCamera;
 use crate::replica::Replica;
 
@@ -109,6 +110,12 @@ pub struct EditorState {
     pub save_requested: bool,
     /// Set by the Load action; whoever loads takes it (sets it back).
     pub load_requested: bool,
+    /// The worldgen seed the Regenerate action uses. Each `Welcome` sets it
+    /// to the host's seed; the panel edits it.
+    pub seed: u64,
+    /// Set by the Regenerate action; whoever regenerates the world from
+    /// [`seed`](Self::seed) takes it (sets it back).
+    pub regenerate_requested: bool,
 }
 
 impl Default for EditorState {
@@ -122,6 +129,8 @@ impl Default for EditorState {
             gizmos: GizmoToggles::default(),
             save_requested: false,
             load_requested: false,
+            seed: 0,
+            regenerate_requested: false,
         }
     }
 }
@@ -154,6 +163,7 @@ impl EditorState {
             EditorAction::ToggleMeshQueue => self.gizmos.mesh_queue = !self.gizmos.mesh_queue,
             EditorAction::Save => self.save_requested = true,
             EditorAction::Load => self.load_requested = true,
+            EditorAction::Regenerate => self.regenerate_requested = true,
         }
     }
 }
@@ -173,6 +183,7 @@ pub enum EditorAction {
     ToggleMeshQueue,
     Save,
     Load,
+    Regenerate,
 }
 
 impl EditorAction {
@@ -195,6 +206,7 @@ impl EditorAction {
             EditorAction::ToggleMeshQueue => "Toggle mesh-queue gizmo",
             EditorAction::Save => "Save the world",
             EditorAction::Load => "Load the saved world",
+            EditorAction::Regenerate => "Regenerate the world from the seed",
         }
     }
 }
@@ -216,6 +228,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F3, EditorAction::ToggleTargetCell),
     (KeyCode::F4, EditorAction::ToggleMeshQueue),
     (KeyCode::F5, EditorAction::Save),
+    (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
 
@@ -348,6 +361,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F3 => "F3",
         KeyCode::F4 => "F4",
         KeyCode::F5 => "F5",
+        KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
         KeyCode::Digit1 => "1",
         KeyCode::Digit2 => "2",
@@ -385,18 +399,24 @@ pub fn mouse_label(button: MouseButton) -> &'static str {
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EditorSystems;
 
-/// The debug editor's state and keys, and the drop out of the fly camera.
+/// The debug editor's state, keys, brush and stats, and the drop out of the
+/// fly camera. The egui panel is [`EditorPanelPlugin`](crate::panel::EditorPanelPlugin).
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ToHost>()
+            .add_message::<FromHost>()
             .init_resource::<EditorState>()
             .init_resource::<CommandSeq>()
+            .init_resource::<EditorStats>()
+            .init_resource::<HostTickTime>()
             .add_systems(
                 Update,
                 (
+                    follow_welcome_seed.before(editor_keys),
                     editor_keys,
+                    sample_stats,
                     drop_player_after_flying
                         .after(FlyCamSystems)
                         .before(ControllerSystems::Look),
@@ -408,6 +428,15 @@ impl Plugin for EditorPlugin {
                 )
                     .in_set(EditorSystems),
             );
+    }
+}
+
+/// Each `Welcome` sets the editor's seed to the host's.
+fn follow_welcome_seed(mut inbox: MessageReader<FromHost>, mut state: ResMut<EditorState>) {
+    for FromHost(msg) in inbox.read() {
+        if let ServerMsg::Welcome { seed, .. } = msg {
+            state.seed = *seed;
+        }
     }
 }
 
@@ -522,9 +551,11 @@ mod tests {
     use super::*;
     use crate::controller::ControllerPlugin;
     use crate::flycam::{FLY_TOGGLE_KEY, FlyCamPlugin};
+    use crate::panel::{PANEL_TITLE, PanelView, brush_summary, editor_panel};
     use crate::pickaxe::{Pickaxe, PickaxePlugin, SWING_BUTTON};
     use bevy::input::mouse::AccumulatedMouseMotion;
     use bevy::time::TimeUpdateStrategy;
+    use bevy_egui::egui;
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::CellAabb;
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS, PlayerId};
@@ -843,6 +874,168 @@ mod tests {
             }
             assert!(bound.contains(&k), "editor row {k} ({a}) is not a binding");
         }
+    }
+
+    // ---- The egui panel ----
+
+    /// Every text the shapes draw, in paint order.
+    fn shape_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
+                egui::Shape::Vec(inner) => inner.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Input for a screen tall enough that the panel does not scroll.
+    fn screen() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 2000.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Runs the panel on `ctx` over the app's editor state and stats, as the
+    /// panel system does, for two egui frames (egui may spend a new area's
+    /// first frame sizing it). Writes the state back and returns whether the
+    /// panel drew, the texts of the last frame and the fly switch.
+    fn draw_panel(app: &mut App, ctx: &egui::Context) -> (bool, Vec<String>, bool) {
+        let table = materials();
+        let stats = app.world().resource::<EditorStats>().clone();
+        let mut state = state(app);
+        let mut fly = false;
+        let mut shown = false;
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let out = ctx.run_ui(screen(), |ui| {
+                let view = PanelView {
+                    stats: &stats,
+                    materials: Some(&table),
+                };
+                shown = editor_panel(ui.ctx(), &mut state, &mut fly, view, |_| {});
+            });
+            texts = shape_texts(&out.shapes);
+            // No renderer takes the font texture here.
+            out.drop_without_applying_deltas();
+        }
+        *app.world_mut().resource_mut::<EditorState>() = state;
+        (shown, texts, fly)
+    }
+
+    #[test]
+    fn panel_toggles_with_f1() {
+        let table = materials();
+        let mut app = editor_app();
+        let ctx = egui::Context::default();
+
+        // Closed: nothing is drawn.
+        let (shown, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(!shown, "closed editor draws no panel");
+        assert!(texts.is_empty(), "closed editor draws nothing: {texts:?}");
+
+        // F1 opens the panel with every section of SAD §11.6.
+        tap(&mut app, TOGGLE_EDITOR_KEY);
+        assert!(state(&app).open);
+        let before = state(&app);
+        let (shown, texts, fly) = draw_panel(&mut app, &ctx);
+        assert!(shown, "F1 opens the panel");
+        for want in [
+            PANEL_TITLE,
+            "Brush",
+            "Set",
+            "Remove",
+            "Paint",
+            "Cell",
+            "Box",
+            "Sphere",
+            "Fly camera",
+            "Gizmos",
+            "Chunk bounds",
+            "Targeted cell",
+            "Mesh queue",
+            "Stats",
+            "FPS",
+            "Chunks",
+            "Mesh jobs",
+            "Last remesh",
+            "Host tick",
+            "Edits/s",
+            "Worldgen",
+            "Regenerate",
+            "Save",
+            "Load",
+            "Inspector",
+        ] {
+            assert!(
+                texts.iter().any(|t| t.contains(want)),
+                "panel lacks {want:?}: {texts:?}"
+            );
+        }
+        assert!(
+            texts.contains(&brush_summary(&before, Some(&table))),
+            "panel shows the brush: {texts:?}"
+        );
+        assert_eq!(state(&app), before, "drawing alone changes nothing");
+        assert!(!fly, "drawing alone leaves the fly camera off");
+
+        // Keys change what the panel shows.
+        tap(&mut app, key_of(EditorAction::Shape(BrushShape::Sphere)));
+        tap(&mut app, key_of(EditorAction::SizeUp));
+        tap(&mut app, key_of(EditorAction::NextMaterial));
+        let edited = state(&app);
+        let summary = brush_summary(&edited, Some(&table));
+        assert!(summary.contains("Sphere") && summary.contains("size 2"));
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(
+            texts.contains(&summary),
+            "panel follows the keys: {texts:?}"
+        );
+
+        // Stats are sampled every frame: 60 frames of 1/60 s read 60 FPS.
+        for _ in 0..90 {
+            frame(&mut app);
+        }
+        let stats = app.world().resource::<EditorStats>().clone();
+        assert!((stats.fps - 60.0).abs() < 1.0, "fps {}", stats.fps);
+        assert_eq!(stats.chunks, 0, "no replica");
+        assert_eq!(stats.host_tick_ms, None, "nobody reports the host");
+        app.world_mut().resource_mut::<HostTickTime>().0 = Some(2.5);
+        frame(&mut app);
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        for want in ["FPS: 60", "Host tick: 2.5 ms"] {
+            assert!(
+                texts.iter().any(|t| t.contains(want)),
+                "panel lacks {want:?}: {texts:?}"
+            );
+        }
+
+        // The panel's Regenerate has a key too.
+        tap(&mut app, key_of(EditorAction::Regenerate));
+        assert!(state(&app).regenerate_requested);
+
+        // F1 again closes it and keeps the brush.
+        tap(&mut app, TOGGLE_EDITOR_KEY);
+        let closed = state(&app);
+        assert!(!closed.open);
+        assert_eq!(
+            (closed.op, closed.shape, closed.size),
+            (edited.op, edited.shape, edited.size)
+        );
+        let (shown, _, _) = draw_panel(&mut app, &ctx);
+        assert!(!shown, "F1 closes the panel");
+        // And it stays gone on the frames after.
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(texts.is_empty(), "closed panel draws nothing: {texts:?}");
     }
 
     // ---- Leaving the fly camera ----
