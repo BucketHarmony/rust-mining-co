@@ -153,11 +153,17 @@ impl TestApp {
         test_app
     }
 
-    /// One frame: the host ticks, then the app updates.
+    /// One frame: the host ticks, then the app updates. When rendering,
+    /// the step returns once the GPU has finished the frame, so a long
+    /// scenario never queues up GPU work faster than a software adapter
+    /// draws it.
     pub fn step(&mut self) {
         self.host.tick();
         self.host_ticks += 1;
         self.app.update();
+        if self.config.render && self.render_failure().is_none() {
+            self.wait_for_gpu();
+        }
     }
 
     pub fn steps(&mut self, n: u32) {

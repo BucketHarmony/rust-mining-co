@@ -79,7 +79,7 @@ impl TestApp {
     /// runs the readback's buffer-map callback. Bevy only polls the device
     /// when it submits the next frame, and on a software adapter (WARP) that
     /// poll finds the copy unfinished frame after frame.
-    fn wait_for_gpu(&self) {
+    pub(crate) fn wait_for_gpu(&self) {
         let device = self.app().world().resource::<RenderDevice>();
         // The only error with no submission index is a timeout; the loop in
         // try_screenshot then steps again.
