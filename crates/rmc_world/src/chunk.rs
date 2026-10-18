@@ -109,6 +109,45 @@ impl ChunkStorage {
             }
         }
     }
+
+    /// Rebuilds the palette from the cells: drops unused entries, orders the
+    /// rest by first appearance in local linear index order, and demotes to
+    /// the smallest bit width. A chunk left with one material becomes
+    /// `Uniform`. Contents are unchanged.
+    pub fn compact(&mut self) {
+        let ChunkStorage::Paletted {
+            palette,
+            bits,
+            data,
+        } = self
+        else {
+            return;
+        };
+        // Old palette slot -> new palette slot, assigned on first appearance.
+        let mut remap: Vec<Option<usize>> = vec![None; palette.len()];
+        let mut new_palette = Vec::new();
+        let mut slots = Vec::with_capacity(CHUNK_VOLUME);
+        for i in 0..CHUNK_VOLUME {
+            let old = read_packed(data, *bits, i);
+            let slot = *remap[old].get_or_insert_with(|| {
+                new_palette.push(palette[old]);
+                new_palette.len() - 1
+            });
+            slots.push(slot);
+        }
+        if new_palette.len() == 1 {
+            *self = ChunkStorage::Uniform(new_palette[0]);
+            return;
+        }
+        let new_bits = bits_for(new_palette.len());
+        let mut new_data = vec![0; packed_len(new_bits)];
+        for (i, slot) in slots.into_iter().enumerate() {
+            write_packed(&mut new_data, new_bits, i, slot);
+        }
+        *palette = new_palette;
+        *bits = new_bits;
+        *data = new_data;
+    }
 }
 
 /// Smallest allowed bit width that can index `len` palette entries.
@@ -268,5 +307,127 @@ mod tests {
         s.set(top, MaterialId(u16::MAX));
         assert_eq!(s.get(top), MaterialId(u16::MAX));
         assert_eq!(s.get(LocalPos::from_index(109)), MaterialId(1));
+    }
+
+    proptest! {
+        #[test]
+        fn compact_preserves_contents_proptest(
+            fill in 0u16..8,
+            ops in prop::collection::vec(
+                (0u16..CHUNK_VOLUME as u16, prop_oneof![0u16..8, any::<u16>()]),
+                0..400,
+            ),
+            // Overwrite a prefix of the ops with `fill` so some palette entries go unused.
+            undo in 0usize..400,
+        ) {
+            let mut s = ChunkStorage::Uniform(MaterialId(fill));
+            let mut model = vec![MaterialId(fill); CHUNK_VOLUME];
+            for &(i, id) in &ops {
+                s.set(LocalPos::from_index(i), MaterialId(id));
+                model[i as usize] = MaterialId(id);
+            }
+            for &(i, _) in ops.iter().take(undo) {
+                s.set(LocalPos::from_index(i), MaterialId(fill));
+                model[i as usize] = MaterialId(fill);
+            }
+
+            let mut c = s.clone();
+            c.compact();
+            assert_well_formed(&c);
+            for (i, want) in model.iter().enumerate() {
+                prop_assert_eq!(c.get(LocalPos::from_index(i as u16)), *want, "at index {}", i);
+            }
+
+            let mut used = model.clone();
+            used.sort_unstable();
+            used.dedup();
+            match &c {
+                ChunkStorage::Uniform(id) => prop_assert_eq!(used.as_slice(), &[*id]),
+                ChunkStorage::Paletted { palette, .. } => {
+                    // Exactly the used materials, in first-appearance order.
+                    let mut first = Vec::new();
+                    for m in &model {
+                        if !first.contains(m) {
+                            first.push(*m);
+                        }
+                    }
+                    prop_assert!(first.len() > 1);
+                    prop_assert_eq!(palette, &first);
+                }
+            }
+
+            // Compacting is idempotent, and set keeps working afterwards.
+            let mut again = c.clone();
+            again.compact();
+            prop_assert_eq!(&again, &c);
+            let p = LocalPos::from_index(12345);
+            prop_assert_eq!(c.set(p, MaterialId(9999)), model[12345]);
+            prop_assert_eq!(c.get(p), MaterialId(9999));
+            assert_well_formed(&c);
+        }
+    }
+
+    #[test]
+    fn compact_demotes_bits() {
+        let base = MaterialId(0);
+        let mut s = ChunkStorage::Uniform(base);
+        // 300 distinct materials push the chunk to 16 bits.
+        let cells: Vec<u16> = (1u16..=300)
+            .map(|n| (u32::from(n) * 109 % CHUNK_VOLUME as u32) as u16)
+            .collect();
+        for (n, &i) in (1u16..).zip(&cells) {
+            s.set(LocalPos::from_index(i), MaterialId(n));
+        }
+        assert!(matches!(s, ChunkStorage::Paletted { bits: 16, .. }));
+
+        // Overwrite all but the first k with `base`; compact demotes to the
+        // width that holds k + 1 entries.
+        for (k, want_bits) in [(255usize, 8u8), (15, 4), (3, 2), (1, 1)] {
+            for &i in &cells[k..] {
+                s.set(LocalPos::from_index(i), base);
+            }
+            // set alone never demotes.
+            assert!(matches!(s, ChunkStorage::Paletted { bits: 16, .. }));
+            let mut c = s.clone();
+            c.compact();
+            assert_well_formed(&c);
+            let ChunkStorage::Paletted {
+                palette,
+                bits,
+                data,
+            } = &c
+            else {
+                panic!("{} materials compacted to Uniform", k + 1);
+            };
+            assert_eq!(*bits, want_bits, "k = {k}");
+            assert_eq!(palette.len(), k + 1);
+            assert_eq!(data.len(), CHUNK_VOLUME * want_bits as usize / 64);
+            for (n, &i) in (1u16..).zip(&cells) {
+                let want = if usize::from(n) <= k {
+                    MaterialId(n)
+                } else {
+                    base
+                };
+                assert_eq!(c.get(LocalPos::from_index(i)), want, "k = {k}, cell {i}");
+            }
+        }
+
+        // One material left: compact returns to Uniform.
+        s.set(LocalPos::from_index(cells[0]), base);
+        s.compact();
+        assert_eq!(s, ChunkStorage::Uniform(base));
+
+        // A paletted chunk whose fill was entirely overwritten keeps only the new material.
+        let mut s = ChunkStorage::Uniform(MaterialId(1));
+        for i in 0..CHUNK_VOLUME as u16 {
+            s.set(LocalPos::from_index(i), MaterialId(2));
+        }
+        s.compact();
+        assert_eq!(s, ChunkStorage::Uniform(MaterialId(2)));
+
+        // Uniform is already compact.
+        let mut u = ChunkStorage::Uniform(MaterialId(7));
+        u.compact();
+        assert_eq!(u, ChunkStorage::Uniform(MaterialId(7)));
     }
 }
