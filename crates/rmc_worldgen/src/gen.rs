@@ -199,8 +199,14 @@ impl Generator {
         chunk
     }
 
-    /// Steps 1–3 (surface, soil, strata, caves) over the chunk's 34³ volume.
+    /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
+    /// writes its inner 32³.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
+        self.cave_volume(pos)
+    }
+
+    /// Steps 1–3 (surface, soil, strata, caves) over the chunk's 34³ volume.
+    pub fn cave_volume(&self, pos: ChunkPos) -> Volume {
         let mut volume = self.base_volume(pos);
         self.carve_caves(pos, &mut volume);
         volume
@@ -695,7 +701,7 @@ mod tests {
                     for cy in 0..WORLD_CHUNKS_Y {
                         let pos = ChunkPos::new(cx, cy, cz);
                         let base = g.base_volume(pos);
-                        let v = g.volume(pos);
+                        let v = g.cave_volume(pos);
                         for_each_cell(&g, pos, |x, y, z, depth| {
                             let (b, c) = (base.get(x, y, z), v.get(x, y, z));
                             let at =
@@ -709,12 +715,13 @@ mod tests {
                                 }
                             }
                         });
-                        // The chunk is the volume's inner 32³.
+                        // The chunk is the full volume's inner 32³.
                         let chunk = g.generate(pos);
+                        let full = g.volume(pos);
                         for i in 0..CHUNK_VOLUME {
                             let l = LocalPos::from_index(i as u16);
                             let c = l.0.as_ivec3();
-                            assert_eq!(chunk.storage.get(l), v.get(c.x, c.y, c.z));
+                            assert_eq!(chunk.storage.get(l), full.get(c.x, c.y, c.z));
                         }
                     }
                 }
