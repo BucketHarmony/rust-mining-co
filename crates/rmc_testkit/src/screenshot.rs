@@ -133,14 +133,17 @@ mod tests {
         b > 96 && b as i32 > r as i32 + 40 && b as i32 > g as i32 + 10
     }
 
-    /// Spawns a red cube 4 m in front of the test camera, filling the
-    /// middle of the view.
+    /// Points the test camera straight up from above the world, so it sees
+    /// nothing of the world but the clear color, and spawns a red cube 4 m
+    /// in front of it, filling the middle of the view.
     fn spawn_cube(t: &mut TestApp) {
         let world = t.app_mut().world_mut();
-        let camera = *world
-            .query_filtered::<&Transform, With<TestCamera>>()
-            .single(world)
+        let mut camera = world
+            .query_filtered::<&mut Transform, With<TestCamera>>()
+            .single_mut(world)
             .expect("test camera");
+        *camera = Transform::from_xyz(8.0, 40.0, 8.0).looking_to(Vec3::Y, Vec3::Z);
+        let camera = *camera;
         let mesh = world
             .resource_mut::<Assets<Mesh>>()
             .add(Cuboid::new(1.0, 1.0, 1.0));
