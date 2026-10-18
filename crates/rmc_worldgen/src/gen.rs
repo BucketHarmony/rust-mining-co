@@ -1,11 +1,13 @@
-//! Chunk generation (SAD §9): surface, strata, caves, ores and crystals so
-//! far.
+//! Chunk generation (SAD §9): surface, strata, caves, ores, crystals and the
+//! bedrock shell.
 //!
-//! Steps 1–4 run over a 34³ [`Volume`] (the chunk plus a 1-cell border) so
-//! step 5 can read neighbors; only the inner 32³ is written to the chunk.
+//! Steps 1–4 and 6 run over a 34³ [`Volume`] (the chunk plus a 1-cell
+//! border) so step 5 can read neighbors; only the inner 32³ is written to the
+//! chunk.
 
+use glam::IVec3;
 use rmc_world::chunk::{Chunk, ChunkStorage};
-use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos};
+use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
 use crate::noise::{
@@ -123,6 +125,26 @@ impl Crystals {
     }
 }
 
+struct Shell {
+    material: MaterialId,
+    bounds: CellAabb,
+    floor_cells: i32,
+    wall_cells: i32,
+}
+
+impl Shell {
+    /// Whether world cell `c` is in the shell: inside the bounds, and in the
+    /// bottom `floor_cells` layers or within `wall_cells` of an x or z edge.
+    fn contains(&self, c: IVec3) -> bool {
+        if !self.bounds.contains(CellPos(c)) {
+            return false;
+        }
+        let (lo, hi) = (self.bounds.min.0, self.bounds.max.0);
+        let wall = |a: usize| c[a] - lo[a] < self.wall_cells || hi[a] - c[a] < self.wall_cells;
+        c.y - lo.y < self.floor_cells || wall(0) || wall(2)
+    }
+}
+
 /// Generation for one seed, parameter set and material table. Build it
 /// once and call [`Generator::generate`] for each chunk; it is `Sync`, so
 /// chunks can generate in parallel.
@@ -137,6 +159,7 @@ pub struct Generator {
     /// Top priority first.
     ores: Vec<Ore>,
     crystals: Crystals,
+    shell: Shell,
     /// Whether each material id carries the `stone` tag.
     stone: Vec<bool>,
 }
@@ -166,7 +189,8 @@ fn resolve(
 impl Generator {
     /// Validates `params`, resolves its material keys against `materials`
     /// (soil layers need the `soil` tag, strata `stone`, ores `ore`, crystals
-    /// `crystal`) and seeds every noise layer from `(seed, layer id)`.
+    /// `crystal`; bedrock must be solid and not diggable) and seeds every
+    /// noise layer from `(seed, layer id)`.
     pub fn new(seed: u64, params: &GenParams, materials: &MaterialTable) -> Result<Self, GenError> {
         params.validate()?;
         let soil = params
@@ -237,6 +261,28 @@ impl Generator {
             chance_per_million: params.crystals.chance_per_million,
             seed,
         };
+        let b = &params.bedrock;
+        let Some(bedrock) = materials.id(&b.material) else {
+            return Err(GenError::UnknownMaterial {
+                field: "bedrock".to_owned(),
+                key: b.material.clone(),
+            });
+        };
+        if materials
+            .get(bedrock)
+            .is_none_or(|d| !d.is_solid() || d.diggable)
+        {
+            return Err(GenError::Diggable {
+                field: "bedrock".to_owned(),
+                key: b.material.clone(),
+            });
+        }
+        let shell = Shell {
+            material: bedrock,
+            bounds: params.bounds.aabb(),
+            floor_cells: b.floor_cells,
+            wall_cells: b.wall_cells,
+        };
         // Ids equal table positions.
         let stone = materials.iter().map(|d| d.has_tag(STONE_TAG)).collect();
         Ok(Self {
@@ -249,6 +295,7 @@ impl Generator {
             caves,
             ores,
             crystals,
+            shell,
             stone,
         })
     }
@@ -260,7 +307,7 @@ impl Generator {
         chunk
     }
 
-    /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
+    /// Every step over the chunk's 34³ volume; [`Generator::generate`]
     /// writes its inner 32³. Step 5 reads the border but only changes the
     /// inner 32³, so the border cells hold the other steps only.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
@@ -269,10 +316,32 @@ impl Generator {
         volume
     }
 
-    /// Every step except crystals over the chunk's 34³ volume: the cells
-    /// step 5 reads. So far this is steps 1–4.
+    /// Every step except crystals (steps 1–4, then 6) over the chunk's 34³
+    /// volume: the cells step 5 reads. Crystals never replace bedrock, so
+    /// the shell is still the last word, and crystals face air in the
+    /// finished world.
     pub fn shell_volume(&self, pos: ChunkPos) -> Volume {
-        self.ore_volume(pos)
+        let mut volume = self.ore_volume(pos);
+        self.place_shell(pos, &mut volume);
+        volume
+    }
+
+    /// Step 6: bedrock over every cell of the shell.
+    fn place_shell(&self, pos: ChunkPos, volume: &mut Volume) {
+        let shell = &self.shell;
+        if shell.floor_cells == 0 && shell.wall_cells == 0 {
+            return;
+        }
+        let origin = pos.origin_cell().0;
+        for y in -1..=CHUNK_SIZE {
+            for z in -1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    if shell.contains(origin + IVec3::new(x, y, z)) {
+                        volume.cells[Volume::index(x, y, z)] = shell.material;
+                    }
+                }
+            }
+        }
     }
 
     /// Steps 1–4 (surface, soil, strata, caves, ores) over the chunk's 34³
@@ -351,7 +420,9 @@ impl Generator {
     }
 
     /// Step 5: turns the `stone`-tagged inner cells that share a face with
-    /// air into crystal where the cell hash picks them.
+    /// air into crystal where the cell hash picks them. Shell cells are
+    /// skipped, so the shell stays the last word even for a stone-tagged
+    /// bedrock material.
     fn place_crystals(&self, pos: ChunkPos, volume: &mut Volume) {
         if self.crystals.chance_per_million == 0 {
             return;
@@ -366,7 +437,7 @@ impl Generator {
             (0, 0, -1),
         ];
         // Placing a crystal never adds or removes air, so changing cells in
-        // place gives the same result as reading a copy of steps 1–4.
+        // place gives the same result as reading a copy of steps 1–4 and 6.
         for z in 0..CHUNK_SIZE {
             for y in 0..CHUNK_SIZE {
                 for x in 0..CHUNK_SIZE {
@@ -378,10 +449,10 @@ impl Generator {
                     let open = faces
                         .iter()
                         .any(|(dx, dy, dz)| volume.get(x + dx, y + dy, z + dz) == MaterialId::AIR);
+                    let cell = origin + IVec3::new(x, y, z);
                     if open
-                        && self
-                            .crystals
-                            .picks(origin.x + x, origin.y + y, origin.z + z)
+                        && !self.shell.contains(cell)
+                        && self.crystals.picks(cell.x, cell.y, cell.z)
                     {
                         volume.cells[i] = self.crystals.material;
                     }
@@ -469,8 +540,10 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use glam::IVec3;
+    use rmc_world::coords::{CellAabb, CellPos};
 
     use super::*;
+    use crate::params::WorldBounds;
 
     const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
     const PARAMS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/worldgen.ron");
@@ -1378,6 +1451,248 @@ mod tests {
         );
     }
 
+    /// Whether world cell `c` lies in the bedrock shell `p` describes: inside
+    /// the bounds, and in the bottom `floor_cells` layers or within
+    /// `wall_cells` of an x or z edge.
+    fn in_shell(p: &GenParams, c: IVec3) -> bool {
+        let b = p.bounds.aabb();
+        if !b.contains(CellPos(c)) {
+            return false;
+        }
+        let (lo, hi) = (b.min.0, b.max.0);
+        let w = p.bedrock.wall_cells;
+        let wall = |a: usize| c[a] - lo[a] < w || hi[a] - c[a] < w;
+        c.y - lo.y < p.bedrock.floor_cells || wall(0) || wall(2)
+    }
+
+    /// `p` with caves that reach the floor and a crystal on every
+    /// candidate, so the shell has caves and crystals to overwrite.
+    fn busy(p: &GenParams) -> GenParams {
+        let mut p = crystals_everywhere(p);
+        p.caves.blob.threshold = -0.3;
+        p.caves.worm.radius = 0.5;
+        p
+    }
+
+    #[test]
+    fn bedrock_shell_complete() {
+        let table = materials();
+        let shipped = params();
+        let bedrock = id(&table, &shipped.bedrock.material);
+        let crystal = id(&table, &shipped.crystals.material);
+        let def = table.get(bedrock).unwrap();
+        assert!(def.is_solid() && !def.diggable, "bedrock can be dug");
+        // SAD §5 default world; SAD §9 bottom 2 layers and edge columns.
+        assert_eq!(shipped.bounds.aabb(), CellAabb::PHASE1_DEFAULT);
+        let c = IVec3::new;
+        for (cell, want) in [
+            (c(100, 0, 100), true),
+            (c(100, 1, 100), true),
+            (c(100, 2, 100), false),
+            (c(0, 64, 100), true),
+            (c(255, 127, 0), true),
+            (c(100, 127, 255), true),
+            (c(1, 64, 1), false),
+            (c(254, 100, 254), false),
+            (c(100, -1, 100), false),
+            (c(-1, 64, 100), false),
+            (c(100, 128, 0), false),
+        ] {
+            assert_eq!(in_shell(&shipped, cell), want, "{cell}");
+        }
+        // A box that is not chunk aligned, with a thicker shell.
+        let mut odd = busy(&shipped);
+        odd.bounds = WorldBounds {
+            min: [-20, -7, 5],
+            max: [40, 50, 70],
+        };
+        odd.bedrock.floor_cells = 3;
+        odd.bedrock.wall_cells = 2;
+        // Bedrock tagged stone: crystals must still leave the shell alone.
+        let stony_bedrock = {
+            let text = std::fs::read_to_string(MATERIALS_PATH).unwrap();
+            let from = r#"key: "bedrock", phase: Solid, tags: []"#;
+            assert!(text.contains(from));
+            let to = r#"key: "bedrock", phase: Solid, tags: ["stone"]"#;
+            MaterialTable::from_ron_str(&text.replace(from, to)).unwrap()
+        };
+
+        let (mut shell, mut overwritten, mut crystals) = ([0usize; 3], [0usize; 3], [0usize; 3]);
+        let runs = [
+            (&shipped, 2, &table),
+            (&busy(&shipped), 1 << 33, &table),
+            (&odd, 0xB0770, &stony_bedrock),
+        ];
+        for (k, (p, seed, table)) in runs.into_iter().enumerate() {
+            // The same world without a shell.
+            let mut bare = p.clone();
+            bare.bedrock.floor_cells = 0;
+            bare.bedrock.wall_cells = 0;
+            let g = Generator::new(seed, p, table).unwrap();
+            let none = Generator::new(seed, &bare, table).unwrap();
+            let mut world = BTreeMap::new();
+            // Chunks on and just outside every x and z edge, top to
+            // bottom and beyond, plus a column inside.
+            let b = p.bounds.aabb();
+            let (lo, hi) = (b.min.chunk().0, b.max.chunk().0);
+            let mid = (lo + hi) / 2;
+            let around = |a: usize| [lo[a] - 1, lo[a], hi[a], hi[a] + 1];
+            let mut positions = Vec::new();
+            for cy in lo.y - 1..=hi.y + 1 {
+                for cx in around(0) {
+                    for cz in around(2) {
+                        positions.push(IVec3::new(cx, cy, cz));
+                    }
+                }
+                positions.push(IVec3::new(mid.x, cy, mid.z));
+            }
+            for pos in positions.into_iter().map(ChunkPos) {
+                let (pre, bare_pre) = (g.shell_volume(pos), none.shell_volume(pos));
+                let o = pos.origin_cell().0;
+                for x in -1..=CHUNK_SIZE {
+                    for y in -1..=CHUNK_SIZE {
+                        for z in -1..=CHUNK_SIZE {
+                            let cell = o + IVec3::new(x, y, z);
+                            let at = || format!("run {k} seed {seed} {pos:?} cell {cell}");
+                            let (got, without) = (pre.get(x, y, z), bare_pre.get(x, y, z));
+                            if in_shell(p, cell) {
+                                assert_eq!(got, bedrock, "{}: hole in the shell", at());
+                                shell[k] += 1;
+                                overwritten[k] += usize::from(without == MaterialId::AIR);
+                            } else {
+                                assert_eq!(got, without, "{}: shell spilled", at());
+                                assert_ne!(got, bedrock, "{}: stray bedrock", at());
+                            }
+                            let inner = [x, y, z].iter().all(|c| (0..CHUNK_SIZE).contains(c));
+                            if !inner {
+                                continue;
+                            }
+                            // In the finished chunk the shell stays whole
+                            // and crystals still face air.
+                            let fin = final_at(&g, &mut world, cell);
+                            if in_shell(p, cell) {
+                                assert_eq!(fin, bedrock, "{}: shell overwritten", at());
+                            } else if fin == crystal {
+                                crystals[k] += 1;
+                                assert!(
+                                    FACES.iter().any(|&f| {
+                                        final_at(&g, &mut world, cell + f) == MaterialId::AIR
+                                    }),
+                                    "{}: crystal without air",
+                                    at()
+                                );
+                            } else {
+                                assert_eq!(fin, got, "{}", at());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            shell.iter().all(|&n| n > 10_000),
+            "shell cells checked: {shell:?}"
+        );
+        // Busy caves reach the floor and the walls; the shell closes them.
+        assert!(
+            overwritten[1] > 1000 && overwritten[2] > 1000,
+            "cave cells under the shell: {overwritten:?}"
+        );
+        assert!(crystals[1] > 1000, "crystals near the shell: {crystals:?}");
+    }
+
+    #[test]
+    fn border_continuity_20_random_pairs() {
+        let table = materials();
+        let shipped = params();
+        let bedrock = id(&table, &shipped.bedrock.material);
+        let crystal = id(&table, &shipped.crystals.material);
+        let ores: Vec<MaterialId> = shipped
+            .ores
+            .iter()
+            .map(|o| id(&table, &o.material))
+            .collect();
+        // 20 chunks drawn by a fixed hash from the world and the chunks just
+        // outside it, each paired with its neighbour across one face; every
+        // face direction comes up at least 3 times.
+        let b = shipped.bounds.aabb();
+        let (lo, hi) = (b.min.chunk().0, b.max.chunk().0);
+        let pairs: Vec<(ChunkPos, IVec3)> = (0..20)
+            .map(|i| {
+                let pick = |axis: usize| {
+                    let r = cell_hash(0x5EED, 0xF044, i, axis as i32, 0);
+                    let span = (hi[axis] - lo[axis] + 3) as u64;
+                    lo[axis] - 1 + (r % span) as i32
+                };
+                let a = IVec3::new(pick(0), pick(1), pick(2));
+                (ChunkPos(a), FACES[i as usize % 6])
+            })
+            .collect();
+
+        // Face cells carved by caves or holding an ore, a crystal or
+        // bedrock: every step crosses faces.
+        let (mut caves, mut ore, mut crystals, mut shell) = (0, 0, 0, 0);
+        for p in [&shipped, &busy(&shipped)] {
+            for seed in [6, 0xF00D_F00D] {
+                let g = Generator::new(seed, p, &table).unwrap();
+                let mut pre = BTreeMap::new();
+                for &(a, d) in &pairs {
+                    let bpos = ChunkPos(a.0 + d);
+                    let (va, vb) = (g.shell_volume(a), g.shell_volume(bpos));
+                    let (base_a, base_b) = (g.base_volume(a), g.base_volume(bpos));
+                    let (ca, cb) = (g.generate(a), g.generate(bpos));
+                    let axis = d.abs().max_position();
+                    for u in 0..CHUNK_SIZE {
+                        for w in 0..CHUNK_SIZE {
+                            // Face cell of a, and the cell across in b.
+                            let mut la = IVec3::ZERO;
+                            la[axis] = if d[axis] > 0 { CHUNK_SIZE - 1 } else { 0 };
+                            la[(axis + 1) % 3] = u;
+                            la[(axis + 2) % 3] = w;
+                            let lb = la + d - d * CHUNK_SIZE;
+                            let at = || format!("seed {seed} {a:?} -> {bpos:?} local {la}");
+                            // Each volume's border holds the other chunk's cell.
+                            let (ba, bb) = (la + d, lb - d);
+                            let a_border = va.get(ba.x, ba.y, ba.z);
+                            assert_eq!(a_border, vb.get(lb.x, lb.y, lb.z), "{}", at());
+                            let b_border = vb.get(bb.x, bb.y, bb.z);
+                            assert_eq!(b_border, va.get(la.x, la.y, la.z), "{}", at());
+                            let base_border = base_a.get(ba.x, ba.y, ba.z);
+                            assert_eq!(base_border, base_b.get(lb.x, lb.y, lb.z), "{}", at());
+                            // The finished cells on both sides follow from the
+                            // pre-crystal world, read from the owning chunks.
+                            for (chunk, pos, l, vol, base) in
+                                [(&ca, a, la, &va, &base_a), (&cb, bpos, lb, &vb, &base_b)]
+                            {
+                                let c = pos.origin_cell().0 + l;
+                                let before = step4_at(&g, &mut pre, c);
+                                assert_eq!(before, vol.get(l.x, l.y, l.z), "{}", at());
+                                let open = FACES
+                                    .iter()
+                                    .any(|&f| step4_at(&g, &mut pre, c + f) == MaterialId::AIR);
+                                let picked = table.has_tag(before, STONE_TAG)
+                                    && open
+                                    && g.crystals.picks(c.x, c.y, c.z);
+                                let want = if picked { crystal } else { before };
+                                let got = chunk.storage.get(local(l));
+                                assert_eq!(got, want, "{} cell {c}", at());
+                                let solid = base.get(l.x, l.y, l.z) != MaterialId::AIR;
+                                caves += usize::from(solid && before == MaterialId::AIR);
+                                ore += usize::from(ores.contains(&got));
+                                crystals += usize::from(got == crystal);
+                                shell += usize::from(got == bedrock);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            caves > 100 && ore > 100 && crystals > 100 && shell > 1000,
+            "face cells: {caves} cave, {ore} ore, {crystals} crystal, {shell} bedrock"
+        );
+    }
+
     #[test]
     fn generator_checks_materials() {
         let table = materials();
@@ -1425,6 +1740,23 @@ mod tests {
         assert!(matches!(
             Generator::new(1, &p, &table),
             Err(GenError::UnknownMaterial { ref key, .. }) if key == "ruby"
+        ));
+        for key in ["stone", "air"] {
+            let mut p = params();
+            p.bedrock.material = key.into();
+            assert!(
+                matches!(
+                    Generator::new(1, &p, &table),
+                    Err(GenError::Diggable { key: ref k, .. }) if k == key
+                ),
+                "{key}"
+            );
+        }
+        let mut p = params();
+        p.bedrock.material = "obsidian".into();
+        assert!(matches!(
+            Generator::new(1, &p, &table),
+            Err(GenError::UnknownMaterial { ref key, .. }) if key == "obsidian"
         ));
         let mut p = params();
         p.strata.layers.clear();

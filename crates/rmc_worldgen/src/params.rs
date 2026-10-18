@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use glam::IVec3;
+use rmc_world::coords::{CellAabb, CellPos};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -127,9 +129,39 @@ pub struct CrystalParams {
     pub chance_per_million: u32,
 }
 
+/// The world's extent in cells, both corners included (SAD §5). Step 6
+/// builds its shell inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldBounds {
+    pub min: [i32; 3],
+    pub max: [i32; 3],
+}
+
+impl WorldBounds {
+    /// The same box as the world's bounds type.
+    pub fn aabb(&self) -> CellAabb {
+        CellAabb::new(
+            CellPos(IVec3::from_array(self.min)),
+            CellPos(IVec3::from_array(self.max)),
+        )
+    }
+}
+
+/// Step 6: the bedrock shell inside the world bounds, over everything else.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BedrockParams {
+    /// Material key; it must be solid and not diggable.
+    pub material: String,
+    /// Layers at the bottom of the world.
+    pub floor_cells: i32,
+    /// Columns at each x and z edge of the world, full height.
+    pub wall_cells: i32,
+}
+
 /// Everything worldgen reads besides the seed and the material table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenParams {
+    pub bounds: WorldBounds,
     pub surface: SurfaceParams,
     /// Top down from the surface.
     pub soil: Vec<SoilLayer>,
@@ -138,6 +170,7 @@ pub struct GenParams {
     /// Step 4. Where two ores overlap, the earlier one wins.
     pub ores: Vec<OreVein>,
     pub crystals: CrystalParams,
+    pub bedrock: BedrockParams,
 }
 
 #[derive(Debug, Error)]
@@ -160,6 +193,8 @@ pub enum GenError {
         key: String,
         tag: &'static str,
     },
+    #[error("{field}: material {key:?} must be solid and not diggable")]
+    Diggable { field: String, key: String },
 }
 
 fn invalid(field: impl Into<String>, reason: impl Into<String>) -> GenError {
@@ -224,6 +259,24 @@ impl GenParams {
     /// Checks ranges and ordering. Material keys are checked against the
     /// table later, by [`crate::Generator::new`].
     pub fn validate(&self) -> Result<(), GenError> {
+        let b = &self.bounds;
+        for axis in 0..3 {
+            for (name, value) in [("min", b.min[axis]), ("max", b.max[axis])] {
+                if !(-MAX_BASE_HEIGHT..=MAX_BASE_HEIGHT).contains(&value) {
+                    return Err(invalid(
+                        format!("bounds.{name}[{axis}]"),
+                        format!("{value} must be within ±{MAX_BASE_HEIGHT}"),
+                    ));
+                }
+            }
+            if b.min[axis] > b.max[axis] {
+                return Err(invalid(
+                    format!("bounds.min[{axis}]"),
+                    format!("{} exceeds max {}", b.min[axis], b.max[axis]),
+                ));
+            }
+        }
+
         let s = &self.surface;
         if !(-MAX_BASE_HEIGHT..=MAX_BASE_HEIGHT).contains(&s.base_height) {
             return Err(invalid(
@@ -325,6 +378,9 @@ impl GenParams {
                 format!("{chance} must be in 0..={ONE_MILLION}"),
             ));
         }
+
+        check_cells("bedrock.floor_cells", self.bedrock.floor_cells)?;
+        check_cells("bedrock.wall_cells", self.bedrock.wall_cells)?;
         Ok(())
     }
 
@@ -358,6 +414,9 @@ mod tests {
         assert_eq!(p.strata.layers[2].until_depth, None);
         assert_eq!(p.ores.len(), 3);
         assert_eq!(p.crystals.material, "glowcrystal");
+        assert_eq!(p.bounds.aabb(), CellAabb::PHASE1_DEFAULT);
+        assert_eq!(p.bedrock.material, "bedrock");
+        assert_eq!((p.bedrock.floor_cells, p.bedrock.wall_cells), (2, 1));
 
         // Each broken copy is refused with an Invalid error.
         let broken: Vec<(&str, Edit)> = vec![
@@ -463,6 +522,17 @@ mod tests {
                 "crystal chance over one",
                 Box::new(|p| p.crystals.chance_per_million = ONE_MILLION + 1),
             ),
+            ("min above max", Box::new(|p| p.bounds.min[1] = 128)),
+            ("huge bounds", Box::new(|p| p.bounds.max[2] = i32::MAX)),
+            (
+                "huge negative bounds",
+                Box::new(|p| p.bounds.min[0] = i32::MIN),
+            ),
+            ("negative floor", Box::new(|p| p.bedrock.floor_cells = -1)),
+            (
+                "huge wall",
+                Box::new(|p| p.bedrock.wall_cells = MAX_CELLS + 1),
+            ),
         ];
         for (name, edit) in broken {
             let mut p = phase1();
@@ -500,6 +570,14 @@ mod tests {
             p.crystals.chance_per_million = chance;
             p.validate().unwrap();
         }
+
+        // No shell, and a one-cell world.
+        let mut p = phase1();
+        p.bedrock.floor_cells = 0;
+        p.bedrock.wall_cells = 0;
+        p.validate().unwrap();
+        p.bounds.max = p.bounds.min;
+        p.validate().unwrap();
 
         assert!(matches!(
             GenParams::from_ron_str("(surface: ())"),
@@ -561,6 +639,11 @@ mod tests {
             }),
             Box::new(|p| p.crystals.material = "stone".into()),
             Box::new(|p| p.crystals.chance_per_million += 1),
+            Box::new(|p| p.bounds.min[0] -= 1),
+            Box::new(|p| p.bounds.max[1] += 1),
+            Box::new(|p| p.bedrock.material = "basalt".into()),
+            Box::new(|p| p.bedrock.floor_cells += 1),
+            Box::new(|p| p.bedrock.wall_cells += 1),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

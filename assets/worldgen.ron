@@ -6,6 +6,9 @@
 // Changing any field changes the params hash, which Welcome and the save
 // header carry.
 (
+    // World extent in cells, both corners included (SAD §5: 256 × 128 × 256
+    // cells, 8 × 4 × 8 chunks). The bedrock shell lies inside it.
+    bounds: (min: (0, 0, 0), max: (255, 127, 255)),
     surface: (
         // Mean surface: the topmost solid cell sits at base_height + offset,
         // offset in [-amplitude, amplitude].
@@ -64,4 +67,8 @@
     // chance_per_million of them in a million. The material needs the
     // "crystal" tag.
     crystals: (material: "glowcrystal", chance_per_million: 30000),
+    // Last word over every other step, inside the bounds: the bottom
+    // floor_cells layers and the wall_cells columns at each x and z edge,
+    // full height. The material must be solid and not diggable.
+    bedrock: (material: "bedrock", floor_cells: 2, wall_cells: 1),
 )
