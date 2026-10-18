@@ -521,7 +521,9 @@ mod tests {
         assert_eq!(replay(&before, &r.deltas).hash(), w.hash());
 
         // A whole-chunk fill compacts to Uniform; the neighbour chunk, with
-        // only a few changes in the same command, gets Cells.
+        // only a few changes in the same command, gets Cells. The second
+        // command skips the z = 0 slab the first already set, so it stays
+        // within MAX_EDIT_CELLS (33 × 32 × 31 = 32,736 cells).
         let mut w = two_chunk_world("stone");
         let before = w.clone();
         let r = w.apply(&cmd(2, EditOp::Set(granite), boxed((0, 0, 0), (32, 31, 0))));
@@ -531,7 +533,7 @@ mod tests {
         let r2 = w.apply(&cmd(
             3,
             EditOp::Set(granite),
-            boxed((0, 0, 0), (32, 31, 31)),
+            boxed((0, 0, 1), (32, 31, 31)),
         ));
         assert_eq!(r2.deltas.len(), 2);
         match &r2.deltas[0] {
