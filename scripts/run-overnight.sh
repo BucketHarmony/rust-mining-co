@@ -5,8 +5,10 @@
 #
 # Run as a non-root user inside WSL2 (bypassPermissions refuses to start as root).
 # Run `claude` once interactively in this directory beforehand so the folder is trusted.
-# Logs: logs/run-N.json (session result), logs/run-N.txt (driver notes), logs/driver.log
+# Logs: logs/run-N.json (session result; claude -p emits an array of messages, the result is the last), logs/run-N.txt (driver notes), logs/driver.log
 set -u
+# jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
+jq() { command jq "$@" | tr -d '\r'; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p logs
@@ -38,10 +40,10 @@ for i in $(seq 1 "$MAX_ITER"); do
     > "logs/run-$i.json" 2> "logs/run-$i.err"
   rc=$?
 
-  subtype="$(jq -r '.subtype // "unknown"' "logs/run-$i.json" 2>/dev/null)"
-  turns="$(jq -r '.num_turns // 0' "logs/run-$i.json" 2>/dev/null)"
-  cost="$(jq -r '.total_cost_usd // 0' "logs/run-$i.json" 2>/dev/null)"
-  result="$(jq -r '.result // ""' "logs/run-$i.json" 2>/dev/null)"
+  subtype="$(jq -r '(if type=="array" then .[-1] else . end) | .subtype // "unknown"' "logs/run-$i.json" 2>/dev/null)"
+  turns="$(jq -r '(if type=="array" then .[-1] else . end) | .num_turns // 0' "logs/run-$i.json" 2>/dev/null)"
+  cost="$(jq -r '(if type=="array" then .[-1] else . end) | .total_cost_usd // 0' "logs/run-$i.json" 2>/dev/null)"
+  result="$(jq -r '(if type=="array" then .[-1] else . end) | .result // ""' "logs/run-$i.json" 2>/dev/null)"
   after="$(git rev-parse HEAD 2>/dev/null || echo none)"
   log "iteration $i done rc=$rc subtype=$subtype turns=$turns cost=$cost head=$after"
 
@@ -49,7 +51,7 @@ for i in $(seq 1 "$MAX_ITER"); do
     log "all features pass"; break
   fi
 
-  errtext="$(jq -r '[.result // "", .error // "", (.errors // [] | join(" "))] | join(" ")' "logs/run-$i.json" 2>/dev/null; cat "logs/run-$i.err" 2>/dev/null)"
+  errtext="$(jq -r '(if type=="array" then .[-1] else . end) | [.result // "", .error // "", (.errors // [] | join(" "))] | join(" ")' "logs/run-$i.json" 2>/dev/null; cat "logs/run-$i.err" 2>/dev/null)"
   if echo "$errtext" | grep -qiE "rate.?limit|usage limit|overloaded|too many requests|status 429"; then
     log "rate/usage limit hit; sleeping ${RATE_SLEEP}s"; sleep "$RATE_SLEEP"; continue
   fi

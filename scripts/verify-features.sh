@@ -5,6 +5,8 @@
 #   verify-features.sh --all       run every test of every non-skipped feature; print ALL_FEATURES_PASS when
 #                                  every non-skipped feature has passes=true and all its tests are green
 set -u
+# jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
+jq() { command jq "$@" | tr -d '\r'; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES="$ROOT/features.json"
 cd "$ROOT"

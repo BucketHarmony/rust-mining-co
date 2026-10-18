@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Write docs/REPORT.md: feature status, decisions, perf, screenshots, how to play.
 set -u
+# jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
+jq() { command jq "$@" | tr -d '\r'; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 out=docs/REPORT.md

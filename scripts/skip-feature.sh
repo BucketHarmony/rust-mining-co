@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Skip an optional feature with a recorded reason. Only features with "optional": true can be skipped.
 set -u
+# jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
+jq() { command jq "$@" | tr -d '\r'; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES="$ROOT/features.json"
 id="${1:-}"; reason="${2:-}"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Mark a feature as passing, but only after its full test list passes.
 set -u
+# jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
+jq() { command jq "$@" | tr -d '\r'; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES="$ROOT/features.json"
 id="${1:-}"
