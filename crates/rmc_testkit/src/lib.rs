@@ -4,9 +4,11 @@
 pub mod app;
 pub mod e2e;
 pub mod input;
+pub mod player;
 pub mod screenshot;
 
 pub use app::{
     FRAME_HZ, RenderFailure, TestApp, TestCamera, TestConfig, TestRenderTarget, frame_duration,
 };
+pub use player::PlayerSnapshot;
 pub use screenshot::{MAX_SCREENSHOT_STEPS, ScreenshotError};
