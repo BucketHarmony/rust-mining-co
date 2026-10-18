@@ -791,7 +791,13 @@ mod tests {
                 .cloned()
                 .map(ServerMsg::Applied)
                 .collect();
-            let got = ep.drain();
+            // The breaking Damage yields, and from F034 the issuer then also
+            // gets an Inventory message; those are not edit results.
+            let got: Vec<ServerMsg> = ep
+                .drain()
+                .into_iter()
+                .filter(|m| !matches!(m, ServerMsg::Inventory { .. }))
+                .collect();
             assert_eq!(got, want, "{:?}", ep.player());
             replay(&mut replicas[i], &got);
             assert_eq!(replicas[i].hash(), host.world().hash());
