@@ -16,3 +16,4 @@ ron.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 xxhash-rust.workspace = true
+postcard.workspace = true

@@ -1,0 +1,370 @@
+//! Generation parameters loaded from `assets/worldgen.ron` (SAD §9).
+//!
+//! [`GenParams::hash`] goes into `Welcome` and the save header. Materials are
+//! named by key here and resolved against the material table by
+//! [`crate::Generator::new`], which also checks their tags.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Largest amplitude, thickness or depth a parameter may hold, in cells.
+/// Keeps every sum the generator forms well inside `i32`.
+pub const MAX_CELLS: i32 = 1 << 20;
+
+/// Largest `|base_height|`, in cells.
+pub const MAX_BASE_HEIGHT: i32 = 1 << 28;
+
+/// Most fractal octaves a noise layer may use.
+pub const MAX_OCTAVES: u8 = 8;
+
+/// One fractal (FBm) noise layer. Its seed comes from the world seed and the
+/// layer id, not from here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoiseParams {
+    /// Per meter: noise is sampled at world meters.
+    pub frequency: f32,
+    pub octaves: u8,
+}
+
+/// Step 1: the 2D heightmap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SurfaceParams {
+    /// Mean y of the topmost solid cell.
+    pub base_height: i32,
+    /// The surface lies within `base_height ± amplitude`.
+    pub amplitude: i32,
+    pub noise: NoiseParams,
+}
+
+/// A soil layer under the surface. Each column draws its thickness in
+/// `min_cells..=max_cells` from the layer's noise.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SoilLayer {
+    /// Material key; it must carry the `soil` tag.
+    pub material: String,
+    pub min_cells: i32,
+    pub max_cells: i32,
+    pub noise: NoiseParams,
+}
+
+/// One depth band of base rock.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stratum {
+    /// Material key; it must carry the `stone` tag.
+    pub material: String,
+    /// Depth under the surface (0 = topmost solid cell) where the next
+    /// stratum starts, before noise. `None` for the last stratum only.
+    pub until_depth: Option<i32>,
+}
+
+/// Step 2: strata by depth band with noise-perturbed boundaries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrataParams {
+    /// Each boundary moves by up to this many cells.
+    pub boundary_amplitude: i32,
+    /// Shared settings; every boundary has its own seed.
+    pub boundary_noise: NoiseParams,
+    /// Top down.
+    pub layers: Vec<Stratum>,
+}
+
+/// Everything worldgen reads besides the seed and the material table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GenParams {
+    pub surface: SurfaceParams,
+    /// Top down from the surface.
+    pub soil: Vec<SoilLayer>,
+    pub strata: StrataParams,
+}
+
+#[derive(Debug, Error)]
+pub enum GenError {
+    #[error("reading {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("parsing worldgen RON: {0}")]
+    Parse(#[from] ron::error::SpannedError),
+    #[error("{field}: {reason}")]
+    Invalid { field: String, reason: String },
+    #[error("{field}: material {key:?} is not in the material table")]
+    UnknownMaterial { field: String, key: String },
+    #[error("{field}: material {key:?} lacks the {tag:?} tag")]
+    MissingTag {
+        field: String,
+        key: String,
+        tag: &'static str,
+    },
+}
+
+fn invalid(field: impl Into<String>, reason: impl Into<String>) -> GenError {
+    GenError::Invalid {
+        field: field.into(),
+        reason: reason.into(),
+    }
+}
+
+impl NoiseParams {
+    fn validate(&self, field: &str) -> Result<(), GenError> {
+        if !self.frequency.is_finite() || self.frequency <= 0.0 {
+            return Err(invalid(
+                field,
+                format!("frequency {} must be finite and > 0", self.frequency),
+            ));
+        }
+        if !(1..=MAX_OCTAVES).contains(&self.octaves) {
+            return Err(invalid(
+                field,
+                format!("octaves {} must be in 1..={MAX_OCTAVES}", self.octaves),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn check_cells(field: &str, value: i32) -> Result<(), GenError> {
+    if !(0..=MAX_CELLS).contains(&value) {
+        return Err(invalid(
+            field,
+            format!("{value} must be in 0..={MAX_CELLS}"),
+        ));
+    }
+    Ok(())
+}
+
+impl GenParams {
+    /// Loads and validates parameters from a RON file.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, GenError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|source| GenError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let params = Self::from_ron_str(&text)?;
+        tracing::info!(
+            path = %path.display(),
+            hash = format_args!("{:016x}", params.hash()),
+            "worldgen params loaded"
+        );
+        Ok(params)
+    }
+
+    /// Parses and validates parameters from RON text.
+    pub fn from_ron_str(text: &str) -> Result<Self, GenError> {
+        let params: Self = ron::from_str(text)?;
+        params.validate()?;
+        Ok(params)
+    }
+
+    /// Checks ranges and ordering. Material keys are checked against the
+    /// table later, by [`crate::Generator::new`].
+    pub fn validate(&self) -> Result<(), GenError> {
+        let s = &self.surface;
+        if !(-MAX_BASE_HEIGHT..=MAX_BASE_HEIGHT).contains(&s.base_height) {
+            return Err(invalid(
+                "surface.base_height",
+                format!("{} must be within ±{MAX_BASE_HEIGHT}", s.base_height),
+            ));
+        }
+        check_cells("surface.amplitude", s.amplitude)?;
+        s.noise.validate("surface.noise")?;
+
+        for (i, layer) in self.soil.iter().enumerate() {
+            let field = format!("soil[{i}]");
+            check_cells(&format!("{field}.min_cells"), layer.min_cells)?;
+            check_cells(&format!("{field}.max_cells"), layer.max_cells)?;
+            if layer.min_cells > layer.max_cells {
+                return Err(invalid(
+                    field,
+                    format!(
+                        "min_cells {} exceeds max_cells {}",
+                        layer.min_cells, layer.max_cells
+                    ),
+                ));
+            }
+            layer.noise.validate(&format!("{field}.noise"))?;
+        }
+
+        let st = &self.strata;
+        check_cells("strata.boundary_amplitude", st.boundary_amplitude)?;
+        st.boundary_noise.validate("strata.boundary_noise")?;
+        let Some((last, upper)) = st.layers.split_last() else {
+            return Err(invalid("strata.layers", "needs at least one stratum"));
+        };
+        if last.until_depth.is_some() {
+            return Err(invalid(
+                format!("strata.layers[{}]", upper.len()),
+                "the last stratum must have until_depth: None",
+            ));
+        }
+        let mut prev = 0;
+        for (i, layer) in upper.iter().enumerate() {
+            let field = format!("strata.layers[{i}].until_depth");
+            let Some(depth) = layer.until_depth else {
+                return Err(invalid(field, "only the last stratum may be None"));
+            };
+            check_cells(&field, depth)?;
+            if depth <= prev {
+                return Err(invalid(
+                    field,
+                    format!("{depth} must exceed the previous boundary {prev}"),
+                ));
+            }
+            prev = depth;
+        }
+        Ok(())
+    }
+
+    /// xxh3 over the postcard encoding of the parameters. Independent of
+    /// RON formatting; any field change moves it.
+    pub fn hash(&self) -> u64 {
+        let mut buf = b"rmc.genparams.v1".to_vec();
+        buf.extend(postcard::to_stdvec(self).expect("GenParams always encodes"));
+        xxhash_rust::xxh3::xxh3_64(&buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An edit applied to a copy of the shipped params.
+    type Edit = Box<dyn Fn(&mut GenParams)>;
+
+    const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/worldgen.ron");
+
+    fn phase1() -> GenParams {
+        GenParams::load(PHASE1_PATH).expect("assets/worldgen.ron loads")
+    }
+
+    #[test]
+    fn loads_and_validates() {
+        let p = phase1();
+        assert_eq!(p.soil.len(), 2);
+        assert_eq!(p.strata.layers.len(), 3);
+        assert_eq!(p.strata.layers[2].until_depth, None);
+
+        // Each broken copy is refused with an Invalid error.
+        let broken: Vec<(&str, Edit)> = vec![
+            (
+                "nan frequency",
+                Box::new(|p| p.surface.noise.frequency = f32::NAN),
+            ),
+            (
+                "zero frequency",
+                Box::new(|p| p.surface.noise.frequency = 0.0),
+            ),
+            (
+                "inf frequency",
+                Box::new(|p| p.soil[0].noise.frequency = f32::INFINITY),
+            ),
+            (
+                "zero octaves",
+                Box::new(|p| p.strata.boundary_noise.octaves = 0),
+            ),
+            (
+                "many octaves",
+                Box::new(|p| p.surface.noise.octaves = MAX_OCTAVES + 1),
+            ),
+            ("negative amplitude", Box::new(|p| p.surface.amplitude = -1)),
+            (
+                "huge amplitude",
+                Box::new(|p| p.surface.amplitude = MAX_CELLS + 1),
+            ),
+            ("huge base", Box::new(|p| p.surface.base_height = i32::MIN)),
+            ("soil min > max", Box::new(|p| p.soil[1].min_cells = 9)),
+            ("negative soil", Box::new(|p| p.soil[0].min_cells = -1)),
+            ("no strata", Box::new(|p| p.strata.layers.clear())),
+            (
+                "bounded last",
+                Box::new(|p| p.strata.layers[2].until_depth = Some(90)),
+            ),
+            (
+                "unbounded middle",
+                Box::new(|p| p.strata.layers[1].until_depth = None),
+            ),
+            (
+                "equal boundaries",
+                Box::new(|p| p.strata.layers[1].until_depth = Some(24)),
+            ),
+            (
+                "zero boundary",
+                Box::new(|p| p.strata.layers[0].until_depth = Some(0)),
+            ),
+            (
+                "negative boundary amplitude",
+                Box::new(|p| p.strata.boundary_amplitude = -2),
+            ),
+        ];
+        for (name, edit) in broken {
+            let mut p = phase1();
+            edit(&mut p);
+            assert!(
+                matches!(p.validate(), Err(GenError::Invalid { .. })),
+                "{name}: accepted"
+            );
+        }
+
+        // Soil may be empty, and one unbounded stratum is enough.
+        let mut p = phase1();
+        p.soil.clear();
+        p.strata.layers.truncate(1);
+        p.strata.layers[0].until_depth = None;
+        p.validate().unwrap();
+
+        assert!(matches!(
+            GenParams::from_ron_str("(surface: ())"),
+            Err(GenError::Parse(_))
+        ));
+        assert!(matches!(
+            GenParams::load("does/not/exist.ron"),
+            Err(GenError::Io { .. })
+        ));
+    }
+
+    #[test]
+    fn hash_is_stable_and_sensitive() {
+        let a = phase1();
+        assert_eq!(a.hash(), phase1().hash());
+
+        // Formatting does not matter.
+        let text = std::fs::read_to_string(PHASE1_PATH).unwrap();
+        let reformatted = ron::ser::to_string(&a).unwrap();
+        assert_ne!(text, reformatted);
+        assert_eq!(
+            GenParams::from_ron_str(&reformatted).unwrap().hash(),
+            a.hash()
+        );
+
+        // Every field moves it.
+        let edits: Vec<Edit> = vec![
+            Box::new(|p| p.surface.base_height += 1),
+            Box::new(|p| p.surface.amplitude += 1),
+            Box::new(|p| p.surface.noise.frequency *= 1.5),
+            Box::new(|p| p.surface.noise.octaves += 1),
+            Box::new(|p| p.soil[0].material = "clay".into()),
+            Box::new(|p| p.soil[0].min_cells = 0),
+            Box::new(|p| p.soil[1].max_cells += 1),
+            Box::new(|p| p.soil[1].noise.frequency = 0.5),
+            Box::new(|p| p.soil.swap(0, 1)),
+            Box::new(|p| {
+                p.soil.pop();
+            }),
+            Box::new(|p| p.strata.boundary_amplitude += 1),
+            Box::new(|p| p.strata.boundary_noise.octaves = 1),
+            Box::new(|p| p.strata.layers[0].material = "granite".into()),
+            Box::new(|p| p.strata.layers[1].until_depth = Some(57)),
+        ];
+        let mut seen = vec![a.hash()];
+        for (i, edit) in edits.iter().enumerate() {
+            let mut p = phase1();
+            edit(&mut p);
+            assert!(!seen.contains(&p.hash()), "edit {i} did not move the hash");
+            seen.push(p.hash());
+        }
+    }
+}
