@@ -262,11 +262,17 @@ impl Generator {
 
     /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
     /// writes its inner 32³. Step 5 reads the border but only changes the
-    /// inner 32³, so the border cells hold steps 1–4.
+    /// inner 32³, so the border cells hold the other steps only.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
-        let mut volume = self.ore_volume(pos);
+        let mut volume = self.shell_volume(pos);
         self.place_crystals(pos, &mut volume);
         volume
+    }
+
+    /// Every step except crystals over the chunk's 34³ volume: the cells
+    /// step 5 reads. So far this is steps 1–4.
+    pub fn shell_volume(&self, pos: ChunkPos) -> Volume {
+        self.ore_volume(pos)
     }
 
     /// Steps 1–4 (surface, soil, strata, caves, ores) over the chunk's 34³
@@ -1208,13 +1214,13 @@ mod tests {
         LocalPos::new(l.x as u32, l.y as u32, l.z as u32)
     }
 
-    /// Steps 1–4 at world cell `c`, read from the inner 32³ of the
-    /// ore_volume of the chunk that holds `c` (never from a border).
+    /// Every step but crystals at world cell `c`, read from the inner 32³
+    /// of the shell_volume of the chunk that holds `c` (never from a border).
     fn step4_at(g: &Generator, cache: &mut BTreeMap<[i32; 3], Volume>, c: IVec3) -> MaterialId {
         let (pos, l) = split(c);
         cache
             .entry(pos.0.to_array())
-            .or_insert_with(|| g.ore_volume(pos))
+            .or_insert_with(|| g.shell_volume(pos))
             .get(l.x, l.y, l.z)
     }
 
@@ -1320,7 +1326,7 @@ mod tests {
                 let mut step4 = BTreeMap::new();
                 for a in [(3, 1, 4), (-2, 2, 1), (5, 0, 6), (1, 2, -3)] {
                     let a = ChunkPos::new(a.0, a.1, a.2);
-                    let (va, chunk_a) = (g.ore_volume(a), g.generate(a));
+                    let (va, chunk_a) = (g.shell_volume(a), g.generate(a));
                     for (axis, step) in [(0, -1), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
                         let mut d = IVec3::ZERO;
                         d[axis] = step;
@@ -1335,7 +1341,7 @@ mod tests {
                                 la[(axis + 2) % 3] = w;
                                 let ca = a.origin_cell().0 + la;
                                 let cb = ca + d;
-                                // a's steps 1–4 border is b's own cell.
+                                // a's pre-crystal border is b's own cell.
                                 let border = la + d;
                                 assert_eq!(
                                     va.get(border.x, border.y, border.z),
