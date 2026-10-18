@@ -234,6 +234,12 @@ impl Generator {
     /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
     /// writes its inner 32³.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
+        self.ore_volume(pos)
+    }
+
+    /// Steps 1–4 (surface, soil, strata, caves, ores) over the chunk's 34³
+    /// volume.
+    pub fn ore_volume(&self, pos: ChunkPos) -> Volume {
         let mut volume = self.cave_volume(pos);
         self.place_ores(pos, &mut volume);
         volume
@@ -986,7 +992,7 @@ mod tests {
                     for cy in 0..WORLD_CHUNKS_Y {
                         let pos = ChunkPos::new(cx, cy, cz);
                         let before = g.cave_volume(pos);
-                        let after = g.volume(pos);
+                        let after = g.ore_volume(pos);
                         for_each_cell(&g, pos, |x, y, z, depth| {
                             let (b, a) = (before.get(x, y, z), after.get(x, y, z));
                             let at = || format!("run {k} seed {seed} {pos:?} ({x}, {y}, {z})");
@@ -1066,7 +1072,7 @@ mod tests {
                     for cy in 0..WORLD_CHUNKS_Y {
                         let pos = ChunkPos::new(cx, cy, cz);
                         let before = g.cave_volume(pos);
-                        let after = g.volume(pos);
+                        let after = g.ore_volume(pos);
                         for_each_cell(&g, pos, |x, y, z, depth| {
                             let (b, a) = (before.get(x, y, z), after.get(x, y, z));
                             let at = || {
