@@ -70,6 +70,29 @@ impl World {
         self.chunks.len()
     }
 
+    /// Approximate bytes the chunks occupy: the `World` itself, the chunk
+    /// map's table, and each chunk's heap storage. The shared material table
+    /// is not counted.
+    ///
+    /// The table size follows std's SwissTable layout: `capacity()` usable
+    /// slots in a power-of-two bucket count at 7/8 load, one entry and one
+    /// control byte per bucket, plus a 16-byte control group.
+    pub fn memory_bytes(&self) -> usize {
+        let cap = self.chunks.capacity();
+        let buckets = match cap {
+            0 => 0,
+            1..7 => cap + 1,
+            _ => cap / 7 * 8,
+        };
+        let table = if buckets == 0 {
+            0
+        } else {
+            buckets * (std::mem::size_of::<(ChunkPos, Chunk)>() + 1) + 16
+        };
+        let cells: usize = self.chunks.values().map(|c| c.storage.heap_bytes()).sum();
+        std::mem::size_of::<Self>() + table + cells
+    }
+
     /// Resident chunks in [`ChunkPos`] order (y, then z, then x). Use this for
     /// anything whose output depends on iteration order.
     pub fn iter_chunks_sorted(&self) -> impl Iterator<Item = (ChunkPos, &Chunk)> {
@@ -354,5 +377,60 @@ mod tests {
         let empty_b = World::new(table, CellAabb::PHASE1_DEFAULT);
         assert_eq!(empty_a.hash(), empty_b.hash());
         assert_ne!(empty_a.hash(), forward.hash());
+    }
+
+    /// SAD §13 budget: the Phase 1 world of 256 chunks fits in 64 MB, both
+    /// as uniform stone (the worldgen best case) and with every chunk at the
+    /// widest 16-bit palette (the worst case).
+    #[test]
+    fn memory_256_chunks_under_budget() {
+        const BUDGET: usize = 64_000_000;
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let b = CellAabb::PHASE1_DEFAULT;
+
+        let mut w = World::new(table.clone(), b);
+        assert_eq!(w.memory_bytes(), std::mem::size_of::<World>());
+        for pos in b.chunks() {
+            w.insert_chunk(pos, Chunk::uniform(stone)).unwrap();
+        }
+        assert_eq!(w.chunk_count(), 256);
+        let uniform = w.memory_bytes();
+        assert!(uniform < BUDGET, "uniform world uses {uniform} bytes");
+        // The map holds at least the 256 entries, and nothing else is on the heap.
+        assert!(uniform >= 256 * std::mem::size_of::<(ChunkPos, Chunk)>());
+        assert!(
+            uniform < 1 << 20,
+            "uniform chunks own no cell data: {uniform}"
+        );
+        for (_, c) in w.iter_chunks_sorted() {
+            assert_eq!(c.storage.heap_bytes(), 0);
+        }
+
+        // Worst case: 257 distinct ids force 16 bits per cell.
+        let mut wide = Chunk::uniform(MaterialId::AIR);
+        for i in 0..257u16 {
+            let n = u32::from(i);
+            wide.storage.set(
+                LocalPos::new(n % 32, n / 1024, (n / 32) % 32),
+                MaterialId(i),
+            );
+        }
+        let ChunkStorage::Paletted { bits, .. } = &wide.storage else {
+            panic!("257 materials promote to Paletted");
+        };
+        assert_eq!(*bits, 16);
+        let wide_heap = wide.storage.heap_bytes();
+        // 32768 cells × 2 bytes of data, plus the palette.
+        assert!(wide_heap >= 32768 * 2 + 257 * 2, "{wide_heap}");
+        for pos in b.chunks() {
+            w.insert_chunk(pos, wide.clone()).unwrap();
+        }
+        assert_eq!(w.chunk_count(), 256);
+        let worst = w.memory_bytes();
+        assert!(worst >= 256 * 32768 * 2, "{worst}");
+        assert!(worst < BUDGET, "16-bit world uses {worst} bytes");
+        assert!(worst - uniform >= 256 * 32768 * 2);
+        eprintln!("256 chunks: uniform {uniform} bytes, 16-bit {worst} bytes");
     }
 }

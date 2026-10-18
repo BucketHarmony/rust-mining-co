@@ -131,6 +131,18 @@ impl ChunkStorage {
         }
     }
 
+    /// Bytes this storage owns on the heap: the allocated capacity of the
+    /// palette and data vectors. `Uniform` owns none.
+    pub fn heap_bytes(&self) -> usize {
+        match self {
+            ChunkStorage::Uniform(_) => 0,
+            ChunkStorage::Paletted { palette, data, .. } => {
+                palette.capacity() * std::mem::size_of::<MaterialId>()
+                    + data.capacity() * std::mem::size_of::<u64>()
+            }
+        }
+    }
+
     /// xxh3 over the canonical paletted encoding of the cells, so a `Uniform`
     /// chunk and any `Paletted` chunk with the same contents hash the same.
     ///
