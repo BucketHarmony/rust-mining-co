@@ -70,6 +70,34 @@ pub struct StrataParams {
     pub layers: Vec<Stratum>,
 }
 
+/// Blob caves: air wherever the 3D noise exceeds `threshold`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlobCaves {
+    /// Noise is in about [-1, 1]; a value above 1 turns blob caves off.
+    pub threshold: f32,
+    pub noise: NoiseParams,
+}
+
+/// Worm tunnels: air wherever both 3D noises lie within `±radius` of zero.
+/// Each noise is near zero on a thin sheet, and two sheets meet in a curve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WormCaves {
+    /// 0 turns worm tunnels off.
+    pub radius: f32,
+    pub a: NoiseParams,
+    pub b: NoiseParams,
+}
+
+/// Step 3: caves carved to air under the surface.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaveParams {
+    /// Caves never carve the surface cell or the `surface_margin` cells
+    /// under it (depths `0..=surface_margin`).
+    pub surface_margin: i32,
+    pub blob: BlobCaves,
+    pub worm: WormCaves,
+}
+
 /// Everything worldgen reads besides the seed and the material table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenParams {
@@ -77,6 +105,7 @@ pub struct GenParams {
     /// Top down from the surface.
     pub soil: Vec<SoilLayer>,
     pub strata: StrataParams,
+    pub caves: CaveParams,
 }
 
 #[derive(Debug, Error)]
@@ -216,6 +245,24 @@ impl GenParams {
             }
             prev = depth;
         }
+
+        let c = &self.caves;
+        check_cells("caves.surface_margin", c.surface_margin)?;
+        if !c.blob.threshold.is_finite() {
+            return Err(invalid(
+                "caves.blob.threshold",
+                format!("{} must be finite", c.blob.threshold),
+            ));
+        }
+        c.blob.noise.validate("caves.blob.noise")?;
+        if !c.worm.radius.is_finite() || c.worm.radius < 0.0 {
+            return Err(invalid(
+                "caves.worm.radius",
+                format!("{} must be finite and >= 0", c.worm.radius),
+            ));
+        }
+        c.worm.a.validate("caves.worm.a")?;
+        c.worm.b.validate("caves.worm.b")?;
         Ok(())
     }
 
@@ -299,6 +346,34 @@ mod tests {
                 "negative boundary amplitude",
                 Box::new(|p| p.strata.boundary_amplitude = -2),
             ),
+            (
+                "negative cave margin",
+                Box::new(|p| p.caves.surface_margin = -1),
+            ),
+            (
+                "nan blob threshold",
+                Box::new(|p| p.caves.blob.threshold = f32::NAN),
+            ),
+            (
+                "inf blob threshold",
+                Box::new(|p| p.caves.blob.threshold = f32::NEG_INFINITY),
+            ),
+            (
+                "zero blob octaves",
+                Box::new(|p| p.caves.blob.noise.octaves = 0),
+            ),
+            (
+                "negative worm radius",
+                Box::new(|p| p.caves.worm.radius = -0.1),
+            ),
+            (
+                "nan worm radius",
+                Box::new(|p| p.caves.worm.radius = f32::NAN),
+            ),
+            (
+                "zero worm frequency",
+                Box::new(|p| p.caves.worm.b.frequency = 0.0),
+            ),
         ];
         for (name, edit) in broken {
             let mut p = phase1();
@@ -314,6 +389,13 @@ mod tests {
         p.soil.clear();
         p.strata.layers.truncate(1);
         p.strata.layers[0].until_depth = None;
+        p.validate().unwrap();
+
+        // Caves can be turned off: no margin, no blobs, no worms.
+        let mut p = phase1();
+        p.caves.surface_margin = 0;
+        p.caves.blob.threshold = 2.0;
+        p.caves.worm.radius = 0.0;
         p.validate().unwrap();
 
         assert!(matches!(
@@ -358,6 +440,13 @@ mod tests {
             Box::new(|p| p.strata.boundary_noise.octaves = 1),
             Box::new(|p| p.strata.layers[0].material = "granite".into()),
             Box::new(|p| p.strata.layers[1].until_depth = Some(57)),
+            Box::new(|p| p.caves.surface_margin += 1),
+            Box::new(|p| p.caves.blob.threshold += 0.01),
+            Box::new(|p| p.caves.blob.noise.frequency *= 2.0),
+            Box::new(|p| p.caves.worm.radius += 0.01),
+            Box::new(|p| p.caves.worm.a.octaves += 1),
+            Box::new(|p| p.caves.worm.b.frequency *= 0.5),
+            Box::new(|p| std::mem::swap(&mut p.caves.worm.a, &mut p.caves.worm.b)),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

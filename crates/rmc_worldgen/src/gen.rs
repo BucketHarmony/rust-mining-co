@@ -1,4 +1,4 @@
-//! Chunk generation (SAD §9): surface and strata so far.
+//! Chunk generation (SAD §9): surface, strata and caves so far.
 //!
 //! Steps run over a 34³ [`Volume`] (the chunk plus a 1-cell border) so later
 //! steps can read neighbors; only the inner 32³ is written to the chunk.
@@ -7,7 +7,10 @@ use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
-use crate::noise::{LAYER_SOIL, LAYER_STRATA, LAYER_SURFACE, NoiseLayer};
+use crate::noise::{
+    LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_SOIL, LAYER_STRATA, LAYER_SURFACE,
+    NoiseLayer,
+};
 use crate::params::{GenError, GenParams};
 
 /// Tag every soil layer material must carry.
@@ -23,9 +26,15 @@ const VOLUME_CELLS: usize = (VOLUME_SIZE * VOLUME_SIZE * VOLUME_SIZE) as usize;
 /// chunk origin and run over `-1..=32` on each axis.
 pub struct Volume {
     cells: Vec<MaterialId>,
+    /// Step 1 surface height of each of the 34² columns.
+    surface: Vec<i32>,
 }
 
 impl Volume {
+    fn column(x: i32, z: i32) -> usize {
+        ((x + 1) + (z + 1) * VOLUME_SIZE) as usize
+    }
+
     fn index(x: i32, y: i32, z: i32) -> usize {
         debug_assert!([x, y, z].iter().all(|c| (-1..=CHUNK_SIZE).contains(c)));
         ((x + 1) + (z + 1) * VOLUME_SIZE + (y + 1) * VOLUME_SIZE * VOLUME_SIZE) as usize
@@ -65,6 +74,28 @@ struct Stratum {
     until: Option<(i32, NoiseLayer)>,
 }
 
+struct Caves {
+    surface_margin: i32,
+    blob_threshold: f32,
+    blob: NoiseLayer,
+    worm_radius: f32,
+    worm_a: NoiseLayer,
+    worm_b: NoiseLayer,
+}
+
+impl Caves {
+    /// Whether cell `(x, y, z)` is cave: blob noise above its threshold, or
+    /// both worm noises within the radius of zero.
+    fn is_cave(&self, x: i32, y: i32, z: i32) -> bool {
+        if self.blob.sample_3d(x, y, z) > self.blob_threshold {
+            return true;
+        }
+        self.worm_radius > 0.0
+            && self.worm_a.sample_3d(x, y, z).abs() < self.worm_radius
+            && self.worm_b.sample_3d(x, y, z).abs() < self.worm_radius
+    }
+}
+
 /// Generation for one seed, parameter set and material table. Build it
 /// once and call [`Generator::generate`] for each chunk; it is `Sync`, so
 /// chunks can generate in parallel.
@@ -75,6 +106,7 @@ pub struct Generator {
     soil: Vec<SoilLayer>,
     boundary_amplitude: i32,
     strata: Vec<Stratum>,
+    caves: Caves,
 }
 
 fn resolve(
@@ -140,6 +172,15 @@ impl Generator {
                 })
             })
             .collect::<Result<_, GenError>>()?;
+        let c = &params.caves;
+        let caves = Caves {
+            surface_margin: c.surface_margin,
+            blob_threshold: c.blob.threshold,
+            blob: NoiseLayer::new(seed, LAYER_CAVE_BLOB, &c.blob.noise),
+            worm_radius: c.worm.radius,
+            worm_a: NoiseLayer::new(seed, LAYER_CAVE_WORM_A, &c.worm.a),
+            worm_b: NoiseLayer::new(seed, LAYER_CAVE_WORM_B, &c.worm.b),
+        };
         Ok(Self {
             surface_base: params.surface.base_height,
             surface_amplitude: params.surface.amplitude,
@@ -147,14 +188,46 @@ impl Generator {
             soil,
             boundary_amplitude: st.boundary_amplitude,
             strata,
+            caves,
         })
     }
 
     /// The chunk at `pos`, with revision 0 and not modified.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
-        let chunk = Chunk::new(self.base_volume(pos).to_storage());
+        let chunk = Chunk::new(self.volume(pos).to_storage());
         tracing::debug!(?pos, "chunk generated");
         chunk
+    }
+
+    /// Steps 1–3 (surface, soil, strata, caves) over the chunk's 34³ volume.
+    pub fn volume(&self, pos: ChunkPos) -> Volume {
+        let mut volume = self.base_volume(pos);
+        self.carve_caves(pos, &mut volume);
+        volume
+    }
+
+    /// Step 3: turns cave cells to air, except in the surface cell and the
+    /// `surface_margin` cells under it.
+    fn carve_caves(&self, pos: ChunkPos, volume: &mut Volume) {
+        let origin = pos.origin_cell().0;
+        let margin = i64::from(self.caves.surface_margin);
+        for z in -1..=CHUNK_SIZE {
+            for x in -1..=CHUNK_SIZE {
+                let (cx, cz) = (origin.x + x, origin.z + z);
+                // Highest y a cave may reach in this column.
+                let top = i64::from(volume.surface[Volume::column(x, z)]) - margin - 1;
+                for y in -1..=CHUNK_SIZE {
+                    let cy = origin.y + y;
+                    if i64::from(cy) > top {
+                        break;
+                    }
+                    let i = Volume::index(x, y, z);
+                    if volume.cells[i] != MaterialId::AIR && self.caves.is_cave(cx, cy, cz) {
+                        volume.cells[i] = MaterialId::AIR;
+                    }
+                }
+            }
+        }
     }
 
     /// y of the topmost solid cell of column `(x, z)` after step 1.
@@ -166,12 +239,14 @@ impl Generator {
     pub fn base_volume(&self, pos: ChunkPos) -> Volume {
         let origin = pos.origin_cell().0;
         let mut cells = vec![MaterialId::AIR; VOLUME_CELLS];
+        let mut heights = vec![0; (VOLUME_SIZE * VOLUME_SIZE) as usize];
         let mut soil_ends = Vec::with_capacity(self.soil.len());
         let mut strata_ends = Vec::with_capacity(self.strata.len());
         for z in -1..=CHUNK_SIZE {
             for x in -1..=CHUNK_SIZE {
                 let (cx, cz) = (origin.x + x, origin.z + z);
                 let surface = self.surface_height(cx, cz);
+                heights[Volume::column(x, z)] = surface;
                 // Depth (0 = surface cell) where each soil layer and each
                 // bounded stratum ends.
                 soil_ends.clear();
@@ -205,7 +280,10 @@ impl Generator {
                 }
             }
         }
-        Volume { cells }
+        Volume {
+            cells,
+            surface: heights,
+        }
     }
 }
 
@@ -570,6 +648,202 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `p` with only blob caves (`blobs`) or only worm tunnels.
+    fn caves_only(p: &GenParams, blobs: bool) -> GenParams {
+        let mut p = p.clone();
+        if blobs {
+            p.caves.worm.radius = 0.0;
+        } else {
+            p.caves.blob.threshold = 2.0;
+        }
+        p
+    }
+
+    /// Calls `f(x, y, z, depth)` for every cell of a volume, with coordinates
+    /// relative to the chunk origin and depth under the surface cell.
+    fn for_each_cell(g: &Generator, pos: ChunkPos, mut f: impl FnMut(i32, i32, i32, i64)) {
+        let o = pos.origin_cell().0;
+        for x in -1..=CHUNK_SIZE {
+            for z in -1..=CHUNK_SIZE {
+                let surface = i64::from(g.surface_height(o.x + x, o.z + z));
+                for y in -1..=CHUNK_SIZE {
+                    f(x, y, z, surface - i64::from(o.y + y));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_caves_within_4_of_surface() {
+        let table = materials();
+        let shipped = params();
+        // SAD §9: suppressed within 4 cells of the surface.
+        assert_eq!(shipped.caves.surface_margin, 4);
+        let margin = i64::from(shipped.caves.surface_margin);
+        // Caves so wide that most rock would be air without the margin.
+        let mut wide = params();
+        wide.caves.blob.threshold = -0.3;
+        wide.caves.worm.radius = 0.5;
+
+        let mut carved = [[0usize; 8]; 2];
+        for (k, p) in [&shipped, &wide].into_iter().enumerate() {
+            for seed in [5, 0xBAD_C0DE] {
+                let g = Generator::new(seed, p, &table).unwrap();
+                for (cx, cz) in [(0, 0), (2, 3), (5, 7), (-3, 4)] {
+                    for cy in 0..WORLD_CHUNKS_Y {
+                        let pos = ChunkPos::new(cx, cy, cz);
+                        let base = g.base_volume(pos);
+                        let v = g.volume(pos);
+                        for_each_cell(&g, pos, |x, y, z, depth| {
+                            let (b, c) = (base.get(x, y, z), v.get(x, y, z));
+                            let at =
+                                || format!("seed {seed} {pos:?} ({x}, {y}, {z}) depth {depth}");
+                            if depth <= margin {
+                                assert_eq!(c, b, "{}: carved near the surface", at());
+                            } else if c != b {
+                                assert_eq!(c, MaterialId::AIR, "{}: caves only carve air", at());
+                                if depth < 8 + margin {
+                                    carved[k][(depth - margin) as usize] += 1;
+                                }
+                            }
+                        });
+                        // The chunk is the volume's inner 32³.
+                        let chunk = g.generate(pos);
+                        for i in 0..CHUNK_VOLUME {
+                            let l = LocalPos::from_index(i as u16);
+                            let c = l.0.as_ivec3();
+                            assert_eq!(chunk.storage.get(l), v.get(c.x, c.y, c.z));
+                        }
+                    }
+                }
+            }
+        }
+        // The margin is exact: wide caves reach the first cell under it.
+        assert!(
+            carved[1][1] > 1000,
+            "wide caves carve only {} cells at depth {}",
+            carved[1][1],
+            margin + 1
+        );
+        assert!(
+            carved[0].iter().sum::<usize>() > 0,
+            "shipped caves never come within 8 cells of the margin"
+        );
+    }
+
+    #[test]
+    fn caves_exist_at_depth() {
+        let table = materials();
+        let p = params();
+        let margin = i64::from(p.caves.surface_margin);
+        let strata: Vec<MaterialId> = p
+            .strata
+            .layers
+            .iter()
+            .map(|l| id(&table, &l.material))
+            .collect();
+        let seed = 21;
+        let g = Generator::new(seed, &p, &table).unwrap();
+        let blob = Generator::new(seed, &caves_only(&p, true), &table).unwrap();
+        let worm = Generator::new(seed, &caves_only(&p, false), &table).unwrap();
+
+        let (mut rock, mut cave, mut blob_air, mut worm_air, mut worm_alone) = (0, 0, 0, 0, 0);
+        let mut connected = 0;
+        let mut per_stratum = vec![0usize; strata.len()];
+        for (cx, cz) in [(1, 1), (2, 6), (5, 2), (6, 5)] {
+            for cy in 0..WORLD_CHUNKS_Y {
+                let pos = ChunkPos::new(cx, cy, cz);
+                let base = g.base_volume(pos);
+                let (v, vb, vw) = (g.volume(pos), blob.volume(pos), worm.volume(pos));
+                for_each_cell(&g, pos, |x, y, z, depth| {
+                    let inner = [x, y, z].iter().all(|c| (0..CHUNK_SIZE).contains(c));
+                    if !inner || depth <= margin || base.get(x, y, z) == MaterialId::AIR {
+                        return;
+                    }
+                    rock += 1;
+                    let air = |vol: &Volume| vol.get(x, y, z) == MaterialId::AIR;
+                    let (a, ab, aw) = (air(&v), air(&vb), air(&vw));
+                    // Blobs plus worms: the union, nothing else.
+                    assert_eq!(a, ab || aw, "{pos:?} ({x}, {y}, {z})");
+                    blob_air += usize::from(ab);
+                    worm_air += usize::from(aw);
+                    worm_alone += usize::from(aw && !ab);
+                    if a {
+                        cave += 1;
+                        let k = strata.iter().position(|&s| s == base.get(x, y, z));
+                        if let Some(k) = k {
+                            per_stratum[k] += 1;
+                        }
+                        let faces = [
+                            (1, 0, 0),
+                            (-1, 0, 0),
+                            (0, 1, 0),
+                            (0, -1, 0),
+                            (0, 0, 1),
+                            (0, 0, -1),
+                        ];
+                        let open = faces
+                            .iter()
+                            .any(|(dx, dy, dz)| v.get(x + dx, y + dy, z + dz) == MaterialId::AIR);
+                        connected += usize::from(open);
+                    }
+                });
+            }
+        }
+        let share = cave as f64 / rock as f64;
+        assert!(
+            (0.01..=0.25).contains(&share),
+            "caves are {:.2}% of {rock} rock cells",
+            share * 100.0
+        );
+        assert!(blob_air > 1000, "{blob_air} blob cave cells");
+        assert!(worm_air > 1000, "{worm_air} worm tunnel cells");
+        assert!(
+            worm_alone * 2 > worm_air,
+            "worm tunnels mostly lie inside blobs"
+        );
+        // Every stratum, down to the deepest, has caves.
+        assert!(
+            per_stratum.iter().all(|&n| n > 100),
+            "cave cells per stratum: {per_stratum:?}"
+        );
+        // Caves are open bodies, not single-cell speckle.
+        assert!(
+            connected * 100 >= cave * 98,
+            "{connected} of {cave} cave cells touch another"
+        );
+    }
+
+    #[test]
+    fn cave_volume_border_matches_neighbors() {
+        let table = materials();
+        let p = params();
+        let g = Generator::new(8, &p, &table).unwrap();
+        let mut carved = 0;
+        for pos in [ChunkPos::new(3, 1, 4), ChunkPos::new(-2, 2, 1)] {
+            let base = g.base_volume(pos);
+            let v = g.volume(pos);
+            for (axis, step) in [(0, -1), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
+                let mut d = IVec3::ZERO;
+                d[axis] = step;
+                let n = g.volume(ChunkPos(pos.0 + d));
+                for a in -1..=CHUNK_SIZE {
+                    for b in -1..=CHUNK_SIZE {
+                        let mut c = IVec3::ZERO;
+                        c[axis] = if step > 0 { CHUNK_SIZE } else { -1 };
+                        c[(axis + 1) % 3] = a;
+                        c[(axis + 2) % 3] = b;
+                        let nc = c - d * CHUNK_SIZE;
+                        let here = v.get(c.x, c.y, c.z);
+                        assert_eq!(here, n.get(nc.x, nc.y, nc.z), "{pos:?} {c} vs {nc}");
+                        carved += usize::from(here != base.get(c.x, c.y, c.z));
+                    }
+                }
+            }
+        }
+        assert!(carved > 0, "no cave crosses a chunk face");
     }
 
     #[test]

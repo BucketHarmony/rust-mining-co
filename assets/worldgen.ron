@@ -33,4 +33,18 @@
             (material: "basalt", until_depth: None),
         ],
     ),
+    // Carved to air after the strata, in cells deeper than surface_margin
+    // under the surface cell. Noise values are in about [-1, 1].
+    caves: (
+        surface_margin: 4,
+        // Blob caves where 3D noise exceeds the threshold (above 1: none).
+        blob: (threshold: 0.55, noise: (frequency: 0.05, octaves: 2)),
+        // Worm tunnels where both 3D noises lie within ±radius of zero
+        // (0: none). Each is near zero on a sheet; two sheets meet in a curve.
+        worm: (
+            radius: 0.07,
+            a: (frequency: 0.03, octaves: 1),
+            b: (frequency: 0.035, octaves: 1),
+        ),
+    ),
 )

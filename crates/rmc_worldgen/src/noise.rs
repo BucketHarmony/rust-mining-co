@@ -12,6 +12,11 @@ pub const LAYER_SURFACE: u32 = 0x0001;
 pub const LAYER_SOIL: u32 = 0x0100;
 /// Layer id of the boundary under stratum `i` is `LAYER_STRATA + i`.
 pub const LAYER_STRATA: u32 = 0x0200;
+/// Layer id of the blob cave noise.
+pub const LAYER_CAVE_BLOB: u32 = 0x0300;
+/// Layer ids of the two worm tunnel noises.
+pub const LAYER_CAVE_WORM_A: u32 = 0x0301;
+pub const LAYER_CAVE_WORM_B: u32 = 0x0302;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in
@@ -41,6 +46,15 @@ impl NoiseLayer {
     pub fn sample_2d(&self, x: i32, z: i32) -> f32 {
         self.0
             .get_noise_2d(x as f32 * CELL_SIZE_M, z as f32 * CELL_SIZE_M)
+    }
+
+    /// Noise in about [-1, 1] at the min corner of cell `(x, y, z)`.
+    pub fn sample_3d(&self, x: i32, y: i32, z: i32) -> f32 {
+        self.0.get_noise_3d(
+            x as f32 * CELL_SIZE_M,
+            y as f32 * CELL_SIZE_M,
+            z as f32 * CELL_SIZE_M,
+        )
     }
 
     /// `n` scaled to a whole offset in `-amplitude..=amplitude`.
