@@ -2,6 +2,9 @@
 # Stop hook: a session may end only with a clean working tree (everything committed or stashed).
 # If Rust changes are uncommitted and tests fail, the reason includes the failure tail.
 INPUT="$(cat)"
+# Native Windows: jq.exe ends lines with CRLF, and tool paths arrive as E:\...; normalize both.
+jq() { command jq "$@" | tr -d '\r'; }
+posix_path() { local p="${1//\\//}"; case "$p" in [A-Za-z]:/*) p="/$(printf '%s' "${p:0:1}" | tr 'A-Z' 'a-z')${p:2}" ;; esac; printf '%s' "$p"; }
 [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false')" = "true" ] && exit 0
 PROJ="${CLAUDE_PROJECT_DIR:-$(echo "$INPUT" | jq -r '.cwd // "."')}"
 cd "$PROJ" || exit 0

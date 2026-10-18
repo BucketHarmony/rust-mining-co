@@ -2,17 +2,22 @@
 # PreToolUse on Edit/Write/MultiEdit: deny edits to protected files and edits that remove tests.
 # Hooks run before permission-mode checks, so this holds even under bypassPermissions.
 INPUT="$(cat)"
+# Native Windows: jq.exe ends lines with CRLF, and tool paths arrive as E:\...; normalize both.
+jq() { command jq "$@" | tr -d '\r'; }
+posix_path() { local p="${1//\\//}"; case "$p" in [A-Za-z]:/*) p="/$(printf '%s' "${p:0:1}" | tr 'A-Z' 'a-z')${p:2}" ;; esac; printf '%s' "$p"; }
 FILE="$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')"
+FILE="$(posix_path "$FILE")"
 [ -z "$FILE" ] && exit 0
 PROJ="${CLAUDE_PROJECT_DIR:-$(echo "$INPUT" | jq -r '.cwd // "."')}"
+PROJ="$(posix_path "$PROJ")"
 PROJ="$(cd "$PROJ" 2>/dev/null && pwd || echo "$PROJ")"
-case "$FILE" in /*) ABS="$FILE" ;; *) ABS="$(echo "$INPUT" | jq -r '.cwd // "."')/$FILE" ;; esac
+case "$FILE" in /*) ABS="$FILE" ;; *) ABS="$(posix_path "$(echo "$INPUT" | jq -r '.cwd // "."')")/$FILE" ;; esac
 REL="${ABS#"$PROJ"/}"
 
 deny() { jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 
 case "$REL" in
-  features.json|docs/SAD.md|.claude/*|PROMPT.md|CLAUDE.md|scripts/verify-features.sh|scripts/pass-feature.sh|scripts/skip-feature.sh)
+  features.json|features-p*.json|docs/SAD.md|docs/SAD-P*.md|.claude/*|PROMPT.md|CLAUDE.md|scripts/verify-features.sh|scripts/pass-feature.sh|scripts/skip-feature.sh)
     deny "Protected file: $REL. features.json changes only via scripts/pass-feature.sh or scripts/skip-feature.sh. Record anything else under Decisions in PROGRESS.md." ;;
 esac
 
