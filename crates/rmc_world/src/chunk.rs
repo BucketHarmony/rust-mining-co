@@ -31,12 +31,18 @@ impl Chunk {
     pub fn uniform(id: MaterialId) -> Self {
         Self::new(ChunkStorage::Uniform(id))
     }
+
+    /// Content hash of the cells; see [`ChunkStorage::hash`]. Revision and
+    /// `modified` are not part of it.
+    pub fn hash(&self) -> u64 {
+        self.storage.hash()
+    }
 }
 
 /// Cell contents of a chunk.
 ///
 /// `PartialEq` is structural: a `Uniform` chunk and an equivalent `Paletted`
-/// chunk compare unequal. Compare contents cell by cell, or by hash (F012).
+/// chunk compare unequal. Compare contents cell by cell, or by [`ChunkStorage::hash`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChunkStorage {
     /// Every cell holds this material.
@@ -115,39 +121,86 @@ impl ChunkStorage {
     /// the smallest bit width. A chunk left with one material becomes
     /// `Uniform`. Contents are unchanged.
     pub fn compact(&mut self) {
-        let ChunkStorage::Paletted {
+        if let ChunkStorage::Paletted {
             palette,
             bits,
             data,
         } = self
-        else {
-            return;
-        };
-        // Old palette slot -> new palette slot, assigned on first appearance.
-        let mut remap: Vec<Option<usize>> = vec![None; palette.len()];
-        let mut new_palette = Vec::new();
-        let mut slots = Vec::with_capacity(CHUNK_VOLUME);
-        for i in 0..CHUNK_VOLUME {
-            let old = read_packed(data, *bits, i);
-            let slot = *remap[old].get_or_insert_with(|| {
-                new_palette.push(palette[old]);
-                new_palette.len() - 1
-            });
-            slots.push(slot);
+        {
+            *self = compacted(palette, *bits, data);
         }
-        if new_palette.len() == 1 {
-            *self = ChunkStorage::Uniform(new_palette[0]);
-            return;
-        }
-        let new_bits = bits_for(new_palette.len());
-        let mut new_data = vec![0; packed_len(new_bits)];
-        for (i, slot) in slots.into_iter().enumerate() {
-            write_packed(&mut new_data, new_bits, i, slot);
-        }
-        *palette = new_palette;
-        *bits = new_bits;
-        *data = new_data;
     }
+
+    /// xxh3 over the canonical paletted encoding of the cells, so a `Uniform`
+    /// chunk and any `Paletted` chunk with the same contents hash the same.
+    ///
+    /// The canonical form is the [`compact`](Self::compact)ed one: palette in
+    /// first-appearance order, smallest bit width. A single-material chunk is
+    /// a one-entry palette with 0 bits and no data words.
+    pub fn hash(&self) -> u64 {
+        match self {
+            ChunkStorage::Uniform(id) => canonical_hash(&[*id], 0, &[]),
+            ChunkStorage::Paletted {
+                palette,
+                bits,
+                data,
+            } => match compacted(palette, *bits, data) {
+                ChunkStorage::Uniform(id) => canonical_hash(&[id], 0, &[]),
+                ChunkStorage::Paletted {
+                    palette,
+                    bits,
+                    data,
+                } => canonical_hash(&palette, bits, &data),
+            },
+        }
+    }
+}
+
+/// The compacted form of a paletted chunk: unused entries dropped, the rest in
+/// first-appearance order in local linear index order, smallest bit width,
+/// `Uniform` if only one material is used.
+fn compacted(palette: &[MaterialId], bits: u8, data: &[u64]) -> ChunkStorage {
+    // Old palette slot -> new palette slot, assigned on first appearance.
+    let mut remap: Vec<Option<usize>> = vec![None; palette.len()];
+    let mut new_palette = Vec::new();
+    for i in 0..CHUNK_VOLUME {
+        let old = read_packed(data, bits, i);
+        remap[old].get_or_insert_with(|| {
+            new_palette.push(palette[old]);
+            new_palette.len() - 1
+        });
+    }
+    if new_palette.len() == 1 {
+        return ChunkStorage::Uniform(new_palette[0]);
+    }
+    let new_bits = bits_for(new_palette.len());
+    let mut new_data = vec![0; packed_len(new_bits)];
+    for i in 0..CHUNK_VOLUME {
+        let slot = remap[read_packed(data, bits, i)].expect("assigned in the first pass");
+        write_packed(&mut new_data, new_bits, i, slot);
+    }
+    ChunkStorage::Paletted {
+        palette: new_palette,
+        bits: new_bits,
+        data: new_data,
+    }
+}
+
+/// xxh3 of a versioned little-endian encoding: prefix, palette length (u32),
+/// palette ids (u16), bit width (u8), data words (u64).
+fn canonical_hash(palette: &[MaterialId], bits: u8, data: &[u64]) -> u64 {
+    const PREFIX: &[u8] = b"rmc.chunk.v1";
+    let mut buf = Vec::with_capacity(PREFIX.len() + 4 + palette.len() * 2 + 1 + data.len() * 8);
+    buf.extend_from_slice(PREFIX);
+    buf.extend_from_slice(&(palette.len() as u32).to_le_bytes());
+    for id in palette {
+        buf.extend_from_slice(&id.0.to_le_bytes());
+    }
+    buf.push(bits);
+    for word in data {
+        buf.extend_from_slice(&word.to_le_bytes());
+    }
+    xxhash_rust::xxh3::xxh3_64(&buf)
 }
 
 /// Smallest allowed bit width that can index `len` palette entries.
@@ -429,5 +482,139 @@ mod tests {
         let mut u = ChunkStorage::Uniform(MaterialId(7));
         u.compact();
         assert_eq!(u, ChunkStorage::Uniform(MaterialId(7)));
+    }
+
+    /// Builds the same contents in a different palette order and at 16 bits:
+    /// every cell starts as `fill`, then `cells` are written.
+    fn build(fill: MaterialId, cells: &[(u16, MaterialId)]) -> ChunkStorage {
+        let mut s = ChunkStorage::Uniform(fill);
+        for &(i, id) in cells {
+            s.set(LocalPos::from_index(i), id);
+        }
+        s
+    }
+
+    #[test]
+    fn hash_uniform_equals_paletted() {
+        let stone = MaterialId(4);
+        let dirt = MaterialId(2);
+        let uniform = ChunkStorage::Uniform(stone);
+
+        // Promoted to a 1-bit palette, then written back: all stone again.
+        let p = LocalPos::new(5, 6, 7);
+        let mut reverted = uniform.clone();
+        reverted.set(p, dirt);
+        reverted.set(p, stone);
+        assert!(matches!(reverted, ChunkStorage::Paletted { bits: 1, .. }));
+        assert_eq!(reverted.hash(), uniform.hash());
+
+        // Grown to 16 bits with 300 materials, then every one overwritten.
+        let cells: Vec<u16> = (1u16..=300)
+            .map(|n| (u32::from(n) * 109 % CHUNK_VOLUME as u32) as u16)
+            .collect();
+        let mut wide = uniform.clone();
+        for (n, &i) in (1000u16..).zip(&cells) {
+            wide.set(LocalPos::from_index(i), MaterialId(n));
+        }
+        assert!(matches!(wide, ChunkStorage::Paletted { bits: 16, .. }));
+        for &i in &cells {
+            wide.set(LocalPos::from_index(i), stone);
+        }
+        assert_eq!(wide.hash(), uniform.hash());
+
+        // A chunk whose fill was entirely overwritten equals Uniform of the new material.
+        let mut all_dirt = uniform.clone();
+        for l in all_locals() {
+            all_dirt.set(l, dirt);
+        }
+        assert!(matches!(all_dirt, ChunkStorage::Paletted { .. }));
+        assert_eq!(all_dirt.hash(), ChunkStorage::Uniform(dirt).hash());
+
+        // Same mixed contents, different palette order and bit width, compacted or not.
+        let a = build(stone, &[(10, dirt), (20, MaterialId(9))]);
+        let mut b = ChunkStorage::Uniform(MaterialId(9));
+        for l in all_locals() {
+            b.set(l, MaterialId(77)); // an entry that ends up unused
+        }
+        for l in all_locals() {
+            let want = match l.index() {
+                10 => dirt,
+                20 => MaterialId(9),
+                _ => stone,
+            };
+            b.set(l, want);
+        }
+        match (&a, &b) {
+            (
+                ChunkStorage::Paletted { palette: pa, .. },
+                ChunkStorage::Paletted { palette: pb, .. },
+            ) => assert_ne!(pa, pb, "fixture should differ structurally"),
+            _ => panic!("fixtures should be paletted"),
+        }
+        assert_eq!(a.hash(), b.hash());
+        let mut ac = a.clone();
+        ac.compact();
+        assert_eq!(ac.hash(), a.hash());
+
+        // Chunk::hash covers contents only, not revision or modified.
+        let mut c = Chunk::new(b.clone());
+        c.revision = 42;
+        c.modified = true;
+        assert_eq!(c.hash(), a.hash());
+        assert_eq!(Chunk::uniform(stone).hash(), uniform.hash());
+    }
+
+    #[test]
+    fn hash_changes_on_edit() {
+        let stone = MaterialId(4);
+        let dirt = MaterialId(2);
+        let base = ChunkStorage::Uniform(stone);
+        let h0 = base.hash();
+
+        assert_ne!(ChunkStorage::Uniform(dirt).hash(), h0);
+
+        // One edited cell changes the hash, and where it is matters.
+        let mut a = base.clone();
+        a.set(LocalPos::new(0, 0, 0), dirt);
+        let ha = a.hash();
+        assert_ne!(ha, h0);
+        let b = build(stone, &[(1, dirt)]);
+        assert_ne!(b.hash(), ha);
+        assert_ne!(b.hash(), h0);
+        let last = build(stone, &[((CHUNK_VOLUME - 1) as u16, dirt)]);
+        assert_ne!(last.hash(), ha);
+        assert_ne!(last.hash(), h0);
+
+        // Which material is written matters too.
+        let c = build(stone, &[(0, MaterialId(9))]);
+        assert_ne!(c.hash(), ha);
+
+        // Swapping two cells with the same palette changes the hash.
+        let x = build(stone, &[(100, dirt), (200, MaterialId(9))]);
+        let y = build(stone, &[(100, MaterialId(9)), (200, dirt)]);
+        assert_ne!(x.hash(), y.hash());
+
+        // Each further edit changes it again; reverting restores it.
+        let mut wide = build(
+            stone,
+            &(1u16..=300)
+                .map(|n| {
+                    (
+                        (u32::from(n) * 109 % CHUNK_VOLUME as u32) as u16,
+                        MaterialId(n),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert!(matches!(wide, ChunkStorage::Paletted { bits: 16, .. }));
+        let hw = wide.hash();
+        let p = LocalPos::from_index(31000);
+        let prev = wide.set(p, MaterialId(5));
+        assert_ne!(wide.hash(), hw);
+        wide.set(p, prev);
+        assert_eq!(wide.hash(), hw);
+
+        a.set(LocalPos::new(0, 0, 0), stone);
+        assert_eq!(a.hash(), h0);
     }
 }
