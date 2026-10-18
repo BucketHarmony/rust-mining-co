@@ -97,3 +97,13 @@ Decisions:
 - Deleted the proptest-regressions/chunk.txt seed that the deliberate todo!() failure wrote (fill=0, ops=[], undo=0). It recorded only the stub panic.
 Next: F012 (chunk hash canonical across Uniform/Paletted), then F013 World.
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 06:40 — F012 Chunk hash canonical across Uniform and equivalent Paletted — passed
+Done: ChunkStorage::hash() and Chunk::hash() (which delegates) in rmc_world::chunk. The hash is xxh3_64 over the compacted form, encoded as: "rmc.chunk.v1" prefix, palette length (u32 LE), palette ids (u16 LE), bit width (u8), data words (u64 LE). Uniform encodes as a one-entry palette with 0 bits and no data words, and a Paletted chunk that compacts to one material encodes the same way. Pulled the compaction logic out of compact() into a private `compacted(palette, bits, data) -> ChunkStorage` used by both compact() and hash(). It now does two passes (remap, then write) and no longer keeps a 32768-entry slot Vec. The F010/F011 tests are unchanged and still pass.
+Tests added: chunk::tests::{hash_uniform_equals_paletted, hash_changes_on_edit}. Equal hashes for: Uniform vs promoted-then-reverted (1 bit); Uniform vs a chunk grown to 16 bits and then fully overwritten; a fully overwritten paletted chunk vs Uniform of the new material; the same mixed contents with different palette order, unused entries and widths; compacted vs uncompacted. Different hashes for: a different uniform material; one edited cell at index 0, 1 and 32767 (pairwise distinct); a different written material; two cells swapped under the same palette; an edit in a 16-bit chunk. Reverting an edit restores the hash.
+Decisions:
+- The hash covers cell contents only. Chunk.revision and Chunk.modified are not hashed: SAD §7 defines the hash over the canonical paletted encoding, and World::hash (F013) folds in positions, not revisions. Revision agreement between host and replica is apply_delta's job (F025).
+- The canonical encoding reuses compact()'s first-appearance palette order, so it depends only on content. No golden value is pinned: chunk hashes are compared only between worlds in the same build (determinism, replica equivalence) and are never persisted. Changing the encoding on purpose means bumping the v1 prefix.
+- hash() on a Paletted chunk allocates a compacted copy (at most 64 KiB data). That is fine for world hashing at test and handshake rates. Revisit in F082 if profiling shows it.
+Next: F013 (World with bounds, chunk map, get_cell/is_solid, iter_chunks_sorted, world hash).
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
