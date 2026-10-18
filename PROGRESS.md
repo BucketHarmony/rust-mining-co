@@ -121,3 +121,13 @@ Decisions:
 - Deleted the proptest-regressions/world.txt seed that the deliberate todo!() stub failure wrote; it recorded only the stub panic.
 Next: F014 (256 uniform-stone chunks under 64 MB), then M2 F020 shapes.
 Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
+
+## 2026-10-18 07:20 — F014 256 uniform-stone chunks occupy under 64 MB — passed
+Done: ChunkStorage::heap_bytes() (palette + data Vec capacity; Uniform = 0) and World::memory_bytes() (size_of World + estimated chunk-map table + sum of chunk heap bytes). Measured: 256 uniform-stone chunks = 45,664 bytes; 256 chunks all at a 16-bit palette (worst case) = 16,954,464 bytes. Both are far under the budget.
+Tests added: world::tests::memory_256_chunks_under_budget. It checks the uniform world (< 64,000,000 bytes, < 1 MiB, no chunk heap) and the 16-bit worst case (< 64,000,000 bytes, ≥ 256 × 64 KiB of data, so the measurement is not trivially small). It also checks that an empty world reports exactly size_of::<World>().
+Decisions:
+- Memory is accounted, not measured with a counting global allocator. That would need `unsafe impl GlobalAlloc` (rule: deny(unsafe_code)) or a new crate. The table estimate follows std/hashbrown's SwissTable layout: buckets from capacity() (cap+1 below 7, else cap/7*8), one (ChunkPos, Chunk) entry plus one control byte per bucket, plus a 16-byte group. Vecs count capacity, not len. The shared Arc<MaterialTable> is not counted (it is not chunk storage).
+- "64 MB" is read as 64,000,000 bytes, the stricter of MB and MiB.
+- The SAD has no 64 MB row in §13; the budget comes from the feature title. The test also covers the 16-bit worst case, so edits cannot push a full 256-chunk world over the budget either.
+Next: M2 F020 (shapes with fixed iteration order and cell counts).
+Blockers: none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
