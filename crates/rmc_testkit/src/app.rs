@@ -19,15 +19,16 @@ use bevy::transform::TransformPlugin;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 use rmc_client::{
-    CameraStart, ClientMaterials, ControllerPlugin, FlyCamPlugin, GameCamera, GameRenderPlugin,
-    HostConnection, HostLink, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin,
-    ToHost,
+    CameraStart, ClientInventory, ClientMaterials, ControllerPlugin, FlyCamPlugin, GameCamera,
+    GameRenderPlugin, HostConnection, HostLink, HudPlugin, HudState, MeshPipelinePlugin, NetPlugin,
+    Pickaxe, PickaxePlugin, ReplicaPlugin, ToHost,
 };
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
 use rmc_world::coords::CellAabb;
 use rmc_world::edit::PlayerId;
+use rmc_world::inventory::Inventory;
 use rmc_world::materials::MaterialTable;
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::GenParams;
@@ -124,6 +125,7 @@ impl TestApp {
                 // Inert until a scenario spawns a `Player`.
                 ControllerPlugin,
                 PickaxePlugin,
+                HudPlugin,
             ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(Pickaxe(tools.pickaxe))
@@ -208,6 +210,17 @@ impl TestApp {
     /// The app's frame count (one per step, boot included).
     pub fn frame(&self) -> u32 {
         self.app.world().resource::<FrameCount>().0
+    }
+
+    /// What the HUD shows after the last step.
+    pub fn hud(&self) -> HudState {
+        self.app.world().resource::<HudState>().clone()
+    }
+
+    /// The local player's inventory as the client knows it (the host's
+    /// last `Inventory` message).
+    pub fn inventory(&self) -> Inventory {
+        self.app.world().resource::<ClientInventory>().0.clone()
     }
 }
 

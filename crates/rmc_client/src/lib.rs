@@ -3,6 +3,7 @@
 
 pub mod controller;
 pub mod flycam;
+pub mod hud;
 pub mod interp;
 pub mod material;
 pub mod mesher;
@@ -17,6 +18,10 @@ pub use controller::{
     PLAYER_HEIGHT_M, PLAYER_STATE_HZ, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
+pub use hud::{
+    ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot, HudState,
+    HudSystems,
+};
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
     ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveFromAlpha, EmissiveMaterialPlugin,

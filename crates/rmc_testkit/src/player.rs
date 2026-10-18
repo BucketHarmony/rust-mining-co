@@ -248,4 +248,80 @@ mod tests {
             .swings();
         assert_eq!(swung, u64::from(swings), "no swing was wasted");
     }
+
+    /// The HUD follows a dig through the real host: the pillar cell's name
+    /// and growing damage while it is swung at, then, once it breaks, the
+    /// stone in the inventory the host reported.
+    #[test]
+    fn hud_follows_a_dig() {
+        let mut t = TestApp::new(TestConfig {
+            seed: 3,
+            world_bounds: CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 127, 63)),
+            render: false,
+            ..TestConfig::default()
+        });
+        let stone = t.host_world().materials().id("stone").unwrap();
+        let edits = [
+            (CellPos::new(24, 100, 24), CellPos::new(39, 100, 39)),
+            (CellPos::new(24, 101, 24), CellPos::new(39, 120, 39)),
+            // A pillar 1.5 m in front of the eye.
+            (CellPos::new(32, 101, 28), CellPos::new(32, 106, 28)),
+        ];
+        let ops = [EditOp::Set(stone), EditOp::Remove, EditOp::Set(stone)];
+        for (seq, ((min, max), op)) in (1000..).zip(edits.into_iter().zip(ops)) {
+            t.send(ClientMsg::Edit(EditCommand {
+                id: CommandId {
+                    issuer: t.player_id(),
+                    seq,
+                },
+                issuer: t.player_id(),
+                op,
+                shape: Shape::Box { min, max },
+            }));
+        }
+        t.steps(3);
+        assert!(!t.hud().crosshair, "no player, no crosshair");
+        t.spawn_player(Vec3::new(16.25, 101.0 * CELL_SIZE_M, 16.25));
+        t.steps(10);
+        let cell = CellPos::new(32, 104, 28);
+        let hud = t.hud();
+        assert!(hud.crosshair);
+        assert_eq!(hud.target, Some(cell));
+        assert_eq!(hud.material.as_deref(), Some("stone"));
+        assert_eq!(hud.damage, None);
+        assert!(hud.inventory.is_empty());
+        assert!(t.inventory().is_empty());
+
+        let profile = t.app().world().resource::<rmc_client::Pickaxe>().0;
+        let hardness = t.host_world().materials().get(stone).unwrap().hardness;
+        let swings = hardness.div_ceil(profile.damage);
+        assert!(swings >= 2, "stone takes more than one swing");
+        let interval = (profile.interval_s * 60.0).round() as u32;
+        t.mouse_down(rmc_client::SWING_BUTTON);
+        t.step();
+        let progress = t.hud().damage.expect("damage shown after a swing");
+        assert_eq!(
+            (progress.dealt, progress.hardness),
+            (profile.damage, hardness)
+        );
+        // The cell is still there on the host, with the damage the HUD shows.
+        t.step();
+        assert_eq!(t.host_world().get_cell(cell), Some(stone));
+        assert_eq!(t.host_world().damage().get(cell), profile.damage);
+        assert_eq!(t.hud().damage, Some(progress));
+
+        t.steps((u32::from(swings) - 1) * interval + 1);
+        t.mouse_up(rmc_client::SWING_BUTTON);
+        t.step();
+        assert_eq!(t.host_world().get_cell(cell), Some(MaterialId::AIR));
+        let hud = t.hud();
+        assert_ne!(hud.target, Some(cell), "the broken cell is not targeted");
+        assert_eq!(hud.inventory.len(), 1, "{hud:?}");
+        let item = &hud.inventory[0];
+        assert_eq!(
+            (item.material, item.name.as_str(), item.count),
+            (stone, "stone", 1)
+        );
+        assert_eq!(Some(&t.inventory()), t.host().inventory(t.player_id()));
+    }
 }
