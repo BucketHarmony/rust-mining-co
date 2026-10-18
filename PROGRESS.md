@@ -700,3 +700,54 @@ Next: F067 (E2E dig_tunnel with TunnelBot; host/replica hash equality; SAD §12.
 - In this harness, git checkout/restore of a file is denied, but plain rm of untracked files works.
 - The sky renders near-black above the 128-cell world (see walk_and_jump-195.png and the latency_dig hole). That was not touched here.
 Blockers: none.
+
+## 2026-10-18 17:30 — F067 E2E: dig_tunnel with TunnelBot; host/replica hash equality — passed
+Done:
+- New rmc_testkit::bots (SAD §12.3). Bots only inject input and read the player, PickTarget and the replica. After every step they take, they check `player_penetration()` is empty.
+  - `DigBot::new(cell).run(t) -> Result<DigReport { swings, frames }, BotError>`:
+    - It aims (mouse look, one step) at the middle of the nearest face of the cell that a ray from the eye reaches first: a face toward the eye with an open neighbor, checked with rmc_world::raycast within reach.
+    - It checks that PickTarget is the cell, then holds SWING_BUTTON until the replica cell is Air. The limit is ceil(hardness/damage) × interval frames + 4. The button is released whether it succeeds or fails.
+  - `TunnelBot::new(length).run(t) -> Result<TunnelReport { cells, first_column, swings, frames, start }, BotError>`:
+    - It snaps the yaw to the nearest axis and faces it exactly.
+    - It lays out a tunnel `width_cells()` × `height_cells()` centered as near the feet as the grid allows, starting at the first layer ahead (scanning 32) with a solid cell in the cross-section.
+    - It strafes (A/D) until the box is clear of the side walls by half the spare width.
+    - For each slice it walks (W) until the box front is 0.5 m from the slice, digs the slice's solid cells top row first with DigBot, and re-faces the heading.
+    - At the end it walks to 0.05 m from the far face and stands still.
+  - `BotError` variants: NotDiggable, OutOfSight, Misaimed, Unbroken, Stuck (no movement for 10 steps), Penetrating, NoWall.
+- tests/e2e/tests/dig_tunnel.rs:
+  - The course is a 2 × 4 × 2 chunk world with a floor at y = 100, cleared above, and a 17 × 12 × 16 wall (z 20..=35, face at 18 m) of the plain diggable solid with the fewest swings (topsoil, 1 swing).
+  - The player starts 1.95 m from the wall, a quarter cell off the tunnel's middle. TunnelBot(10) runs.
+  - Asserts:
+    - the dug cells equal the expected 80 (10 slices × 2 × 4);
+    - all 80 cells are Air on host and replica;
+    - the rest of the wall stands;
+    - swings = 80 × ceil(hardness/damage);
+    - the feet are 4.70 m into the wall (≥ 4) and ≥ 4 m from the start, grounded on the tunnel floor, with no penetration;
+    - the client and host inventories grew by 80 × yield;
+    - the host and replica hashes are equal.
+  - It then turns around to look out of the tunnel and saves a screenshot. Pixel checks: the center block (crosshair left out) differs from the "before" wall by ≥ 24, and the 5–95 % luminance spread is ≥ 20.
+  - Committed docs/screens/dig_tunnel-40.png (the wall) and dig_tunnel-1747.png (the tunnel looking out; HUD "topsoil 80").
+- TestApp::step now blocks on the GPU (`wait_for_gpu`, made pub(crate)) after every rendered update.
+Tests added: e2e:dig_tunnel; bots::tests::{tunnel_is_the_smallest_the_player_fits, tunnel_bot_digs_and_walks_in, bots_report_what_stops_them} (logic mode, about 0.2 s together).
+- dig_tunnel first failed against a stub TunnelBot (0 cells vs 80).
+- The bot tests were written with the implementation. Two of their own assertions were wrong at first and were corrected before any commit: yaw wrap at ±π, and the NoWall expectation (facing +Z, the world's bedrock shell is within the 32-cell scan, so the bot reports NotDiggable). NoWall itself has no test.
+- The full E2E suite (8 scenarios) passes on WARP with the synchronous step. Times: boot_renders 109 s, dig_cell_visible 45 s, dig_tunnel 323–365 s, emissive_glow 19 s, fly_camera 71 s, latency_dig 34 s, step_up 185 s, walk_and_jump 60 s.
+- Reviewer subagent: GAPS (minor; no SAD violation). Fixed:
+  - semantic pixel asserts were added;
+  - the floor row now allows SKIN_M below a cell boundary;
+  - the comment about looking at "daylight" was corrected (it is the world's shell);
+  - a depth-from-start assert was added.
+Decisions:
+- "2-high tunnel" (SAD §12.3) means the smallest tunnel the player fits through.
+  - With 0.5 m cells and a 0.6 × 1.7 m player, a literal 2-cell tunnel (1 m) cannot be entered, and "≥ 4 m deeper" would be impossible.
+  - Width and height come from PLAYER_WIDTH_M / PLAYER_HEIGHT_M (+ SKIN_M): 2 × 4 cells.
+  - "Digs 10 cells" means 10 cells forward (80 cells broken).
+- TestApp::step waits for the GPU in render mode.
+  - With an image target and no window, nothing throttles submission. Over ~1,700 steps the CPU (about 58 ms/step) queued minutes of WARP work (about 290 ms/frame at 640×360). The final screenshot's GPU wait then timed out 60 times in a row (reproduced twice).
+  - Step wall-clock time now includes the GPU. soak_chaos's p95 step time (F080) therefore measures CPU + GPU per frame.
+  - try_screenshot still waits again after each step. That is redundant but harmless, and was left alone so the other scenarios keep the code they were verified with.
+- dig_tunnel renders at 320×180 (156 ms/frame on WARP versus 290 ms at 640×360), because it needs about 1,750 frames. The other scenarios keep 640×360.
+- The wall is the plain diggable solid with the fewest swings, to keep the frame count down. The swing count is still checked against hardness/damage.
+- DigBot and TunnelBot only; WalkBot, BuilderBot and ChaosBot come with F074/F080.
+Next: M6 is complete, so the playtester report follows in this session. Then F070 (EditorState resource with keyboard bindings and docs/CONTROLS.md).
+Blockers: none.
