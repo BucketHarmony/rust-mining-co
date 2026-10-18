@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+  PROPTEST_CASES: "1000"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: System deps (Bevy + lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            mesa-vulkan-drivers vulkan-tools jq
+          vulkaninfo --summary | grep -iE "llvmpipe|deviceName" || true
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: scripts/check-no-bevy.sh
+      - run: cargo test --workspace
+      - name: Feature regression check
+        run: scripts/verify-features.sh --quick
+      - name: End-to-end (lavapipe)
+        env:
+          WGPU_BACKEND: vulkan
+          WGPU_ADAPTER_NAME: llvmpipe
+        run: scripts/e2e.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots-linux
+          path: target/e2e/*.png
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WARP (software D3D12)
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Direct3D.WARP -Version 1.0.16.1 -OutputDirectory warp
+          $dll = Get-ChildItem -Recurse warp -Filter d3d10warp.dll | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          New-Item -ItemType Directory -Force target\debug\deps | Out-Null
+          Copy-Item $dll.FullName target\debug\
+          Copy-Item $dll.FullName target\debug\deps\
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+      - name: End-to-end (WARP)
+        shell: bash
+        env:
+          WGPU_BACKEND: dx12
+          WGPU_FORCE_FALLBACK_ADAPTER: "1"
+        run: scripts/e2e.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots-windows
+          path: target/e2e/*.png
+          if-no-files-found: ignore
+      - name: Release build
+        run: cargo build --release -p rmc_app
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\rmc_app.exe dist\rust-mining-co.exe
+          Copy-Item -Recurse assets dist\assets
+          if (Test-Path docs\CONTROLS.md) { Copy-Item docs\CONTROLS.md dist\ }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/

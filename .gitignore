@@ -1,0 +1,7 @@
+target/
+logs/
+.claude/worktrees/
+save/
+# kit source, not part of the build
+rmc-kit.zip
+SAD (5).md

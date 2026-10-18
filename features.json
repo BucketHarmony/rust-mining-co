@@ -1,0 +1,997 @@
+{
+  "_contract": "Edited only by scripts/pass-feature.sh and scripts/skip-feature.sh. 'tests' entries are 'cargo:<package>:<full libtest path>' (unit tests live in `mod tests`, so paths look like module::tests::name; integration tests are just name) or 'e2e:<scenario>' (tests/e2e/tests/<scenario>.rs, fn <scenario>). A feature passes only when every listed test passes. 'optional': true features may be skipped with a recorded reason.",
+  "features": [
+    {
+      "id": "F001",
+      "milestone": "M0",
+      "title": "Workspace skeleton with pinned Bevy 0.20 and all crates compiling",
+      "sad": "\u00a73, \u00a74",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Create all seven crates, rust-toolchain.toml, workspace Cargo.toml with pinned versions. If bevy 0.20 + bevy_egui 0.43 + bevy-inspector-egui 0.38 do not resolve after two attempts, apply the \u00a73 fallback (0.19.1 / 0.40 / 0.37) and record it in PROGRESS.md. Also create tests/e2e as workspace member package rmc_e2e (src/lib.rs empty; scenarios are integration tests in tests/e2e/tests/<name>.rs) and rust-toolchain.toml from the kit. Set [profile.dev] opt-level=1 and [profile.dev.package.\"*\"] opt-level=3."
+    },
+    {
+      "id": "F002",
+      "milestone": "M0",
+      "title": "No-Bevy dependency check script and CI workflow skeleton",
+      "sad": "\u00a74, \u00a716",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [
+        "F001"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "scripts/check-no-bevy.sh must exit non-zero if bevy appears in cargo tree of the four core crates. .github/workflows/ci.yml from the kit must be valid; run `scripts/check-no-bevy.sh` locally."
+    },
+    {
+      "id": "F003",
+      "milestone": "M0",
+      "title": "Coordinate conversions",
+      "sad": "\u00a75",
+      "tests": [
+        "cargo:rmc_world:coords::tests::cell_to_chunk_negative",
+        "cargo:rmc_world:coords::tests::local_index_roundtrip",
+        "cargo:rmc_world:coords::tests::world_meters_roundtrip"
+      ],
+      "blockedBy": [
+        "F001"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F004",
+      "milestone": "M0",
+      "title": "MaterialTable loading from materials.ron with tags and hash",
+      "sad": "\u00a76",
+      "tests": [
+        "cargo:rmc_world:materials::tests::loads_phase1_table",
+        "cargo:rmc_world:materials::tests::hash_is_stable",
+        "cargo:rmc_world:materials::tests::lookup_by_key_and_tag"
+      ],
+      "blockedBy": [
+        "F001"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F005",
+      "milestone": "M0",
+      "title": "Scripts: smoke.sh, e2e.sh, verify-features.sh, pass-feature.sh wired and executable",
+      "sad": "\u00a716",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [
+        "F001"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "verify-features.sh must correctly run cargo:<pkg>:<filter> with --exact and e2e:<scenario> entries. Test it on F003 before passing this."
+    },
+    {
+      "id": "F010",
+      "milestone": "M1",
+      "title": "ChunkStorage Uniform/Paletted with get/set and bit-width promotion",
+      "sad": "\u00a77",
+      "tests": [
+        "cargo:rmc_world:chunk::tests::uniform_promotes_on_first_write",
+        "cargo:rmc_world:chunk::tests::set_get_roundtrip_proptest",
+        "cargo:rmc_world:chunk::tests::bits_promote_through_16"
+      ],
+      "blockedBy": [
+        "F003",
+        "F004"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F011",
+      "milestone": "M1",
+      "title": "compact() preserves content and demotes bit width",
+      "sad": "\u00a77",
+      "tests": [
+        "cargo:rmc_world:chunk::tests::compact_preserves_contents_proptest",
+        "cargo:rmc_world:chunk::tests::compact_demotes_bits"
+      ],
+      "blockedBy": [
+        "F010"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F012",
+      "milestone": "M1",
+      "title": "Chunk hash canonical across Uniform and equivalent Paletted",
+      "sad": "\u00a77",
+      "tests": [
+        "cargo:rmc_world:chunk::tests::hash_uniform_equals_paletted",
+        "cargo:rmc_world:chunk::tests::hash_changes_on_edit"
+      ],
+      "blockedBy": [
+        "F010"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F013",
+      "milestone": "M1",
+      "title": "World with bounds, chunk map, get_cell/is_solid, iter_chunks_sorted, world hash",
+      "sad": "\u00a77",
+      "tests": [
+        "cargo:rmc_world:world::tests::get_cell_out_of_bounds_is_none",
+        "cargo:rmc_world:world::tests::iter_sorted_is_deterministic",
+        "cargo:rmc_world:world::tests::world_hash_independent_of_insert_order"
+      ],
+      "blockedBy": [
+        "F012"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F014",
+      "milestone": "M1",
+      "title": "256 uniform-stone chunks occupy under 64 MB",
+      "sad": "\u00a713",
+      "tests": [
+        "cargo:rmc_world:world::tests::memory_256_chunks_under_budget"
+      ],
+      "blockedBy": [
+        "F013"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F020",
+      "milestone": "M2",
+      "title": "Shapes with fixed iteration order and cell counts",
+      "sad": "\u00a78.1",
+      "tests": [
+        "cargo:rmc_world:shape::tests::sphere_counts_r0_to_8",
+        "cargo:rmc_world:shape::tests::sphere_is_symmetric",
+        "cargo:rmc_world:shape::tests::box_is_inclusive",
+        "cargo:rmc_world:shape::tests::iteration_order_is_y_z_x"
+      ],
+      "blockedBy": [
+        "F003"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F021",
+      "milestone": "M2",
+      "title": "EditCommand Set/Remove/Paint via World::apply with deltas",
+      "sad": "\u00a78.1\u20138.3",
+      "tests": [
+        "cargo:rmc_world:edit::tests::set_produces_cells_delta",
+        "cargo:rmc_world:edit::tests::paint_skips_air",
+        "cargo:rmc_world:edit::tests::remove_skips_undiggable",
+        "cargo:rmc_world:edit::tests::full_delta_over_threshold"
+      ],
+      "blockedBy": [
+        "F013",
+        "F020"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F022",
+      "milestone": "M2",
+      "title": "Validation: oversized and out-of-bounds commands rejected with no partial application",
+      "sad": "\u00a78.2",
+      "tests": [
+        "cargo:rmc_world:edit::tests::oversized_rejected_no_change",
+        "cargo:rmc_world:edit::tests::entirely_outside_rejected",
+        "cargo:rmc_world:edit::tests::partially_outside_applies_inside"
+      ],
+      "blockedBy": [
+        "F021"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F023",
+      "milestone": "M2",
+      "title": "Damage accumulation, break, yields, saturating, cleared by Set",
+      "sad": "\u00a77, \u00a78",
+      "tests": [
+        "cargo:rmc_world:damage::tests::breaks_on_ceil_hardness_over_dmg",
+        "cargo:rmc_world:damage::tests::bedrock_never_breaks",
+        "cargo:rmc_world:damage::tests::yields_match_table",
+        "cargo:rmc_world:damage::tests::saturates",
+        "cargo:rmc_world:damage::tests::set_clears_damage"
+      ],
+      "blockedBy": [
+        "F021"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F024",
+      "milestone": "M2",
+      "title": "Determinism: same command sequence yields identical world hash (proptest 1000)",
+      "sad": "\u00a714",
+      "tests": [
+        "cargo:rmc_world:edit::tests::determinism_proptest"
+      ],
+      "blockedBy": [
+        "F023"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F025",
+      "milestone": "M2",
+      "title": "apply_delta with revision check and insert_chunk",
+      "sad": "\u00a77, \u00a78.5",
+      "tests": [
+        "cargo:rmc_world:world::tests::apply_delta_requires_next_revision",
+        "cargo:rmc_world:world::tests::apply_full_delta_replaces",
+        "cargo:rmc_world:world::tests::apply_delta_matches_apply_command"
+      ],
+      "blockedBy": [
+        "F021"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F026",
+      "milestone": "M2",
+      "title": "Voxel raycast (Amanatides\u2013Woo)",
+      "sad": "\u00a711.5",
+      "tests": [
+        "cargo:rmc_world:raycast::tests::axis_aligned_hit",
+        "cargo:rmc_world:raycast::tests::diagonal_hit_face_normal",
+        "cargo:rmc_world:raycast::tests::crosses_chunk_border",
+        "cargo:rmc_world:raycast::tests::max_distance_miss",
+        "cargo:rmc_world:raycast::tests::start_inside_solid"
+      ],
+      "blockedBy": [
+        "F013"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F027",
+      "milestone": "M2",
+      "title": "Save format: header + zstd/postcard chunks; round trip hash identical; mismatch fails",
+      "sad": "\u00a710",
+      "tests": [
+        "cargo:rmc_world:save::tests::roundtrip_hash_identical",
+        "cargo:rmc_world:save::tests::only_modified_chunks_written",
+        "cargo:rmc_world:save::tests::header_mismatch_fails"
+      ],
+      "blockedBy": [
+        "F025"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F030",
+      "milestone": "M3",
+      "title": "Protocol messages with postcard round trip for every variant",
+      "sad": "\u00a78.4",
+      "tests": [
+        "cargo:rmc_protocol:codec::tests::roundtrip_every_client_variant",
+        "cargo:rmc_protocol:codec::tests::roundtrip_every_server_variant"
+      ],
+      "blockedBy": [
+        "F021"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F031",
+      "milestone": "M3",
+      "title": "Transport trait and ChannelTransport",
+      "sad": "\u00a78.5",
+      "tests": [
+        "cargo:rmc_host:transport::tests::channel_delivers_in_order",
+        "cargo:rmc_host:transport::tests::recipient_filtering"
+      ],
+      "blockedBy": [
+        "F030"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F032",
+      "milestone": "M3",
+      "title": "Host::tick: Hello/Welcome, hash mismatch rejection, snapshots on join, edits applied in order",
+      "sad": "\u00a78.5",
+      "tests": [
+        "cargo:rmc_host:host::tests::hello_mismatch_rejected",
+        "cargo:rmc_host:host::tests::join_receives_all_snapshots",
+        "cargo:rmc_host:host::tests::edits_applied_in_arrival_order"
+      ],
+      "blockedBy": [
+        "F031",
+        "F027"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F033",
+      "milestone": "M3",
+      "title": "Replica fed only by ServerMsg stays hash-identical over 10,000 random edits",
+      "sad": "\u00a714",
+      "tests": [
+        "cargo:rmc_host:replica::tests::equivalence_10k_edits"
+      ],
+      "blockedBy": [
+        "F032",
+        "F025"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F034",
+      "milestone": "M3",
+      "title": "RequestChunk repairs a revision gap; inventories tracked per player",
+      "sad": "\u00a78.5",
+      "tests": [
+        "cargo:rmc_host:replica::tests::gap_repaired_by_request_chunk",
+        "cargo:rmc_host:host::tests::inventory_accumulates_yields"
+      ],
+      "blockedBy": [
+        "F033"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F035",
+      "milestone": "M3",
+      "title": "Host thread wakes on message arrival; SaveRequest handled",
+      "sad": "\u00a78.5, \u00a710",
+      "tests": [
+        "cargo:rmc_host:thread::tests::wakes_on_message_under_50ms",
+        "cargo:rmc_host:host::tests::save_request_writes_files"
+      ],
+      "blockedBy": [
+        "F034"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F040",
+      "milestone": "M4",
+      "title": "GenParams from worldgen.ron, seeded fastnoise-lite layers, surface + strata",
+      "sad": "\u00a79",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::same_seed_same_chunk",
+        "cargo:rmc_worldgen:gen::tests::different_seed_differs",
+        "cargo:rmc_worldgen:gen::tests::surface_has_topsoil_then_dirt"
+      ],
+      "blockedBy": [
+        "F013",
+        "F004"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F041",
+      "milestone": "M4",
+      "title": "Caves and worm tunnels, suppressed near surface",
+      "sad": "\u00a79",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::no_caves_within_4_of_surface",
+        "cargo:rmc_worldgen:gen::tests::caves_exist_at_depth"
+      ],
+      "blockedBy": [
+        "F040"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F042",
+      "milestone": "M4",
+      "title": "Ores only in stone-tagged cells within depth ranges",
+      "sad": "\u00a79",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::ores_only_replace_stone_tag",
+        "cargo:rmc_worldgen:gen::tests::ores_respect_depth_range"
+      ],
+      "blockedBy": [
+        "F041"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F043",
+      "milestone": "M4",
+      "title": "Glowcrystal on cave walls using 34\u00b3 border evaluation",
+      "sad": "\u00a79",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::glowcrystal_adjacent_to_air",
+        "cargo:rmc_worldgen:gen::tests::glowcrystal_on_chunk_border_matches_neighbor"
+      ],
+      "blockedBy": [
+        "F041"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F044",
+      "milestone": "M4",
+      "title": "Bedrock shell and border continuity across all faces",
+      "sad": "\u00a79",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::bedrock_shell_complete",
+        "cargo:rmc_worldgen:gen::tests::border_continuity_20_random_pairs"
+      ],
+      "blockedBy": [
+        "F043",
+        "F042"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F045",
+      "milestone": "M4",
+      "title": "Parallel generation of 256 chunks: under 10 s in dev profile (3 s target measured by bench at M8)",
+      "sad": "\u00a713",
+      "tests": [
+        "cargo:rmc_worldgen:gen::tests::generate_world_256_under_10s_dev"
+      ],
+      "blockedBy": [
+        "F044"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F050",
+      "milestone": "M5",
+      "title": "rmc_testkit TestApp: headless app, manual time, in-process synchronous host, step()",
+      "sad": "\u00a712.1",
+      "tests": [
+        "cargo:rmc_testkit:app::tests::boots_without_window",
+        "cargo:rmc_testkit:app::tests::step_advances_one_frame",
+        "cargo:rmc_testkit:app::tests::host_tick_runs_each_step"
+      ],
+      "blockedBy": [
+        "F035",
+        "F045"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false,
+      "notes": "Follow Bevy's externally_driven_headless_renderer example: WindowPlugin primary_window None, disable WinitPlugin, RenderPlugin synchronous_pipeline_compilation. Set WGPU_ADAPTER_NAME=llvmpipe in scripts/e2e.sh. If no adapter is found, print the vulkaninfo summary into PROGRESS.md under Blockers and stop."
+    },
+    {
+      "id": "F051",
+      "milestone": "M5",
+      "title": "TestApp screenshot via Screenshot::image and ScreenshotCaptured observer",
+      "sad": "\u00a712.1",
+      "tests": [
+        "cargo:rmc_testkit:screenshot::tests::captures_nonblack_image"
+      ],
+      "blockedBy": [
+        "F050"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F052",
+      "milestone": "M5",
+      "title": "Input injection: press/release/hold/look/click as Bevy messages",
+      "sad": "\u00a712.2",
+      "tests": [
+        "cargo:rmc_testkit:input::tests::press_sets_button_input",
+        "cargo:rmc_testkit:input::tests::look_accumulates_mouse_motion"
+      ],
+      "blockedBy": [
+        "F050"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F053",
+      "milestone": "M5",
+      "title": "Replica resource and ServerMsg handlers with dirty-neighbor marking",
+      "sad": "\u00a711.1",
+      "tests": [
+        "cargo:rmc_client:replica::tests::delta_marks_chunk_dirty",
+        "cargo:rmc_client:replica::tests::border_edit_marks_neighbor_dirty",
+        "cargo:rmc_client:replica::tests::gap_sends_request_chunk"
+      ],
+      "blockedBy": [
+        "F050"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F054",
+      "milestone": "M5",
+      "title": "GreedyMesher with AO in merge key",
+      "sad": "\u00a711.2",
+      "tests": [
+        "cargo:rmc_client:mesher::tests::single_cell_six_quads",
+        "cargo:rmc_client:mesher::tests::slab_2x2_merges",
+        "cargo:rmc_client:mesher::tests::checkerboard_no_merge",
+        "cargo:rmc_client:mesher::tests::ao_mismatch_prevents_merge",
+        "cargo:rmc_client:mesher::tests::border_faces_use_neighbor_cells"
+      ],
+      "blockedBy": [
+        "F053"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F055",
+      "milestone": "M5",
+      "title": "Async mesh pipeline with revision discard, budgets, nearest-first, MeshStats resource",
+      "sad": "\u00a711.2",
+      "tests": [
+        "cargo:rmc_client:meshpipe::tests::stale_result_discarded_and_requeued",
+        "cargo:rmc_client:meshpipe::tests::in_flight_budget_respected",
+        "cargo:rmc_client:meshpipe::tests::nearest_chunk_first",
+        "cargo:rmc_client:meshpipe::tests::mesh_stats_count_meshed_chunks"
+      ],
+      "blockedBy": [
+        "F054"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F056",
+      "milestone": "M5",
+      "title": "Rendering: StandardMaterial with vertex colors, lighting, bloom, camera",
+      "sad": "\u00a711.2, \u00a711.3",
+      "tests": [
+        "e2e:boot_renders"
+      ],
+      "blockedBy": [
+        "F055",
+        "F051"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F057",
+      "milestone": "M5",
+      "title": "Fly camera (noclip) with keyboard/mouse; moves through solid cells",
+      "sad": "\u00a711.6",
+      "tests": [
+        "e2e:fly_camera"
+      ],
+      "blockedBy": [
+        "F056",
+        "F052"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F058",
+      "milestone": "M5",
+      "title": "Emissive via ExtendedMaterial reading color alpha (optional; record if skipped)",
+      "sad": "\u00a711.2",
+      "tests": [
+        "cargo:rmc_client:material::tests::emissive_extension_compiles"
+      ],
+      "blockedBy": [
+        "F056"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "optional": true,
+      "notes": "Optional. If the ExtendedMaterial extension is not working after one serious attempt, run scripts/skip-feature.sh F058 \"<reason>\" and move on."
+    },
+    {
+      "id": "F060",
+      "milestone": "M6",
+      "title": "Kinematic controller: swept AABB collision, gravity, walk",
+      "sad": "\u00a711.4",
+      "tests": [
+        "cargo:rmc_client:controller::tests::stands_on_floor",
+        "cargo:rmc_client:controller::tests::wall_stops_movement",
+        "cargo:rmc_client:controller::tests::corner_slides",
+        "cargo:rmc_client:controller::tests::never_penetrates_solid_proptest"
+      ],
+      "blockedBy": [
+        "F053"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F061",
+      "milestone": "M6",
+      "title": "Jump and one-cell auto step-up",
+      "sad": "\u00a711.4",
+      "tests": [
+        "cargo:rmc_client:controller::tests::jump_leaves_ground_and_lands",
+        "cargo:rmc_client:controller::tests::steps_up_one_cell",
+        "cargo:rmc_client:controller::tests::two_cell_wall_blocks"
+      ],
+      "blockedBy": [
+        "F060"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F062",
+      "milestone": "M6",
+      "title": "FixedUpdate at 60 Hz with render interpolation",
+      "sad": "\u00a711.4",
+      "tests": [
+        "cargo:rmc_client:interp::tests::render_pos_between_prev_and_curr"
+      ],
+      "blockedBy": [
+        "F060"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F063",
+      "milestone": "M6",
+      "title": "E2E: walk_and_jump and step_up through injected input",
+      "sad": "\u00a712.4",
+      "tests": [
+        "e2e:walk_and_jump",
+        "e2e:step_up"
+      ],
+      "blockedBy": [
+        "F061",
+        "F062",
+        "F057"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F064",
+      "milestone": "M6",
+      "title": "Pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz",
+      "sad": "\u00a711.5",
+      "tests": [
+        "cargo:rmc_client:pickaxe::tests::swing_respects_interval",
+        "cargo:rmc_client:pickaxe::tests::swing_sends_damage_for_hit_cell",
+        "cargo:rmc_client:pickaxe::tests::no_swing_beyond_reach"
+      ],
+      "blockedBy": [
+        "F063"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F065",
+      "milestone": "M6",
+      "title": "HUD with HudState resource: crosshair, target outline, material name, damage progress, inventory",
+      "sad": "\u00a711.5",
+      "tests": [
+        "cargo:rmc_client:hud::tests::hudstate_reflects_target",
+        "cargo:rmc_client:hud::tests::inventory_count_updates_on_applied"
+      ],
+      "blockedBy": [
+        "F064"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F066",
+      "milestone": "M6",
+      "title": "E2E: dig_cell_visible and latency_dig",
+      "sad": "\u00a712.4",
+      "tests": [
+        "e2e:dig_cell_visible",
+        "e2e:latency_dig"
+      ],
+      "blockedBy": [
+        "F065"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F067",
+      "milestone": "M6",
+      "title": "E2E: dig_tunnel with TunnelBot; host/replica hash equality",
+      "sad": "\u00a712.3, \u00a712.4",
+      "tests": [
+        "e2e:dig_tunnel"
+      ],
+      "blockedBy": [
+        "F066"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F070",
+      "milestone": "M7",
+      "title": "EditorState resource with keyboard bindings and docs/CONTROLS.md",
+      "sad": "\u00a711.6",
+      "tests": [
+        "cargo:rmc_client:editor::tests::keys_change_editor_state",
+        "cargo:rmc_client:editor::tests::controls_doc_lists_every_binding",
+        "cargo:rmc_client:editor::tests::controller_reenable_snaps_to_free_cell"
+      ],
+      "blockedBy": [
+        "F065"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F071",
+      "milestone": "M7",
+      "title": "Brush ops through EditCommand: Set on face-normal side, Remove/Paint on hit, Box and Sphere",
+      "sad": "\u00a711.6",
+      "tests": [
+        "cargo:rmc_client:editor::tests::set_targets_adjacent_cell",
+        "cargo:rmc_client:editor::tests::remove_targets_hit_cell",
+        "cargo:rmc_client:editor::tests::sphere_brush_sends_sphere_shape"
+      ],
+      "blockedBy": [
+        "F070"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F072",
+      "milestone": "M7",
+      "title": "egui panel (bevy_egui + inspector): brush, stats, gizmos toggles, seed, save/load buttons",
+      "sad": "\u00a711.6",
+      "tests": [
+        "cargo:rmc_client:editor::tests::panel_toggles_with_f1"
+      ],
+      "blockedBy": [
+        "F071"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F073",
+      "milestone": "M7",
+      "title": "Gizmos: chunk bounds, targeted cell, mesh-queue state",
+      "sad": "\u00a711.6",
+      "tests": [
+        "cargo:rmc_client:gizmo::tests::targeted_cell_gizmo_matches_hit"
+      ],
+      "blockedBy": [
+        "F072"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F074",
+      "milestone": "M7",
+      "title": "E2E: place_and_climb and editor_brush_sphere",
+      "sad": "\u00a712.4",
+      "tests": [
+        "e2e:place_and_climb",
+        "e2e:editor_brush_sphere"
+      ],
+      "blockedBy": [
+        "F073",
+        "F067"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F075",
+      "milestone": "M7",
+      "title": "Save/load from the app: autosave timer, quit save, SaveRequest, CLI --save path, load on start",
+      "sad": "\u00a710",
+      "tests": [
+        "cargo:rmc_app:cli::tests::parses_seed_and_save_path",
+        "cargo:rmc_client:save::tests::save_request_round_trips"
+      ],
+      "blockedBy": [
+        "F072"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F076",
+      "milestone": "M7",
+      "title": "E2E: save_load_roundtrip",
+      "sad": "\u00a712.4",
+      "tests": [
+        "e2e:save_load_roundtrip"
+      ],
+      "blockedBy": [
+        "F075",
+        "F074"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F080",
+      "milestone": "M8",
+      "title": "ChaosBot and soak_chaos E2E",
+      "sad": "\u00a712.3, \u00a712.4",
+      "tests": [
+        "e2e:soak_chaos"
+      ],
+      "blockedBy": [
+        "F076"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F081",
+      "milestone": "M8",
+      "title": "Criterion benches: mesh_chunk, gen_world, host_tick_100, palette_set_get; results in docs/perf.md",
+      "sad": "\u00a713",
+      "tests": [
+        "cargo:rmc_world:bench_smoke::tests::benches_compile"
+      ],
+      "blockedBy": [
+        "F076"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F082",
+      "milestone": "M8",
+      "title": "Performance pass against \u00a713 targets; initial-load upload burst",
+      "sad": "\u00a713, \u00a711.2",
+      "tests": [
+        "cargo:rmc_client:meshpipe::tests::initial_load_uses_burst_budget",
+        "e2e:boot_renders"
+      ],
+      "blockedBy": [
+        "F081"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "If mesh_chunk exceeds 2 ms after optimization, evaluate binary-greedy-meshing behind the ChunkMesher trait and record the comparison."
+    },
+    {
+      "id": "F083",
+      "milestone": "M8",
+      "title": "CI: Linux tests+E2E on lavapipe, Windows build+E2E on WARP, windows-release artifact",
+      "sad": "\u00a716",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [
+        "F080"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Push to the branch and confirm with `gh run list --limit 1` and `gh run view --log-failed` that all jobs pass. Fix until green."
+    },
+    {
+      "id": "F084",
+      "milestone": "M8",
+      "title": "Playtester report and screenshot gallery",
+      "sad": "\u00a712.5, \u00a716.4",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [
+        "F082",
+        "F083"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Run scripts/screens.sh for every scenario, invoke the playtester subagent, fix anything it calls broken that is within Phase 1 scope, re-run."
+    },
+    {
+      "id": "F085",
+      "milestone": "M8",
+      "title": "docs/REPORT.md via scripts/report.sh",
+      "sad": "\u00a716.6",
+      "tests": [
+        "cargo:rmc_world:coords::tests::smoke_compiles"
+      ],
+      "blockedBy": [
+        "F084"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    }
+  ]
+}
