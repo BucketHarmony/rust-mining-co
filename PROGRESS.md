@@ -751,3 +751,43 @@ Decisions:
 - DigBot and TunnelBot only; WalkBot, BuilderBot and ChaosBot come with F074/F080.
 Next: M6 is complete, so the playtester report follows in this session. Then F070 (EditorState resource with keyboard bindings and docs/CONTROLS.md).
 Blockers: none.
+
+## 2026-10-18 22:30 — F070 EditorState resource with keyboard bindings and docs/CONTROLS.md — passed
+Done:
+- New rmc_client::editor (re-exported from lib.rs): `EditorState` resource, `EditorPlugin`, `EditorSystems`.
+  - EditorState fields: open, op (BrushOp Set/Remove/Paint), shape (BrushShape Cell/Box/Sphere), size (1..=MAX_BRUSH_SIZE = 15), material (Option<MaterialId>), gizmos (GizmoToggles chunk_bounds / target_cell / mesh_queue), save_requested, load_requested.
+  - `EditorState::apply(EditorAction, Option<&MaterialTable>)` is the one place an action changes the state. Keys use it, and the F072 panel can too.
+  - `EDITOR_BINDINGS: &[(KeyCode, EditorAction)]`, each action with a `description()` that CONTROLS.md quotes word for word:
+    - F1 open/close;
+    - 1/2/3 op Set/Remove/Paint;
+    - 4/5/6 shape Cell/Box/Sphere;
+    - [ / ] size down/up;
+    - , / . previous/next material;
+    - F2/F3/F4 gizmo toggles;
+    - F5 save request; F9 load request.
+  - `editor_keys` (Update) applies every just-pressed binding in table order. Only F1 acts while the editor is closed.
+  - `brush_materials` lists every Solid material in id order. `default_material` is the first one tagged `placeable`, else the first solid. Material cycling wraps.
+  - `key_label` / `mouse_label` give the names CONTROLS.md uses.
+- Dropping the player when fly mode ends: `drop_player_after_flying` (Update, after FlyCamSystems, before ControllerSystems::Look) watches FlyCam::enabled go from true to false.
+  - It places the player at the camera position minus EYE_HEIGHT_M, with the camera's yaw and pitch, zero velocity and not grounded. It resets InterpolatedEye there, so the view does not slide back.
+  - If the box would overlap a blocking cell there, `free_feet_near` picks the bottom-center of the nearest cell within SNAP_RADIUS_CELLS (8) where the box is free. Cells are ordered by squared distance, then higher first, then by z and x.
+  - With no free cell in range, the player stays where it stood before flying.
+- docs/CONTROLS.md has three tables: Player (mouse look, WASD, Shift, Space, left mouse swing), Fly camera (V, mouse, WASD, Space/Ctrl, Shift) and Editor (every binding), plus notes on brush size and material.
+- TestApp adds EditorPlugin and has `editor() -> &mut EditorState` (SAD §12.2).
+Tests added: editor::tests::{keys_change_editor_state, controls_doc_lists_every_binding, controller_reenable_snaps_to_free_cell}.
+- All three were written first. They failed against a stub plugin (only the resource, no systems), a stub free_feet_near (always None) and a missing CONTROLS.md. They pass now.
+- One setup edit inside the snap test was itself rejected (a 24 × 64 × 24 box is over MAX_EDIT_CELLS). It was shrunk to 24 × 51 × 24 before any commit; no assertion changed.
+- The doc test checks three things: each editor binding has a row with its key label and exact description; the play and fly keys, the swing button and mouse look have rows; and the Editor section names no key that is not bound.
+Decisions:
+- The fly camera stays in its own `FlyCam` resource (V), rather than moving `enabled` into EditorState. The controller, pickaxe and HUD already read FlyCam, and two copies of the flag could disagree. The F072 panel should edit FlyCam::enabled directly.
+- "Re-enable snap-back" (SAD §12.4, fly_camera row) is read as: leaving fly mode drops the player at the camera, snapped to the nearest free spot. It falls back to the old position only when nothing in range is free. Noclip can then be used to move the player around in the editor.
+- Every editor key except F1 is ignored while the editor is closed. Digits and F-keys then stay free during play, and F071 can make the brush's left click and the pickaxe exclusive with `EditorState::open`.
+- Brush size is a radius: Sphere radius = size; Box side = 2 × size + 1, centered; Cell ignores it. MAX_BRUSH_SIZE 15 keeps the largest box (31³ = 29,791 cells) within MAX_EDIT_CELLS. The test asserts this. F071 builds the shapes.
+- Save and Load are one-shot request flags in EditorState. F072/F075 consume them (SaveRequest exists in the protocol; load is F075).
+- Worldgen seed and regenerate (SAD §11.6) are not in EditorState yet: there is no protocol message for them. F072 decides.
+- rmc_app's main has no client plugins yet (F077), so EditorPlugin is only added in TestApp.
+Next: F071 (brush ops through EditCommand: Set on the face-normal side, Remove/Paint on the hit, Box and Sphere; SAD §11.6).
+- Use EditorState::open to stop the pickaxe swing while the editor is open.
+- CommandSeq is shared with the pickaxe.
+- The raycast returns face_normal ZERO when the eye starts inside a solid cell; ignore Set then.
+Blockers: none.
