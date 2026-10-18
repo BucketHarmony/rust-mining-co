@@ -19,6 +19,9 @@ pub const MAX_BASE_HEIGHT: i32 = 1 << 28;
 /// Most fractal octaves a noise layer may use.
 pub const MAX_OCTAVES: u8 = 8;
 
+/// Denominator of [`CrystalParams::chance_per_million`].
+pub const ONE_MILLION: u32 = 1_000_000;
+
 /// One fractal (FBm) noise layer. Its seed comes from the world seed and the
 /// layer id, not from here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,6 +116,17 @@ pub struct OreVein {
     pub noise: NoiseParams,
 }
 
+/// Step 5: crystals on cells tagged `stone` that are face-adjacent to air.
+/// Each such cell is chosen by a hash of its position and the seed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CrystalParams {
+    /// Material key; it must carry the `crystal` tag.
+    pub material: String,
+    /// Share of candidate cells that become crystal, in millionths
+    /// (`0..=1_000_000`; 0 turns crystals off).
+    pub chance_per_million: u32,
+}
+
 /// Everything worldgen reads besides the seed and the material table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GenParams {
@@ -123,6 +137,7 @@ pub struct GenParams {
     pub caves: CaveParams,
     /// Step 4. Where two ores overlap, the earlier one wins.
     pub ores: Vec<OreVein>,
+    pub crystals: CrystalParams,
 }
 
 #[derive(Debug, Error)]
@@ -302,6 +317,14 @@ impl GenParams {
             }
             ore.noise.validate(&format!("{field}.noise"))?;
         }
+
+        let chance = self.crystals.chance_per_million;
+        if chance > ONE_MILLION {
+            return Err(invalid(
+                "crystals.chance_per_million",
+                format!("{chance} must be in 0..={ONE_MILLION}"),
+            ));
+        }
         Ok(())
     }
 
@@ -334,6 +357,7 @@ mod tests {
         assert_eq!(p.strata.layers.len(), 3);
         assert_eq!(p.strata.layers[2].until_depth, None);
         assert_eq!(p.ores.len(), 3);
+        assert_eq!(p.crystals.material, "glowcrystal");
 
         // Each broken copy is refused with an Invalid error.
         let broken: Vec<(&str, Edit)> = vec![
@@ -435,6 +459,10 @@ mod tests {
                 "nine ore octaves",
                 Box::new(|p| p.ores[2].noise.octaves = 9),
             ),
+            (
+                "crystal chance over one",
+                Box::new(|p| p.crystals.chance_per_million = ONE_MILLION + 1),
+            ),
         ];
         for (name, edit) in broken {
             let mut p = phase1();
@@ -465,6 +493,13 @@ mod tests {
         p.validate().unwrap();
         p.ores.clear();
         p.validate().unwrap();
+
+        // Crystals from never to every candidate cell.
+        let mut p = phase1();
+        for chance in [0, ONE_MILLION] {
+            p.crystals.chance_per_million = chance;
+            p.validate().unwrap();
+        }
 
         assert!(matches!(
             GenParams::from_ron_str("(surface: ())"),
@@ -524,6 +559,8 @@ mod tests {
             Box::new(|p| {
                 p.ores.pop();
             }),
+            Box::new(|p| p.crystals.material = "stone".into()),
+            Box::new(|p| p.crystals.chance_per_million += 1),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

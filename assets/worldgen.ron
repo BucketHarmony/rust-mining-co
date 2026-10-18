@@ -59,4 +59,9 @@
         (material: "iron_ore", min_depth: 36, max_depth: 84,
          threshold: 0.75, noise: (frequency: 0.15, octaves: 1)),
     ],
+    // On cells tagged "stone" (after ores) that share a face with air,
+    // mostly cave walls. A hash of the cell and the seed picks
+    // chance_per_million of them in a million. The material needs the
+    // "crystal" tag.
+    crystals: (material: "glowcrystal", chance_per_million: 30000),
 )

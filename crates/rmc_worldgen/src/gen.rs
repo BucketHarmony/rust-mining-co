@@ -1,17 +1,18 @@
-//! Chunk generation (SAD §9): surface, strata, caves and ores so far.
+//! Chunk generation (SAD §9): surface, strata, caves, ores and crystals so
+//! far.
 //!
-//! Steps run over a 34³ [`Volume`] (the chunk plus a 1-cell border) so later
-//! steps can read neighbors; only the inner 32³ is written to the chunk.
+//! Steps 1–4 run over a 34³ [`Volume`] (the chunk plus a 1-cell border) so
+//! step 5 can read neighbors; only the inner 32³ is written to the chunk.
 
 use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
 use crate::noise::{
-    LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_ORE, LAYER_SOIL, LAYER_STRATA,
-    LAYER_SURFACE, NoiseLayer,
+    LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_CRYSTAL, LAYER_ORE, LAYER_SOIL,
+    LAYER_STRATA, LAYER_SURFACE, NoiseLayer, cell_hash,
 };
-use crate::params::{GenError, GenParams};
+use crate::params::{GenError, GenParams, ONE_MILLION};
 
 /// Tag every soil layer material must carry.
 pub const SOIL_TAG: &str = "soil";
@@ -19,6 +20,8 @@ pub const SOIL_TAG: &str = "soil";
 pub const STONE_TAG: &str = "stone";
 /// Tag every ore material must carry.
 pub const ORE_TAG: &str = "ore";
+/// Tag the crystal material must carry.
+pub const CRYSTAL_TAG: &str = "crystal";
 
 /// Edge length of the generation volume: a chunk plus a 1-cell border.
 pub const VOLUME_SIZE: i32 = CHUNK_SIZE + 2;
@@ -106,6 +109,20 @@ struct Ore {
     noise: NoiseLayer,
 }
 
+struct Crystals {
+    material: MaterialId,
+    chance_per_million: u32,
+    seed: u64,
+}
+
+impl Crystals {
+    /// Whether the cell hash picks cell `(x, y, z)`.
+    fn picks(&self, x: i32, y: i32, z: i32) -> bool {
+        let roll = cell_hash(self.seed, LAYER_CRYSTAL, x, y, z) % u64::from(ONE_MILLION);
+        roll < u64::from(self.chance_per_million)
+    }
+}
+
 /// Generation for one seed, parameter set and material table. Build it
 /// once and call [`Generator::generate`] for each chunk; it is `Sync`, so
 /// chunks can generate in parallel.
@@ -119,6 +136,7 @@ pub struct Generator {
     caves: Caves,
     /// Top priority first.
     ores: Vec<Ore>,
+    crystals: Crystals,
     /// Whether each material id carries the `stone` tag.
     stone: Vec<bool>,
 }
@@ -147,8 +165,8 @@ fn resolve(
 
 impl Generator {
     /// Validates `params`, resolves its material keys against `materials`
-    /// (soil layers need the `soil` tag, strata the `stone` tag) and seeds
-    /// every noise layer from `(seed, layer id)`.
+    /// (soil layers need the `soil` tag, strata `stone`, ores `ore`, crystals
+    /// `crystal`) and seeds every noise layer from `(seed, layer id)`.
     pub fn new(seed: u64, params: &GenParams, materials: &MaterialTable) -> Result<Self, GenError> {
         params.validate()?;
         let soil = params
@@ -209,6 +227,16 @@ impl Generator {
                 })
             })
             .collect::<Result<_, GenError>>()?;
+        let crystals = Crystals {
+            material: resolve(
+                materials,
+                "crystals".to_owned(),
+                &params.crystals.material,
+                CRYSTAL_TAG,
+            )?,
+            chance_per_million: params.crystals.chance_per_million,
+            seed,
+        };
         // Ids equal table positions.
         let stone = materials.iter().map(|d| d.has_tag(STONE_TAG)).collect();
         Ok(Self {
@@ -220,6 +248,7 @@ impl Generator {
             strata,
             caves,
             ores,
+            crystals,
             stone,
         })
     }
@@ -232,9 +261,12 @@ impl Generator {
     }
 
     /// Every step so far over the chunk's 34³ volume; [`Generator::generate`]
-    /// writes its inner 32³.
+    /// writes its inner 32³. Step 5 reads the border but only changes the
+    /// inner 32³, so the border cells hold steps 1–4.
     pub fn volume(&self, pos: ChunkPos) -> Volume {
-        self.ore_volume(pos)
+        let mut volume = self.ore_volume(pos);
+        self.place_crystals(pos, &mut volume);
+        volume
     }
 
     /// Steps 1–4 (surface, soil, strata, caves, ores) over the chunk's 34³
@@ -306,6 +338,46 @@ impl Generator {
                     });
                     if let Some(ore) = ore {
                         volume.cells[i] = ore.material;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Step 5: turns the `stone`-tagged inner cells that share a face with
+    /// air into crystal where the cell hash picks them.
+    fn place_crystals(&self, pos: ChunkPos, volume: &mut Volume) {
+        if self.crystals.chance_per_million == 0 {
+            return;
+        }
+        let origin = pos.origin_cell().0;
+        let faces = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ];
+        // Placing a crystal never adds or removes air, so changing cells in
+        // place gives the same result as reading a copy of steps 1–4.
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let i = Volume::index(x, y, z);
+                    let stone = self.stone.get(usize::from(volume.cells[i].0));
+                    if !stone.copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let open = faces
+                        .iter()
+                        .any(|(dx, dy, dz)| volume.get(x + dx, y + dy, z + dz) == MaterialId::AIR);
+                    if open
+                        && self
+                            .crystals
+                            .picks(origin.x + x, origin.y + y, origin.z + z)
+                    {
+                        volume.cells[i] = self.crystals.material;
                     }
                 }
             }
@@ -388,7 +460,7 @@ pub fn generate_chunk(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use glam::IVec3;
 
@@ -1117,6 +1189,189 @@ mod tests {
         }
     }
 
+    const FACES: [IVec3; 6] = [
+        IVec3::X,
+        IVec3::NEG_X,
+        IVec3::Y,
+        IVec3::NEG_Y,
+        IVec3::Z,
+        IVec3::NEG_Z,
+    ];
+
+    /// Chunk of world cell `c` and `c`'s local coordinates in it.
+    fn split(c: IVec3) -> (ChunkPos, IVec3) {
+        let chunk = c.div_euclid(IVec3::splat(CHUNK_SIZE));
+        (ChunkPos(chunk), c - chunk * CHUNK_SIZE)
+    }
+
+    fn local(l: IVec3) -> LocalPos {
+        LocalPos::new(l.x as u32, l.y as u32, l.z as u32)
+    }
+
+    /// Steps 1–4 at world cell `c`, read from the inner 32³ of the
+    /// ore_volume of the chunk that holds `c` (never from a border).
+    fn step4_at(g: &Generator, cache: &mut BTreeMap<[i32; 3], Volume>, c: IVec3) -> MaterialId {
+        let (pos, l) = split(c);
+        cache
+            .entry(pos.0.to_array())
+            .or_insert_with(|| g.ore_volume(pos))
+            .get(l.x, l.y, l.z)
+    }
+
+    /// The generated chunk's cell at world cell `c`.
+    fn final_at(g: &Generator, cache: &mut BTreeMap<[i32; 3], Chunk>, c: IVec3) -> MaterialId {
+        let (pos, l) = split(c);
+        cache
+            .entry(pos.0.to_array())
+            .or_insert_with(|| g.generate(pos))
+            .storage
+            .get(local(l))
+    }
+
+    /// `p` with crystals on every candidate cell.
+    fn crystals_everywhere(p: &GenParams) -> GenParams {
+        let mut p = p.clone();
+        p.crystals.chance_per_million = ONE_MILLION;
+        p
+    }
+
+    #[test]
+    fn glowcrystal_adjacent_to_air() {
+        let table = materials();
+        let shipped = params();
+        let crystal = id(&table, "glowcrystal");
+        assert_eq!(id(&table, &shipped.crystals.material), crystal);
+        assert!(table.has_tag(crystal, CRYSTAL_TAG));
+        let mut none = params();
+        none.crystals.chance_per_million = 0;
+        let every = crystals_everywhere(&shipped);
+
+        let (mut crystals, mut candidates) = ([0usize; 3], [0usize; 3]);
+        for (k, p) in [&shipped, &every, &none].into_iter().enumerate() {
+            for seed in [12, 1 << 45] {
+                let g = Generator::new(seed, p, &table).unwrap();
+                let (mut step4, mut world) = (BTreeMap::new(), BTreeMap::new());
+                for (cx, cz) in [(1, 3), (4, 2), (6, 6)] {
+                    for cy in 0..WORLD_CHUNKS_Y {
+                        let pos = ChunkPos::new(cx, cy, cz);
+                        let o = pos.origin_cell().0;
+                        let v = g.volume(pos);
+                        for i in 0..CHUNK_VOLUME {
+                            let l = LocalPos::from_index(i as u16).0.as_ivec3();
+                            let c = o + l;
+                            let at = || format!("run {k} seed {seed} {pos:?} cell {c}");
+                            let got = final_at(&g, &mut world, c);
+                            assert_eq!(got, v.get(l.x, l.y, l.z), "{}: chunk != volume", at());
+                            let before = step4_at(&g, &mut step4, c);
+                            let open = FACES
+                                .iter()
+                                .any(|&f| step4_at(&g, &mut step4, c + f) == MaterialId::AIR);
+                            let candidate = table.has_tag(before, STONE_TAG) && open;
+                            candidates[k] += usize::from(candidate);
+                            if got != crystal {
+                                assert_eq!(got, before, "{}: step 5 changed a cell", at());
+                                assert!(k != 1 || !candidate, "{}: candidate skipped", at());
+                                continue;
+                            }
+                            crystals[k] += 1;
+                            assert!(candidate, "{}: crystal on {before:?}, open {open}", at());
+                            // Air stays air, so the crystal faces air in the
+                            // finished world too.
+                            assert!(
+                                FACES
+                                    .iter()
+                                    .any(|&f| final_at(&g, &mut world, c + f) == MaterialId::AIR),
+                                "{}: crystal without air",
+                                at()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(crystals[1], candidates[1], "every: all candidates");
+        assert!(candidates[1] > 10_000, "only {} candidates", candidates[1]);
+        assert_eq!(crystals[2], 0, "chance 0 placed crystals");
+        // Shipped: sparse, near the configured share of candidates.
+        let share = crystals[0] as f64 / candidates[0] as f64;
+        let want = f64::from(shipped.crystals.chance_per_million) / f64::from(ONE_MILLION);
+        assert!(crystals[0] > 100, "only {} crystals", crystals[0]);
+        assert!(
+            (want * 0.8..=want * 1.2).contains(&share) && share < 0.1,
+            "{} crystals on {} candidates ({:.2}%)",
+            crystals[0],
+            candidates[0],
+            share * 100.0
+        );
+    }
+
+    #[test]
+    fn glowcrystal_on_chunk_border_matches_neighbor() {
+        let table = materials();
+        let crystal = id(&table, "glowcrystal");
+        let shipped = params();
+        let every = crystals_everywhere(&shipped);
+        // Crystals on a chunk face whose only air neighbors lie in other
+        // chunks: step 5 needs the 34³ border to place them.
+        let mut across = [0usize; 2];
+        for (k, p) in [&shipped, &every].into_iter().enumerate() {
+            for seed in [4, 0xC0FFEE] {
+                let g = Generator::new(seed, p, &table).unwrap();
+                let mut step4 = BTreeMap::new();
+                for a in [(3, 1, 4), (-2, 2, 1), (5, 0, 6), (1, 2, -3)] {
+                    let a = ChunkPos::new(a.0, a.1, a.2);
+                    let (va, chunk_a) = (g.ore_volume(a), g.generate(a));
+                    for (axis, step) in [(0, -1), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)] {
+                        let mut d = IVec3::ZERO;
+                        d[axis] = step;
+                        let b = ChunkPos(a.0 + d);
+                        let chunk_b = g.generate(b);
+                        for u in 0..CHUNK_SIZE {
+                            for w in 0..CHUNK_SIZE {
+                                // Face cell of a, and the cell across in b.
+                                let mut la = IVec3::ZERO;
+                                la[axis] = if step > 0 { CHUNK_SIZE - 1 } else { 0 };
+                                la[(axis + 1) % 3] = u;
+                                la[(axis + 2) % 3] = w;
+                                let ca = a.origin_cell().0 + la;
+                                let cb = ca + d;
+                                // a's steps 1–4 border is b's own cell.
+                                let border = la + d;
+                                assert_eq!(
+                                    va.get(border.x, border.y, border.z),
+                                    step4_at(&g, &mut step4, cb),
+                                    "seed {seed} {a:?} border {border}"
+                                );
+                                for (chunk, pos, c) in [(&chunk_a, a, ca), (&chunk_b, b, cb)] {
+                                    let before = step4_at(&g, &mut step4, c);
+                                    let open: Vec<IVec3> = FACES
+                                        .iter()
+                                        .map(|&f| c + f)
+                                        .filter(|&n| step4_at(&g, &mut step4, n) == MaterialId::AIR)
+                                        .collect();
+                                    let picked = table.has_tag(before, STONE_TAG)
+                                        && !open.is_empty()
+                                        && g.crystals.picks(c.x, c.y, c.z);
+                                    let want = if picked { crystal } else { before };
+                                    let got = chunk.storage.get(local(c - pos.origin_cell().0));
+                                    assert_eq!(got, want, "run {k} seed {seed} {pos:?} cell {c}");
+                                    let outside = |n: &IVec3| split(*n).0 != pos;
+                                    if picked && open.iter().all(outside) {
+                                        across[k] += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            across[0] > 0 && across[1] > 100,
+            "crystals placed only through a chunk face: {across:?}"
+        );
+    }
+
     #[test]
     fn generator_checks_materials() {
         let table = materials();
@@ -1149,6 +1404,21 @@ mod tests {
         assert!(matches!(
             Generator::new(1, &p, &table),
             Err(GenError::UnknownMaterial { ref key, .. }) if key == "gold_ore"
+        ));
+        let mut p = params();
+        p.crystals.material = "stone".into();
+        assert!(matches!(
+            Generator::new(1, &p, &table),
+            Err(GenError::MissingTag {
+                tag: CRYSTAL_TAG,
+                ..
+            })
+        ));
+        let mut p = params();
+        p.crystals.material = "ruby".into();
+        assert!(matches!(
+            Generator::new(1, &p, &table),
+            Err(GenError::UnknownMaterial { ref key, .. }) if key == "ruby"
         ));
         let mut p = params();
         p.strata.layers.clear();

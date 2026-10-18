@@ -19,6 +19,8 @@ pub const LAYER_CAVE_WORM_A: u32 = 0x0301;
 pub const LAYER_CAVE_WORM_B: u32 = 0x0302;
 /// Layer id of ore `i` is `LAYER_ORE + i`.
 pub const LAYER_ORE: u32 = 0x0400;
+/// Layer id of the crystal placement hash.
+pub const LAYER_CRYSTAL: u32 = 0x0500;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in
@@ -29,6 +31,19 @@ pub fn layer_seed(seed: u64, layer: u32) -> i32 {
     buf[12..20].copy_from_slice(&seed.to_le_bytes());
     buf[20..].copy_from_slice(&layer.to_le_bytes());
     xxhash_rust::xxh3::xxh3_64(&buf) as u32 as i32
+}
+
+/// A per-cell hash for choices that need no spatial coherence: xxh3 over
+/// the whole 64-bit world seed, the layer id and the cell coordinates.
+pub fn cell_hash(seed: u64, layer: u32, x: i32, y: i32, z: i32) -> u64 {
+    let mut buf = [0u8; 36];
+    buf[..12].copy_from_slice(b"rmc.cell.v1.");
+    buf[12..20].copy_from_slice(&seed.to_le_bytes());
+    buf[20..24].copy_from_slice(&layer.to_le_bytes());
+    buf[24..28].copy_from_slice(&x.to_le_bytes());
+    buf[28..32].copy_from_slice(&y.to_le_bytes());
+    buf[32..].copy_from_slice(&z.to_le_bytes());
+    xxhash_rust::xxh3::xxh3_64(&buf)
 }
 
 /// One seeded noise layer.
@@ -93,6 +108,30 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), seen.len(), "two inputs share a layer seed");
+    }
+
+    #[test]
+    fn cell_hashes_use_every_input_bit() {
+        let (seed, layer, x, y, z) = (42, LAYER_CRYSTAL, 3, -7, 1 << 20);
+        let base = cell_hash(seed, layer, x, y, z);
+        assert_eq!(base, cell_hash(seed, layer, x, y, z));
+        let mut seen = vec![base];
+        for bit in 0..64 {
+            seen.push(cell_hash(seed ^ (1 << bit), layer, x, y, z));
+        }
+        for bit in 0..32 {
+            let b = (1u32 << bit) as i32;
+            seen.push(cell_hash(seed, layer ^ (1 << bit), x, y, z));
+            seen.push(cell_hash(seed, layer, x ^ b, y, z));
+            seen.push(cell_hash(seed, layer, x, y ^ b, z));
+            seen.push(cell_hash(seed, layer, x, y, z ^ b));
+        }
+        // Swapped coordinates hash differently.
+        seen.push(cell_hash(seed, layer, y, x, z));
+        let mut unique = seen.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "two inputs share a cell hash");
     }
 
     #[test]
