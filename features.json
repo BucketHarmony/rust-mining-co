@@ -1033,6 +1033,1083 @@
       "e2e": false,
       "review": false,
       "passes": false
+    },
+    {
+      "id": "F077",
+      "milestone": "M7",
+      "title": "rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run",
+      "sad": "§4, §10, §11, §16.6",
+      "tests": [
+        "cargo:rmc_app:app::tests::game_app_builds_headless",
+        "cargo:rmc_app:app::tests::headless_game_joins_and_receives_chunks"
+      ],
+      "blockedBy": [
+        "F075"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false,
+      "notes": "Phase 1 gap found 2026-10-18: no feature wired rmc_app's main, which was still the kit stub, so `cargo run -p rmc_app` opened nothing. main parses the F075 CLI (--seed, --save), loads assets, generates or loads the world, starts the host on its own thread (F035) over ChannelTransport, and runs the client App with DefaultPlugins, a primary window and every rmc_client plugin that exists (net, replica, meshing, render, controller, fly camera, pickaxe, HUD, editor, save). Put the App construction in `app::build_game_app(cfg, windowed: bool)`; main calls it with true. Tests call it with false (no window, rule 12), step a few hundred frames and check that the player joins and the replica receives chunks. Do not run the binary in a session (rule 13). After this feature the 'How to play' command in docs/REPORT.md must work."
+    },
+    {
+      "id": "F100",
+      "milestone": "E0",
+      "title": "rmc_eco crate (Bevy-free) and Phase 2 data files loading with hashes",
+      "sad": "§4, §5",
+      "tests": [
+        "cargo:rmc_eco:tables::tests::loads_all_phase2_tables",
+        "cargo:rmc_eco:tables::tests::tables_hash_is_stable",
+        "cargo:rmc_world:materials::tests::phase1_table_loads_with_phase2_defaults"
+      ],
+      "blockedBy": [
+        "F085",
+        "F077"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Add rmc_eco to scripts/check-no-bevy.sh. New MaterialDef fields have serde defaults (per SAD-P2 §5: conductivity default 16, rejected above 64; heat_capacity default 16, rejected unless a power of two in 8..=128). Create substances.ron, gases.ron, transitions.ron, reactions.ron, plants.ron, seasons.ron, eco.ron (incl. roles and every named constant in SAD-P2 §7). Add Phase::Liquid to rmc_world::materials and handle it in every exhaustive match per SAD-P2 §5 (collision: not solid; raycast: hit; meshing: opaque pass until F127); Air and Solid behavior unchanged. Keep scripts/check-no-bevy.sh's hardened checks; rmc_eco is already listed there as optional-until-created, make it required once the crate exists."
+    },
+    {
+      "id": "F101",
+      "milestone": "E0",
+      "title": "Chunk layers, PlantState map, eco_revision, surface_y column cache (i16)",
+      "sad": "§6",
+      "tests": [
+        "cargo:rmc_world:layers::tests::absent_layer_reads_zero",
+        "cargo:rmc_world:layers::tests::compact_drops_zero_keeps_temperature_and_light",
+        "cargo:rmc_world:layers::tests::chunk_hash_covers_layers_and_plants",
+        "cargo:rmc_world:columns::tests::surface_y_matches_brute_force_proptest"
+      ],
+      "blockedBy": [
+        "F100"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F102",
+      "milestone": "E0",
+      "title": "Save format v2 with layers and plant state; v1 rejected",
+      "sad": "§3, §6",
+      "tests": [
+        "cargo:rmc_world:save::tests::v2_roundtrip_with_layers_and_plants_hash_identical",
+        "cargo:rmc_world:save::tests::v1_rejected_with_version_message",
+        "cargo:rmc_world:save::tests::tables_hash_mismatch_fails"
+      ],
+      "blockedBy": [
+        "F101"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F103",
+      "milestone": "E0",
+      "title": "Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger in rmc_world; displacement rules shared by World::apply and World::eco_set",
+      "sad": "§9, §7.0, §7.0.1, §6, §3",
+      "tests": [
+        "cargo:rmc_protocol:codec::tests::roundtrip_phase2_variants",
+        "cargo:rmc_world:edit::tests::set_layer_emits_layers_delta_and_bumps_eco_revision",
+        "cargo:rmc_world:edit::tests::displacement_rules_every_case_ledgered",
+        "cargo:rmc_world:edit::tests::brush_set_water_fill_255_set_magma_init_temp",
+        "cargo:rmc_world:edit::tests::eco_set_displaces_bumps_revision_no_delta"
+      ],
+      "blockedBy": [
+        "F101"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "SeasonLedger is defined in rmc_world::ledger (plain data); rmc_eco re-exports it in F104. EditResult gains a SeasonLedger with the edit's displacement terms. World::eco_set must run the full §7.0 set (boil exception, Air→Solid push), update surface_y, sweep active sets, revision and modified, and clear damage; no validation, no delta."
+    },
+    {
+      "id": "F104",
+      "milestone": "E0",
+      "title": "Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference",
+      "sad": "§7, §3",
+      "tests": [
+        "cargo:rmc_eco:runner::tests::jacobi_parallel_equals_serial_hash",
+        "cargo:rmc_eco:runner::tests::apply_in_sorted_chunk_order",
+        "cargo:rmc_eco:runner::tests::sweep_visits_global_y_cz_cx_lz_lx_order",
+        "cargo:rmc_eco:runner::tests::active_set_includes_receivers",
+        "cargo:rmc_eco:invariants::tests::checker_detects_created_water"
+      ],
+      "blockedBy": [
+        "F103"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F105",
+      "milestone": "E0",
+      "title": "Activity tracking: quiet counters, skip, reactivation by edits and neighbors",
+      "sad": "§7.9",
+      "tests": [
+        "cargo:rmc_eco:activity::tests::quiet_chunk_skipped_after_threshold",
+        "cargo:rmc_eco:activity::tests::edit_reactivates_neighbors",
+        "cargo:rmc_eco:activity::tests::season_boundary_reactivates_surface_chunks",
+        "cargo:rmc_eco:activity::tests::skipping_changes_no_result_on_constant_fixture"
+      ],
+      "blockedBy": [
+        "F104"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F106",
+      "milestone": "E0",
+      "title": "Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer",
+      "sad": "§7.1, §8",
+      "tests": [
+        "cargo:rmc_eco:temperature::tests::energy_nonincreasing_without_sources",
+        "cargo:rmc_eco:temperature::tests::unequal_capacity_edge_conserves_energy",
+        "cargo:rmc_eco:temperature::tests::maximum_principle_proptest",
+        "cargo:rmc_eco:temperature::tests::spread_nonincreasing",
+        "cargo:rmc_eco:temperature::tests::linear_profile_is_fixed_point",
+        "cargo:rmc_eco:temperature::tests::flux_antisymmetric_proptest",
+        "cargo:rmc_eco:temperature::tests::heat_source_stays_clamped",
+        "cargo:rmc_eco:temperature::tests::surface_clamp_pond_top_and_open_air_not_under_overhang",
+        "cargo:rmc_eco:temperature::tests::surface_cell_follows_seasonal_swing",
+        "cargo:rmc_eco:temperature::tests::deep_profile_cell_quiet_20_substeps",
+        "cargo:rmc_eco:temperature::tests::two_chunk_equals_one_chunk",
+        "cargo:rmc_worldgen:temperature::tests::profile_bottom_equals_profile_fn"
+      ],
+      "blockedBy": [
+        "F104"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false,
+      "notes": "Energy update is per edge, quantized to max(C_i, C_j) (SAD-P2 §7.1), so energy is exactly conserved. Set the freeze_thaw bit in this pass per §7.5 only once F110 lands; do not implement it here."
+    },
+    {
+      "id": "F107",
+      "milestone": "E0",
+      "title": "season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone",
+      "sad": "§7, §9",
+      "tests": [
+        "cargo:rmc_host:season::tests::advance_season_roundtrip",
+        "cargo:rmc_host:replica::tests::equivalence_after_three_seasons_with_edits_between",
+        "cargo:rmc_eco:tick::tests::whole_tick_deterministic_100",
+        "cargo:rmc_host:season::tests::layer_snapshot_sent_for_eco_only_changes",
+        "cargo:rmc_host:season::tests::between_seasons_ledger_merged"
+      ],
+      "blockedBy": [
+        "F103",
+        "F106",
+        "F105"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F108",
+      "milestone": "E0",
+      "title": "Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2",
+      "sad": "§9",
+      "tests": [
+        "cargo:rmc_app:cli::tests::headless_seasons_writes_report",
+        "cargo:rmc_app:cli::tests::default_world_size_is_32_chunks"
+      ],
+      "blockedBy": [
+        "F107"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F109",
+      "milestone": "E0",
+      "title": "Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button",
+      "sad": "§11, §10",
+      "tests": [
+        "cargo:rmc_testkit:eco::tests::advance_season_applies_both_snapshot_kinds",
+        "cargo:rmc_testkit:eco::tests::fixture_pit_builds_expected_cells",
+        "cargo:rmc_testkit:eco::tests::set_season_params_overrides_rain",
+        "cargo:rmc_client:editor::tests::season_button_sends_advance_season"
+      ],
+      "blockedBy": [
+        "F107"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F110",
+      "milestone": "E1",
+      "title": "Freeze-thaw season bitset",
+      "sad": "§7.5",
+      "tests": [
+        "cargo:rmc_eco:weathering::tests::freeze_thaw_bit_set_on_zero_crossing",
+        "cargo:rmc_eco:weathering::tests::freeze_thaw_bit_cleared_at_season_start"
+      ],
+      "blockedBy": [
+        "F125"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Bit definition: SAD-P2 §7.5 'Freeze-thaw bit' (cleared at season start; set when the temperature pass changes the sign of T < 0)."
+    },
+    {
+      "id": "F111",
+      "milestone": "E1",
+      "title": "Weathering pass: regolith growth when exposed and moist, freeze-thaw doubling",
+      "sad": "§7.5",
+      "tests": [
+        "cargo:rmc_eco:weathering::tests::regolith_only_when_exposed_and_moist",
+        "cargo:rmc_eco:weathering::tests::freeze_thaw_doubles_rate",
+        "cargo:rmc_eco:weathering::tests::unexposed_control_unchanged"
+      ],
+      "blockedBy": [
+        "F110",
+        "F122"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F112",
+      "milestone": "E1",
+      "title": "Gradual composition release during weathering; conversion at 255",
+      "sad": "§7.5",
+      "tests": [
+        "cargo:rmc_eco:weathering::tests::release_proportional_to_actual_delta",
+        "cargo:rmc_eco:weathering::tests::release_complete_within_rounding",
+        "cargo:rmc_eco:weathering::tests::converts_at_255",
+        "cargo:rmc_eco:weathering::tests::ledger_weather_in_and_saturation_loss"
+      ],
+      "blockedBy": [
+        "F111"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F113",
+      "milestone": "E1",
+      "title": "Regolith halves pickaxe hardness; yield_material",
+      "sad": "§7.5",
+      "tests": [
+        "cargo:rmc_world:damage::tests::regolith_halves_hardness",
+        "cargo:rmc_world:damage::tests::yield_material_overrides_self"
+      ],
+      "blockedBy": [
+        "F111"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F114",
+      "milestone": "E1",
+      "title": "E2E: freeze_thaw_weathers_cut",
+      "sad": "§12",
+      "tests": [
+        "e2e:freeze_thaw_weathers_cut"
+      ],
+      "blockedBy": [
+        "F112",
+        "F113",
+        "F128"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F120",
+      "milestone": "E2",
+      "title": "Water material with fill; air↔water via delta",
+      "sad": "§7.3",
+      "tests": [
+        "cargo:rmc_eco:water::tests::air_with_moisture_becomes_water",
+        "cargo:rmc_eco:water::tests::water_at_zero_fill_becomes_air"
+      ],
+      "blockedBy": [
+        "F107",
+        "F109"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Material changes go through World::eco_set (SAD-P2 §7.0.1), never World::apply."
+    },
+    {
+      "id": "F121",
+      "milestone": "E2",
+      "title": "Water sweep: down and sideways with donor/receiver checks; invariant proptest",
+      "sad": "§7.3",
+      "tests": [
+        "cargo:rmc_eco:water::tests::invariant_exact_after_every_sweep_proptest",
+        "cargo:rmc_eco:water::tests::oracle_equivalence_flat_sweep_proptest",
+        "cargo:rmc_eco:water::tests::pit_fills_before_overflow",
+        "cargo:rmc_eco:water::tests::sideways_halves_difference_with_cap",
+        "cargo:rmc_eco:water::tests::receiver_never_exceeds_255"
+      ],
+      "blockedBy": [
+        "F120"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F122",
+      "milestone": "E2",
+      "title": "Infiltration into porous solids, field capacity, seepage threshold",
+      "sad": "§7.3",
+      "tests": [
+        "cargo:rmc_eco:water::tests::porous_column_fills_to_capacity_and_stops",
+        "cargo:rmc_eco:water::tests::seepage_into_pit_below_table",
+        "cargo:rmc_eco:water::tests::impermeable_blocks_infiltration"
+      ],
+      "blockedBy": [
+        "F121"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F123",
+      "milestone": "E2",
+      "title": "Condensation (start of pass), evaporation to steam (actual amounts), rain at surface_y+1 or into the anchor under a plant",
+      "sad": "§7.3",
+      "tests": [
+        "cargo:rmc_eco:water::tests::evaporation_limited_by_steam_room_ledger_actual",
+        "cargo:rmc_eco:water::tests::condensation_below_temp_returns_steam",
+        "cargo:rmc_eco:water::tests::steam_above_sky_open_pond_vents_not_condenses",
+        "cargo:rmc_eco:water::tests::rain_targets_surface_plus_one_or_anchor_never_overhang",
+        "cargo:rmc_eco:water::tests::rain_ledger_records_actual",
+        "cargo:rmc_eco:water::tests::rain_pattern_is_seeded"
+      ],
+      "blockedBy": [
+        "F121",
+        "F150"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F124",
+      "milestone": "E2",
+      "title": "Whole-tick invariants on random worlds and sweep oracle on multi-chunk worlds",
+      "sad": "§3",
+      "tests": [
+        "cargo:rmc_eco:water::tests::oracle_equivalence_multi_chunk_world",
+        "cargo:rmc_eco:tick::tests::invariants_hold_after_each_pass_20_worlds"
+      ],
+      "blockedBy": [
+        "F122",
+        "F123"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F125",
+      "milestone": "E2",
+      "title": "Ice: transitions water↔ice with hysteresis, moisture preserved",
+      "sad": "§7.2",
+      "tests": [
+        "cargo:rmc_eco:transitions::tests::water_freezes_below_zero",
+        "cargo:rmc_eco:transitions::tests::ice_melts_above_hysteresis",
+        "cargo:rmc_eco:transitions::tests::moisture_preserved_across_freeze",
+        "cargo:rmc_eco:transitions::tests::table_order_precedence"
+      ],
+      "blockedBy": [
+        "F120"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F126",
+      "milestone": "E2",
+      "title": "Worldgen water table and flooded caves",
+      "sad": "§8",
+      "tests": [
+        "cargo:rmc_worldgen:water::tests::porous_below_table_at_capacity",
+        "cargo:rmc_worldgen:water::tests::caves_below_table_flooded"
+      ],
+      "blockedBy": [
+        "F122"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F127",
+      "milestone": "E2",
+      "title": "Liquid mesh pass: fill-height top faces, translucency, substance tint hook",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:mesher::tests::liquid_top_face_at_fill_height",
+        "cargo:rmc_client:mesher::tests::liquid_faces_in_second_mesh"
+      ],
+      "blockedBy": [
+        "F120"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F128",
+      "milestone": "E2",
+      "title": "E2E: season_swale_fills",
+      "sad": "§12",
+      "tests": [
+        "e2e:season_swale_fills"
+      ],
+      "blockedBy": [
+        "F124",
+        "F127",
+        "F126"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F129",
+      "milestone": "E2",
+      "title": "E2E: pit_becomes_pond",
+      "sad": "§12",
+      "tests": [
+        "e2e:pit_becomes_pond"
+      ],
+      "blockedBy": [
+        "F128"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F130",
+      "milestone": "E2b",
+      "title": "Magma as whole-cell liquid: viscosity-gated swaps with air carrying temperature; magma count ledger",
+      "sad": "§7.3, §7.1",
+      "tests": [
+        "cargo:rmc_eco:water::tests::magma_swaps_with_air_and_carries_temperature",
+        "cargo:rmc_eco:water::tests::magma_viscosity_gates_moves",
+        "cargo:rmc_eco:water::tests::magma_never_enters_water_or_porous",
+        "cargo:rmc_eco:water::tests::magma_count_invariant"
+      ],
+      "blockedBy": [
+        "F122",
+        "F106"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F131",
+      "milestone": "E2b",
+      "title": "Transitions: magma→basalt on cooling, stone→magma near a core; contact boiling in the water sweep → obsidian + steam",
+      "sad": "§7.2",
+      "tests": [
+        "cargo:rmc_eco:transitions::tests::magma_cools_to_basalt_away_from_source",
+        "cargo:rmc_eco:transitions::tests::worldgen_magma_stays_molten_20_substeps",
+        "cargo:rmc_eco:water::tests::contact_boiling_whole_fill_obsidian_one_event",
+        "cargo:rmc_eco:transitions::tests::stone_tag_melts_near_source"
+      ],
+      "blockedBy": [
+        "F130",
+        "F125",
+        "F132",
+        "F150"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F132",
+      "milestone": "E2b",
+      "title": "Worldgen magma chambers with cores, never touching bedrock",
+      "sad": "§8",
+      "tests": [
+        "cargo:rmc_worldgen:magma::tests::chambers_have_source_core_and_init_temp",
+        "cargo:rmc_worldgen:magma::tests::chambers_clear_of_bedrock"
+      ],
+      "blockedBy": [
+        "F130"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F133",
+      "milestone": "E2b",
+      "title": "Materials: magma, obsidian, basalt colors; HUD temperature at player",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:hud::tests::hud_shows_player_cell_temperature"
+      ],
+      "blockedBy": [
+        "F131"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F134",
+      "milestone": "E2b",
+      "title": "E2E: magma_meets_water",
+      "sad": "§12",
+      "tests": [
+        "e2e:magma_meets_water"
+      ],
+      "blockedBy": [
+        "F131",
+        "F133",
+        "F128"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F140",
+      "milestone": "E3",
+      "title": "Substance layers, composition, substances.ron with yield materials; sulfide_ore, limestone (porous, carbonate), crushed_sulfide, copper_dust",
+      "sad": "§7.6, §8",
+      "tests": [
+        "cargo:rmc_world:layers::tests::substance_layers_index_by_table",
+        "cargo:rmc_worldgen:strata::tests::limestone_band_present_and_porous",
+        "cargo:rmc_world:damage::tests::sulfide_yields_crushed_sulfide"
+      ],
+      "blockedBy": [
+        "F112"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Renaming copper_ore to sulfide_ore: update every Phase 1 test, asset and worldgen.ron entry that names copper_ore in a single test-fix: commit whose only change is the key; assertions stay identical."
+    },
+    {
+      "id": "F141",
+      "milestone": "E3",
+      "title": "Chemistry transport replaying the MoveLog by mobility and pH",
+      "sad": "§7.6",
+      "tests": [
+        "cargo:rmc_eco:chemistry::tests::transport_replays_movelog_invariant_proptest",
+        "cargo:rmc_eco:chemistry::tests::transport_scaling_by_256_then_fill",
+        "cargo:rmc_eco:chemistry::tests::immobile_substance_stays",
+        "cargo:rmc_eco:chemistry::tests::mobility_acid_used_below_acid_ph"
+      ],
+      "blockedBy": [
+        "F140",
+        "F124"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F142",
+      "milestone": "E3",
+      "title": "pH derivation and reactions runner (table order, first match, where-conditions)",
+      "sad": "§7.6",
+      "tests": [
+        "cargo:rmc_eco:chemistry::tests::ph_derivation_i32_no_underflow",
+        "cargo:rmc_eco:chemistry::tests::each_reaction_fires_only_on_condition",
+        "cargo:rmc_eco:chemistry::tests::reaction_order_precedence",
+        "cargo:rmc_eco:chemistry::tests::react_delta_and_saturation_loss_balance"
+      ],
+      "blockedBy": [
+        "F141"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F143",
+      "milestone": "E3",
+      "title": "Oxidation, neutralization, carbonate dissolution, copper mobility under acid",
+      "sad": "§7.6",
+      "tests": [
+        "cargo:rmc_eco:chemistry::tests::exposed_sulfide_releases_s_then_oxidizes",
+        "cargo:rmc_eco:chemistry::tests::acid_plus_lime_makes_salt",
+        "cargo:rmc_eco:chemistry::tests::dissolve_carbonate_in_porous_limestone_fed_by_seepage",
+        "cargo:rmc_eco:chemistry::tests::acid_increases_copper_transport"
+      ],
+      "blockedBy": [
+        "F142"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F144",
+      "milestone": "E3",
+      "title": "Coating and crusts: ochre on floors at pH>5, salt on evaporation; crusts dig back to substances",
+      "sad": "§7.6",
+      "tests": [
+        "cargo:rmc_eco:chemistry::tests::ochre_crust_forms_on_submerged_floor",
+        "cargo:rmc_eco:chemistry::tests::salt_crust_on_floor_under_drying_pool",
+        "cargo:rmc_eco:chemistry::tests::coat_across_chunk_border_queued_additive",
+        "cargo:rmc_world:damage::tests::digging_crust_leaves_substance_on_cell"
+      ],
+      "blockedBy": [
+        "F142",
+        "F123"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F145",
+      "milestone": "E3",
+      "title": "Spoil query and toxicity profiles; HUD spoil indicator; editor cell readout",
+      "sad": "§3, §10",
+      "tests": [
+        "cargo:rmc_world:query::tests::spoil_cells_match_profile",
+        "cargo:rmc_client:hud::tests::spoil_indicator_follows_target"
+      ],
+      "blockedBy": [
+        "F142"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F146",
+      "milestone": "E3",
+      "title": "Water tint by dissolved substances",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:mesher::tests::water_color_shifts_with_fe"
+      ],
+      "blockedBy": [
+        "F127",
+        "F141"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F147",
+      "milestone": "E3",
+      "title": "E2E: tailings_acidify_downslope",
+      "sad": "§12",
+      "tests": [
+        "e2e:tailings_acidify_downslope"
+      ],
+      "blockedBy": [
+        "F143",
+        "F145",
+        "F146",
+        "F128"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F148",
+      "milestone": "E3",
+      "title": "E2E: limestone_channel_clears",
+      "sad": "§12",
+      "tests": [
+        "e2e:limestone_channel_clears"
+      ],
+      "blockedBy": [
+        "F147"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F150",
+      "milestone": "E2",
+      "title": "Gas concentration layers, gases.ron, active sets per gas; drift and diffusion with room checks",
+      "sad": "§7.4",
+      "tests": [
+        "cargo:rmc_eco:gases::tests::light_gas_collects_at_ceiling",
+        "cargo:rmc_eco:gases::tests::heavy_gas_collects_at_floor",
+        "cargo:rmc_eco:gases::tests::drift_and_diffusion_conserve_with_room_checks"
+      ],
+      "blockedBy": [
+        "F104"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F151",
+      "milestone": "E3b",
+      "title": "Venting to sky and emission from exposed emitters (coal → firedamp)",
+      "sad": "§7.4",
+      "tests": [
+        "cargo:rmc_eco:gases::tests::vent_only_sky_open",
+        "cargo:rmc_eco:gases::tests::emission_only_when_exposed_actual_amounts",
+        "cargo:rmc_eco:gases::tests::invariant_per_kind_including_steam_terms_proptest",
+        "cargo:rmc_eco:gases::tests::sealed_pocket_drains_through_shaft"
+      ],
+      "blockedBy": [
+        "F150",
+        "F123"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F152",
+      "milestone": "E3b",
+      "title": "Steam water terms in both invariants; condensation/vent interplay",
+      "sad": "§7.2, §7.3",
+      "tests": [
+        "cargo:rmc_eco:gases::tests::boil_all_converts_fill_to_steam_1to1",
+        "cargo:rmc_eco:water::tests::water_invariant_includes_steam_and_vent"
+      ],
+      "blockedBy": [
+        "F150",
+        "F123",
+        "F131"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F153",
+      "milestone": "E3b",
+      "title": "Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set",
+      "sad": "§7.4",
+      "tests": [
+        "cargo:rmc_eco:gases::tests::ignition_clears_diggable_sphere_smoke_by_room_displacement_ledgered",
+        "cargo:rmc_eco:gases::tests::no_ignition_below_min"
+      ],
+      "blockedBy": [
+        "F151",
+        "F131"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F154",
+      "milestone": "E3b",
+      "title": "Gas tint at camera and HUD gas readout with lantern icon",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:hud::tests::gas_readout_follows_camera_cell"
+      ],
+      "blockedBy": [
+        "F150"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F155",
+      "milestone": "E3b",
+      "title": "Chokedamp from organic decomposition reaction",
+      "sad": "§7.6",
+      "tests": [
+        "cargo:rmc_eco:chemistry::tests::decompose_c_to_n_emits_chokedamp"
+      ],
+      "blockedBy": [
+        "F142",
+        "F150"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F156",
+      "milestone": "E3b",
+      "title": "E2E: firedamp_vented_by_shaft",
+      "sad": "§12",
+      "tests": [
+        "e2e:firedamp_vented_by_shaft"
+      ],
+      "blockedBy": [
+        "F151",
+        "F153",
+        "F154",
+        "F109"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F160",
+      "milestone": "E4",
+      "title": "Light: global column pass (y descending) and global lateral Jacobi; passable transparent; dirty-flag triggered; worldgen initial light",
+      "sad": "§7.7, §8",
+      "tests": [
+        "cargo:rmc_eco:light::tests::open_column_full_overhang_zero",
+        "cargo:rmc_eco:light::tests::lateral_falloff",
+        "cargo:rmc_eco:light::tests::water_attenuates_passable_transparent",
+        "cargo:rmc_eco:light::tests::recomputed_only_when_dirty",
+        "cargo:rmc_worldgen:light::tests::initial_light_nonzero_at_surface"
+      ],
+      "blockedBy": [
+        "F104",
+        "F120"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Light is a single-threaded sweep (SAD-P2 §3, §7.7): column pass, then double-buffered lateral iterations. Attenuation comes only from MaterialDef.light_attenuation."
+    },
+    {
+      "id": "F161",
+      "milestone": "E4",
+      "title": "Layer overlay color source in the mesher and editor picker",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:mesher::tests::overlay_colors_from_layer",
+        "cargo:rmc_client:editor::tests::overlay_pick_triggers_remesh"
+      ],
+      "blockedBy": [
+        "F160",
+        "F109"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F162",
+      "milestone": "E4",
+      "title": "E2E: layer_overlay_renders",
+      "sad": "§12",
+      "tests": [
+        "e2e:layer_overlay_renders"
+      ],
+      "blockedBy": [
+        "F161",
+        "F128"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F165",
+      "milestone": "E5",
+      "title": "Plant species table, plant cells as passable solids, PlantState map, needs check and growth",
+      "sad": "§7.8",
+      "tests": [
+        "cargo:rmc_eco:plants::tests::needs_met_grows",
+        "cargo:rmc_eco:plants::tests::stress_death_litter_ledgered_source",
+        "cargo:rmc_client:controller::tests::walks_through_passable_plant"
+      ],
+      "blockedBy": [
+        "F160",
+        "F142",
+        "F122"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F166",
+      "milestone": "E5",
+      "title": "Spread by seeded hash onto passing anchors within radius",
+      "sad": "§7.8",
+      "tests": [
+        "cargo:rmc_eco:plants::tests::spread_only_onto_passing_anchors",
+        "cargo:rmc_eco:plants::tests::spread_is_seeded_deterministic",
+        "cargo:rmc_eco:plants::tests::no_double_claim_across_chunk_border"
+      ],
+      "blockedBy": [
+        "F165"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F167",
+      "milestone": "E5",
+      "title": "Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material",
+      "sad": "§7.8",
+      "tests": [
+        "cargo:rmc_eco:plants::tests::uptake_invariant_over_life_death_harvest",
+        "cargo:rmc_eco:plants::tests::fireweed_holds_copper_anchor_cu_falls",
+        "cargo:rmc_eco:plants::tests::fireweed_survives_copper_grass_dies",
+        "cargo:rmc_testkit:eco::tests::harvest_yields_copper_dust_and_ledgers"
+      ],
+      "blockedBy": [
+        "F166"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F168",
+      "milestone": "E5",
+      "title": "Worldgen surface plants on passing anchors",
+      "sad": "§8",
+      "tests": [
+        "cargo:rmc_worldgen:plants::tests::initial_plants_only_on_passing_anchors"
+      ],
+      "blockedBy": [
+        "F165"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F169",
+      "milestone": "E5",
+      "title": "Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout",
+      "sad": "§10",
+      "tests": [
+        "cargo:rmc_client:editor::tests::eco_panel_lists_layers_and_report"
+      ],
+      "blockedBy": [
+        "F161",
+        "F145",
+        "F154"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F170",
+      "milestone": "E5",
+      "title": "E2E: grass_greens_swale and fireweed_takes_copper",
+      "sad": "§12",
+      "tests": [
+        "e2e:grass_greens_swale",
+        "e2e:fireweed_takes_copper"
+      ],
+      "blockedBy": [
+        "F167",
+        "F168",
+        "F147"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F171",
+      "milestone": "E5",
+      "title": "E2E: tailings_kill_moss",
+      "sad": "§12",
+      "tests": [
+        "e2e:tailings_kill_moss"
+      ],
+      "blockedBy": [
+        "F170"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false
+    },
+    {
+      "id": "F172",
+      "milestone": "E5",
+      "title": "Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world (lib fns + integration test runs each once); docs/perf-p2.md",
+      "sad": "§13",
+      "tests": [
+        "cargo:rmc_eco:benches_run_once"
+      ],
+      "blockedBy": [
+        "F170",
+        "F156",
+        "F134"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Expose the bench bodies as pub fns in rmc_eco::bench_support; benches/ call them; tests/benches_run_once.rs (integration test, path = name) calls each once with a tiny world."
+    },
+    {
+      "id": "F173",
+      "milestone": "E5",
+      "title": "Performance pass against §13; activity tuning",
+      "sad": "§13, §7.9",
+      "tests": [
+        "cargo:rmc_eco:tick::tests::quiet_world_tick_under_dev_budget",
+        "e2e:season_swale_fills"
+      ],
+      "blockedBy": [
+        "F172"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Dev budget is eco_test.quiet_tick_dev_ms (60000). Default 32-chunk world. Record release numbers in docs/perf-p2.md."
+    },
+    {
+      "id": "F174",
+      "milestone": "E5",
+      "title": "E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence)",
+      "sad": "§12",
+      "tests": [
+        "e2e:soak_seasons"
+      ],
+      "blockedBy": [
+        "F173"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false
+    },
+    {
+      "id": "F175",
+      "milestone": "E5",
+      "title": "Playtester report, screenshot gallery, docs/REPORT-P2.md",
+      "sad": "§12, P1 §16.6",
+      "tests": [
+        "cargo:rmc_app:report::tests::report_p2_includes_ledgers_and_screens"
+      ],
+      "blockedBy": [
+        "F174",
+        "F162",
+        "F148",
+        "F171"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "Extend scripts/report.sh to include the last soak's ledgers and the overlay screenshots; invoke the playtester subagent; fix anything in Phase 2 scope it calls broken."
     }
   ]
 }

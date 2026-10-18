@@ -67,3 +67,15 @@ Expect iteration 1 (F001) to take the longest; it creates the workspace and reso
 - `MODEL`, `FALLBACK`, `MAX_ITER`, `MAX_TURNS`, `EFFORT`, `RATE_SLEEP`, `STALL_LIMIT` on `run-overnight.sh`.
 - First night on a Max 20x plan: `MODEL=opus` is the intent; the driver drops to `sonnet` if the first two iterations each exceed 150 turns.
 - Native Windows instead of WSL2: install Git for Windows and `winget install jqlang.jq`; set `"env": {"CLAUDE_CODE_GIT_BASH_PATH": "C:\\Program Files\\Git\\bin\\bash.exe"}` in `~/.claude/settings.json`; the scripts run under Git Bash; E2E uses WARP automatically. The Bash sandbox is not available on native Windows.
+
+## Phase 2 (ecology)
+
+When `scripts/verify-features.sh --all` prints `ALL_FEATURES_PASS` for Phase 1:
+
+```bash
+scripts/merge-features.sh features-p2.json     # appends F100–F175
+git add -A && git commit -m "chore: phase 2 features"
+MODEL=opus MAX_ITER=60 nohup scripts/run-overnight.sh > logs/nohup-p2.out 2>&1 &
+```
+
+`docs/SAD-P2.md` is the design; `CLAUDE.md` already carries the Phase 2 rules. Expect E2 (water) and E3 (chemistry) to be the long milestones.

@@ -1,6 +1,6 @@
 # Rust Mining Co — build rules
 
-Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git log --oneline -15`. The design is `docs/SAD.md`; read the section for the feature you are working on, not the whole document.
+Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git log --oneline -15`. The design is `docs/SAD.md` (Phase 1, F0xx) and `docs/SAD-P2.md` (Phase 2, F1xx); read the section the feature's `sad` field names, not the whole document.
 
 ## Commands
 
@@ -12,12 +12,12 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 - Screenshots for review: `scripts/screens.sh` → `docs/screens/`
 - Feature state: `scripts/verify-features.sh [--all | --quick | <id>]` (read-only), `scripts/pass-feature.sh <id>` (flips passes), `scripts/skip-feature.sh <id> "<reason>"` (optional features only)
 - Smoke: `scripts/smoke.sh` (build + unit tests + one fast E2E)
-- Benches: `cargo bench -p rmc_world -p rmc_worldgen -p rmc_host -p rmc_client`
+- Benches: `cargo bench -p rmc_world -p rmc_worldgen -p rmc_host -p rmc_client -p rmc_eco`
 
 ## Hard rules
 
-1. No Bevy dependency in `rmc_world`, `rmc_worldgen`, `rmc_protocol`, `rmc_host`. `scripts/check-no-bevy.sh` enforces it.
-2. Cells change only via `World::apply`, `World::apply_delta`, `World::insert_chunk`. The client calls only the last two, only inside `ServerMsg` handlers.
+1. No Bevy dependency in `rmc_world`, `rmc_worldgen`, `rmc_protocol`, `rmc_host`, `rmc_eco`. `scripts/check-no-bevy.sh` enforces it.
+2. Cells change only via `World::apply`, `World::apply_delta`, `World::insert_chunk`, and (Phase 2, host only, inside `season_tick` only) `World::eco_set`. The client calls only `apply_delta` and `insert_chunk`, only inside `ServerMsg` handlers.
 3. Integers in `rmc_world` logic. Floats only at the raycast boundary and in worldgen noise sampling.
 4. Any iteration that affects output (hash, save, snapshot, delta) is sorted or fixed-order.
 5. Behavior comes from `assets/*.ron`. Filter on `tags` and `phase`; never branch on a specific material id or key in non-test code.
@@ -28,7 +28,17 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 10. Never ask questions. Nobody is watching. Take the conservative reading of the SAD, implement, and record the decision in `PROGRESS.md` under `## Decisions`.
 11. Pin every crate version in the workspace `Cargo.toml`. Before adding a crate, confirm on crates.io (WebFetch `https://crates.io/api/v1/crates/<name>`) that a release targets the pinned Bevy minor.
 12. Do not create a window in tests. End-to-end tests (in `tests/e2e/tests/`) and `rmc_testkit`'s own tests use `rmc_testkit::TestApp`. Unit tests inside `rmc_client` cannot depend on `rmc_testkit` (it depends on `rmc_client`); they build a small `App` with `MinimalPlugins` plus the plugin under test, or test plain functions.
-13. Do not run `cargo run -p rmc_app` in a session; it needs a display. Use `scripts/e2e.sh` and screenshots to see the game.
+13. Do not run `cargo run -p rmc_app` in a session; it needs a display. Use `scripts/e2e.sh` and screenshots to see the game. `cargo run -p rmc_app -- --headless --seasons N` is allowed once F108 exists.
+
+## Phase 2 rules (ecology, `docs/SAD-P2.md`)
+
+14. Layers change only inside `season_tick` passes, `EditOp::SetLayer`, the SAD-P2 §7.0 displacement rules (run by `World::apply` and `World::eco_set`), worldgen, and delta/snapshot application.
+15. Two kinds of pass, per SAD-P2 §3. Jacobi passes (temperature, transitions, weathering, reactions, plant growth) compute from the previous state over a chunk plus a 1-cell border, in parallel, and apply in sorted chunk order; their cross-chunk fluxes are pure functions of the cell pair. Sweep passes (water, gases, chemistry transport, plant spread, light) run single-threaded in global sorted cell order and apply each move immediately after checking donor content and receiver room. Do not parallelize a sweep.
+16. Every move of water, a substance, or a gas writes a `SeasonLedger` entry. The conservation property tests are the proof; if one fails, the pass is wrong, not the test.
+17. Pass order is fixed by SAD-P2 §3. Do not reorder passes to make a test pass.
+18. Tables drive behavior: transitions, reactions, gases, plants, seasons are data rows. Pass code matches on tags, phases, table fields and the `roles` section of `eco.ron`; it never names a material, gas or substance key outside tests and `eco.ron`.
+19. Every numeric rate, threshold, shift and constant used by a pass lives in `assets/eco.ron` under the name SAD-P2 §7 gives it (`heat_shift`, `flow_cap`, `seep_num`, `stress_death`, ...). Pass code contains no numeric literals other than 0, 1, array sizes, type limits (`u8::MAX`, `i16::MIN`, ...) and the fixed divisors written inside SAD-P2 formulas (`/ 2`, `/ 256`), which go in named `const`s.
+20. Cross-chunk fluxes are pure functions of the ordered pair's state, computed identically from both sides. The two-chunk-equals-one-chunk tests enforce this.
 
 ## Conventions
 

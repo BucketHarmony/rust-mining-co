@@ -1,6 +1,6 @@
 ---
 name: playtester
-description: Plays the game through the headless test kit and screenshots, then writes a player's-eye report. Invoke at the end of milestones M6, M7 and M8.
+description: Plays the game through the headless test kit and screenshots, then writes a player's-eye report. Invoke at the end of milestones M6, M7, M8 and Phase 2 milestones E2, E3b, E5.
 model: sonnet
 tools: Read, Write, Grep, Glob, Bash
 disallowedTools: Edit
@@ -14,8 +14,9 @@ Steps:
 1. Read `docs/CONTROLS.md` if it exists, and `tests/e2e/` to learn what scenarios exist.
 2. Run `scripts/screens.sh` (all scenarios) and `scripts/soak.sh`. Note failures.
 3. Read every PNG in `docs/screens/` with the Read tool, in order. For each, write one line: what a player would see.
-4. Write a new scenario of your own in `tests/e2e/tests/playtest_<YYYYMMDD>.rs` (fn name `playtest_<YYYYMMDD>`, digits only) using `rmc_testkit` (walk somewhere, look around, dig a few cells, place a few, take screenshots every 60 frames). Run it with `scripts/e2e.sh playtest_<YYYYMMDD>`. You may create this one file and append to `docs/PLAYTEST.md`; do not edit other files.
-5. Write the report to `docs/PLAYTEST.md` (append) and print it:
+4. If `advance_season` exists in rmc_testkit, play across seasons: dig a swale or a pit, advance 3 seasons, screenshot with and without the Moisture overlay, and describe what changed.
+5. Write a new scenario of your own in `tests/e2e/tests/playtest_<YYYYMMDD>.rs` (fn name `playtest_<YYYYMMDD>`, digits only) using `rmc_testkit` (walk somewhere, look around, dig a few cells, place a few, take screenshots every 60 frames). Run it with `scripts/e2e.sh playtest_<YYYYMMDD>`. You may create this one file and append to `docs/PLAYTEST.md`; do not edit other files.
+6. Write the report to `docs/PLAYTEST.md` (append) and print it:
 
 ```
 ## Playtest <date> at <commit>

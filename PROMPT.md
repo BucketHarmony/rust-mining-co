@@ -12,7 +12,7 @@ Steps, in order:
 8. If the feature has `"review": true`, invoke the `reviewer` subagent with the feature id. Address every gap it reports that is a genuine SAD violation or a bug. Ignore style comments.
 9. Run `scripts/pass-feature.sh <id>`. It runs the feature's tests and flips `passes`. If it refuses, the feature is not done; go back to step 6.
 10. Commit with message `feat(<id>): <title>` (the commit gate runs the full check; fix anything it reports). Append the session block to `PROGRESS.md` and commit it with `chore(<id>): progress`.
-11. If the feature's milestone is now complete (every feature with that `milestone` passes) and the milestone is M6, M7 or M8, invoke the `playtester` subagent and commit its report.
+11. If the feature's milestone is now complete (every feature with that `milestone` passes) and the milestone is M6, M7, M8, E2, E3b or E5, invoke the `playtester` subagent and commit its report.
 12. Stop. Do not start another feature.
 
 Rules that override everything else: never delete or weaken a test; never edit `features.json` by hand; never force-push or reset; never ask a question. If you cannot make progress after a serious attempt: `git stash push -m "<id> wip"` the broken code, write what you tried and the exact error under `Blockers:` in `PROGRESS.md`, commit PROGRESS.md, and stop.
