@@ -1,11 +1,12 @@
 //! The world (SAD §7): resident chunks inside fixed bounds, plus the material
 //! table that gives cells their meaning.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::chunk::Chunk;
 use crate::coords::{CellAabb, CellPos, ChunkPos};
+use crate::edit::{ChunkDelta, EditCommand, EditResult, EditStatus, FULL_DELTA_THRESHOLD};
 use crate::materials::{MaterialId, MaterialTable};
 
 /// Errors from world mutation.
@@ -115,6 +116,78 @@ impl World {
             buf.extend_from_slice(&chunk.hash().to_le_bytes());
         }
         xxhash_rust::xxh3::xxh3_64(&buf)
+    }
+
+    /// Applies an edit command (SAD §8.1–8.3) and returns the deltas a
+    /// replica needs to reproduce it.
+    ///
+    /// Cells are visited in shape order. A cell is skipped when it is outside
+    /// the bounds, its chunk is not resident, the op does not apply to its
+    /// material, or it already holds the target. Each changed chunk gets one
+    /// revision bump and is marked modified; its delta is `Full` (with the
+    /// chunk compacted) when more than [`FULL_DELTA_THRESHOLD`] cells changed.
+    pub fn apply(&mut self, cmd: &EditCommand) -> EditResult {
+        if let Err(reason) = cmd.op.validate(&self.materials) {
+            tracing::debug!(command = ?cmd.id, %reason, "edit rejected");
+            return EditResult::rejected(cmd.id, reason);
+        }
+
+        let mut changed: BTreeMap<ChunkPos, Vec<(u16, MaterialId)>> = BTreeMap::new();
+        for cell in cmd.shape.cells() {
+            if !self.bounds.contains(cell) {
+                continue;
+            }
+            let (pos, local) = cell.split();
+            let Some(chunk) = self.chunks.get_mut(&pos) else {
+                continue;
+            };
+            let old = chunk.storage.get(local);
+            let Some(new) = cmd.op.target(self.materials.get(old)) else {
+                continue;
+            };
+            if new != old {
+                chunk.storage.set(local, new);
+                changed.entry(pos).or_default().push((local.index(), new));
+            }
+        }
+
+        let deltas = changed
+            .into_iter()
+            .map(|(pos, mut changes)| {
+                let chunk = self
+                    .chunks
+                    .get_mut(&pos)
+                    .expect("changed chunk is resident");
+                chunk.revision += 1;
+                chunk.modified = true;
+                let revision = chunk.revision;
+                if changes.len() > FULL_DELTA_THRESHOLD {
+                    chunk.storage.compact();
+                    ChunkDelta::Full {
+                        pos,
+                        revision,
+                        storage: chunk.storage.clone(),
+                    }
+                } else {
+                    // Shape order is (y, z, x) ascending, which within one
+                    // chunk is already ascending local index; sort anyway so
+                    // the delta does not depend on that.
+                    changes.sort_unstable_by_key(|&(i, _)| i);
+                    ChunkDelta::Cells {
+                        pos,
+                        revision,
+                        changes,
+                    }
+                }
+            })
+            .collect();
+
+        EditResult {
+            command: cmd.id,
+            status: EditStatus::Applied,
+            deltas,
+            yields: Vec::new(),
+        }
     }
 
     /// Makes `chunk` resident at `pos`, replacing and returning any previous
