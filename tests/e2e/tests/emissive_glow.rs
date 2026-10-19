@@ -59,7 +59,11 @@ fn emissive_glow() {
         world_bounds: bounds,
         ..TestConfig::default()
     });
-    settle(&mut t);
+    e2e::run_scenario(&mut t, "emissive_glow", run);
+}
+
+fn run(t: &mut TestApp) {
+    settle(t);
 
     // The first emissive solid material in the table, and a plain one to
     // build with.
@@ -110,7 +114,7 @@ fn emissive_glow() {
         }));
     }
     t.steps(3);
-    settle(&mut t);
+    settle(t);
     let host = t.host_world();
     assert_eq!(host.get_cell(CellPos::new(64, 102, 64)), Some(glow.id));
     let inside = host

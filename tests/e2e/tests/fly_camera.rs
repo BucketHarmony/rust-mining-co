@@ -75,6 +75,10 @@ fn fly_camera() {
         world_bounds: CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(127, 127, 127)),
         ..TestConfig::default()
     });
+    e2e::run_scenario(&mut t, "fly_camera", run);
+}
+
+fn run(t: &mut TestApp) {
     for _ in 0..120 {
         if t.app().world().resource::<MeshStats>().initial_load_done {
             break;
@@ -84,28 +88,28 @@ fn fly_camera() {
     assert!(t.app().world().resource::<MeshStats>().initial_load_done);
 
     // The toggle key turns the fly camera on.
-    let enabled = fly(&t).enabled;
+    let enabled = fly(t).enabled;
     t.press(FLY_TOGGLE_KEY);
     t.step();
     t.release(FLY_TOGGLE_KEY);
     t.step();
-    assert_eq!(fly(&t).enabled, !enabled, "the toggle key flips fly mode");
-    if !fly(&t).enabled {
+    assert_eq!(fly(t).enabled, !enabled, "the toggle key flips fly mode");
+    if !fly(t).enabled {
         t.press(FLY_TOGGLE_KEY);
         t.step();
         t.release(FLY_TOGGLE_KEY);
         t.step();
     }
-    assert!(fly(&t).enabled, "fly mode is on");
+    assert!(fly(t).enabled, "fly mode is on");
 
-    let start = camera(&mut t);
+    let start = camera(t);
     eprintln!("start: {start:?}");
-    assert!(!is_solid(&t, start.translation), "starts in the air");
+    assert!(!is_solid(t, start.translation), "starts in the air");
 
     // Forward, fast, along the look direction (20° down) into the world.
     let forward = start.forward().as_vec3();
     let mut solid = leg(
-        &mut t,
+        t,
         "forward",
         &[KeyCode::ShiftLeft, KeyCode::KeyW],
         forward,
@@ -114,7 +118,7 @@ fn fly_camera() {
     );
     // Straight down, fast, through the surface into the rock.
     let down = leg(
-        &mut t,
+        t,
         "down",
         &[KeyCode::ShiftLeft, KeyCode::ControlLeft],
         Vec3::NEG_Y,
@@ -127,18 +131,18 @@ fn fly_camera() {
     );
     solid += down;
     // Sideways through the rock, at walking-pace fly speed.
-    let right = camera(&mut t).right().as_vec3();
+    let right = camera(t).right().as_vec3();
     assert!(right.y.abs() < 1e-4, "strafing is horizontal");
-    let side = leg(&mut t, "right", &[KeyCode::KeyD], right, false, 60);
+    let side = leg(t, "right", &[KeyCode::KeyD], right, false, 60);
     assert!(
         side >= 1,
         "strafing underground passes through solid cells ({side} frames)"
     );
     solid += side;
     // Up a little, still inside the world.
-    solid += leg(&mut t, "up", &[KeyCode::Space], Vec3::Y, false, 30);
+    solid += leg(t, "up", &[KeyCode::Space], Vec3::Y, false, 30);
 
-    let end = camera(&mut t);
+    let end = camera(t);
     eprintln!("end: {end:?}; {solid} frames inside solid cells");
     assert!(solid >= 30, "{solid} frames inside solid cells");
     assert!(
@@ -152,12 +156,12 @@ fn fly_camera() {
     // The mouse turns it and does not move it.
     t.look(-200.0, 0.0);
     t.step();
-    let turned = camera(&mut t);
+    let turned = camera(t);
     assert!(
         (turned.translation - end.translation).length() < EPS_M,
         "looking does not move the camera"
     );
-    let expected = Quat::from_rotation_y(200.0 * fly(&t).sensitivity_rad) * end.forward().as_vec3();
+    let expected = Quat::from_rotation_y(200.0 * fly(t).sensitivity_rad) * end.forward().as_vec3();
     assert!(
         (turned.forward().as_vec3() - expected).length() < 1e-3,
         "mouse left turns left about +Y by dx × sensitivity: {:?} -> {:?}, expected {expected:?}",

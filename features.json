@@ -1089,8 +1089,9 @@
       ],
       "e2e": true,
       "review": false,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. emissive_glow's two screenshots are single flat colors with no geometry, so they show a color change, not glow. glow_in_cave: place glowcrystal on a stone wall inside a closed dark room (or use a generated cave), screenshot with emissive on and off, and assert that the crystal's pixels are brighter than the surrounding stone by a margin with emissive on, and that the margin is larger than with emissive off. Also move boot_renders, fly_camera and emissive_glow onto run_scenario so they save a screenshot on failure (a reviewer note from F063), and fix stale frame numbers in docs/screens names by re-shooting."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. emissive_glow's two screenshots are single flat colors with no geometry, so they show a color change, not glow. glow_in_cave: place glowcrystal on a stone wall inside a closed dark room (or use a generated cave), screenshot with emissive on and off, and assert that the crystal's pixels are brighter than the surrounding stone by a margin with emissive on, and that the margin is larger than with emissive off. Also move boot_renders, fly_camera and emissive_glow onto run_scenario so they save a screenshot on failure (a reviewer note from F063), and fix stale frame numbers in docs/screens names by re-shooting.",
+      "passedAt": "2026-10-19T14:23:38Z"
     },
     {
       "id": "F080",

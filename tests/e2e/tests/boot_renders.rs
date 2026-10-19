@@ -31,6 +31,10 @@ fn median(image: &RgbaImage) -> Rgba<u8> {
 #[ignore]
 fn boot_renders() {
     let mut t = TestApp::new(TestConfig::default());
+    e2e::run_scenario(&mut t, "boot_renders", run);
+}
+
+fn run(t: &mut TestApp) {
     t.steps(120);
 
     let world = t.app().world();
