@@ -2,14 +2,15 @@
 // the vertex color's alpha (SAD §11.2). Loaded as
 // embedded://rmc_client/emissive.wesl by rmc_client::material.
 //
-// The mesher writes vertex color = linear material color × AO, with the
-// material's emissive strength in alpha. The base color is white, so after
-// pbr_input_from_standard_material the base color is exactly the vertex
-// color. The alpha is read before alpha_discard sets it to 1 (the material
-// is opaque), and `color.rgb × color.a × emissive_scale` is added to the
-// emissive term, so a glowing cell glows in its own color, darkened by AO
-// like the rest of its face. A strength of 0 changes nothing: such a
-// fragment is shaded exactly as by the StandardMaterial.
+// The mesher writes vertex color = linear material color × face shade × AO,
+// with the material's emissive strength in alpha. The base color is white,
+// so after pbr_input_from_standard_material the base color is exactly the
+// vertex color. The alpha is read before alpha_discard sets it to 1 (the
+// material is opaque), and `color.rgb × color.a × emissive_scale` is added
+// to the emissive term, so a glowing cell glows in its own color, darkened
+// by its face shade and AO like the rest of its face. A strength of 0
+// changes nothing: such a fragment is shaded exactly as by the
+// StandardMaterial.
 
 import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},

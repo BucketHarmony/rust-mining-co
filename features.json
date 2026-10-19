@@ -1038,8 +1038,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Topsoil is one green with only a slight face shade, so step height and distance are hard to judge. Multiply vertex color by a fixed factor per face normal (for example top 1.0, sides 0.8 and 0.7, bottom 0.55) on top of AO. The factor depends only on the normal, which is already in the merge key, so greedy merging is unchanged (the second test checks the quad count of a flat slab does not change). Do not add per-cell color noise: it would break merging and the 2 ms mesh_chunk target."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Topsoil is one green with only a slight face shade, so step height and distance are hard to judge. Multiply vertex color by a fixed factor per face normal (for example top 1.0, sides 0.8 and 0.7, bottom 0.55) on top of AO. The factor depends only on the normal, which is already in the merge key, so greedy merging is unchanged (the second test checks the quad count of a flat slab does not change). Do not add per-cell color noise: it would break merging and the 2 ms mesh_chunk target.",
+      "passedAt": "2026-10-19T11:30:57Z"
     },
     {
       "id": "F090",

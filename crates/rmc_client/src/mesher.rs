@@ -14,8 +14,9 @@
 //!
 //! Positions are chunk-local meters: the chunk's minimum corner is the origin,
 //! so the mesh entity sits at the chunk's origin cell. Vertex colors are the
-//! material color in linear RGB times the vertex's AO factor; alpha holds the
-//! material's emissive strength.
+//! material color in linear RGB times the face's shade for its normal
+//! ([`face_shade`]) times the vertex's AO factor; alpha holds the material's
+//! emissive strength.
 
 use std::sync::Arc;
 
@@ -35,11 +36,24 @@ pub const MESH_INPUT_VOLUME: usize = MESH_INPUT_EDGE * MESH_INPUT_EDGE * MESH_IN
 /// with both side cells solid.
 pub const AO_FACTORS: [f32; 4] = [0.4, 0.6, 0.8, 1.0];
 
+/// Color factor per face direction, so that faces at an angle to each other
+/// read apart even under flat light: top, ±X sides, ±Z sides, bottom.
+pub const FACE_SHADES: [f32; 4] = [1.0, 0.8, 0.7, 0.55];
+
 /// Color factor for a face with outward normal `normal` (an axis unit
-/// vector). It multiplies the vertex color on top of AO.
+/// vector). It multiplies the vertex color on top of AO. It depends only on
+/// the normal, which is fixed per meshing pass, so it never splits a merge.
 pub fn face_shade(normal: IVec3) -> f32 {
-    let _ = normal;
-    1.0
+    let [top, x_side, z_side, bottom] = FACE_SHADES;
+    if normal.y > 0 {
+        top
+    } else if normal.y < 0 {
+        bottom
+    } else if normal.x != 0 {
+        x_side
+    } else {
+        z_side
+    }
 }
 
 /// Builds a mesh from one chunk's cells.
@@ -842,6 +856,203 @@ mod tests {
         let in_tris = q.tris.iter().filter(|t| t.contains(&dark)).count();
         assert_eq!(in_tris, 1, "the dark corner is not on the split diagonal");
     }
+
+    /// The face shade each normal must get: the top lit fully, the two side
+    /// axes apart from each other, the bottom darkest.
+    const SHADES: [(IVec3, f32); 6] = [
+        (IVec3::Y, 1.0),
+        (IVec3::X, 0.8),
+        (IVec3::NEG_X, 0.8),
+        (IVec3::Z, 0.7),
+        (IVec3::NEG_Z, 0.7),
+        (IVec3::NEG_Y, 0.55),
+    ];
+
+    #[test]
+    fn face_shade_differs_by_normal() {
+        let t = table();
+        for (n, want) in SHADES {
+            assert_eq!(face_shade(n), want, "face shade for normal {n}");
+        }
+        let shade = |n: IVec3| face_shade(n);
+        assert!(
+            shade(IVec3::Y) > shade(IVec3::X),
+            "top is brighter than a side"
+        );
+        assert!(
+            shade(IVec3::X) != shade(IVec3::Z),
+            "the two side axes differ"
+        );
+        assert!(
+            shade(IVec3::X).min(shade(IVec3::Z)) > shade(IVec3::NEG_Y),
+            "the bottom is darker than every side"
+        );
+        // The step between the top and the darker side is visible after the
+        // sRGB encode: at least 10% in display value.
+        let encode = |f: f32| Color::linear_rgb(f, f, f).to_srgba().red;
+        assert!(
+            encode(shade(IVec3::Z)) <= 0.9 * encode(shade(IVec3::Y)),
+            "side vs top in sRGB: {} vs {}",
+            encode(shade(IVec3::Z)),
+            encode(shade(IVec3::Y))
+        );
+
+        // Every material's unoccluded faces carry exactly that shade, scaled
+        // equally on all channels (the hue is kept), with the emissive
+        // strength in alpha untouched.
+        for def in t.iter().filter(|d| d.is_solid()) {
+            let mut input = origin_input(&t);
+            input.set(12, 12, 12, def.id);
+            let qs = quads(&mesh(&input));
+            assert_eq!(qs.len(), 6);
+            let base = vertex_base_color(&t, def.id);
+            for (n, f) in SHADES {
+                let q = with_normal(&qs, n);
+                assert_eq!(q.len(), 1);
+                for c in q[0].colors {
+                    let want = [base[0] * f, base[1] * f, base[2] * f, base[3]];
+                    assert_eq!(c, want, "{} face {n}", def.key);
+                    assert_eq!(c[3], def.emissive, "{} face {n}: alpha", def.key);
+                }
+            }
+        }
+
+        // AO multiplies on top of the shade: a wall beside a floor darkens the
+        // floor's corners by the AO factors, and the wall's own face keeps its
+        // side shade.
+        let stone = id(&t, "stone");
+        let base = vertex_base_color(&t, stone);
+        let mut input = origin_input(&t);
+        input.set(4, 4, 4, stone);
+        input.set(4, 5, 5, stone);
+        let qs = quads(&mesh(&input));
+        let top = tops_at(&qs, 4)
+            .into_iter()
+            .find(|q| q.min() == Vec3::new(4.0, 5.0, 4.0))
+            .expect("top of (4,4,4)");
+        for (corner, level) in [(Vec3::new(4.0, 5.0, 4.0), 3), (Vec3::new(4.0, 5.0, 5.0), 2)] {
+            let c = top.colors[top.corner_at(corner)];
+            let f = AO_FACTORS[level];
+            for k in 0..3 {
+                assert!((c[k] - base[k] * f).abs() < 1e-6, "corner {corner}: {c:?}");
+            }
+        }
+        let wall = qs
+            .iter()
+            .find(|q| q.normal == IVec3::NEG_Z && q.plane() == 5.0)
+            .expect("the -Z face of (4,5,5)");
+        for (i, c) in wall.colors.iter().enumerate() {
+            let level = wall.level(i, base);
+            let f = 0.7 * AO_FACTORS[level];
+            for k in 0..3 {
+                assert!((c[k] - base[k] * f).abs() < 1e-6, "wall corner {i}: {c:?}");
+            }
+        }
+    }
+
+    /// Terrain over the whole 34³ input: plateaus of 3×4 columns at heights
+    /// 6..=10, topsoil on top of two dirt cells on top of stone.
+    fn plateau_terrain(t: &Arc<MaterialTable>) -> MeshInput {
+        let (topsoil, dirt, stone) = (id(t, "topsoil"), id(t, "dirt"), id(t, "stone"));
+        let mut input = origin_input(t);
+        for z in -1..=32_i32 {
+            for x in -1..=32_i32 {
+                let h = 6 + (x.div_euclid(3) * 7 + z.div_euclid(4) * 3).rem_euclid(5);
+                for y in -1..=h {
+                    let m = match h - y {
+                        0 => topsoil,
+                        1 | 2 => dirt,
+                        _ => stone,
+                    };
+                    input.set(x, y, z, m);
+                }
+            }
+        }
+        input
+    }
+
+    #[test]
+    fn face_shade_keeps_greedy_merging() {
+        let t = table();
+        let stone = id(&t, "stone");
+
+        // A flat 32×32 slab whose neighbours continue it: still 2 quads, one
+        // per face, each a single shade.
+        let mut input = origin_input(&t);
+        for x in -1..=32 {
+            for z in -1..=32 {
+                input.set(x, 16, z, stone);
+            }
+        }
+        let qs = quads(&mesh(&input));
+        assert_eq!(
+            shape(&qs),
+            expect_shape(vec![(IVec3::Y, (32.0, 32.0)), (IVec3::NEG_Y, (32.0, 32.0))]),
+            "a full layer is 2 quads"
+        );
+
+        // A free-standing 32×32×1 slab: one quad per face, sides included.
+        let mut input = origin_input(&t);
+        for x in 0..32 {
+            for z in 0..32 {
+                input.set(x, 3, z, stone);
+            }
+        }
+        let qs = quads(&mesh(&input));
+        assert_eq!(
+            shape(&qs),
+            expect_shape(vec![
+                (IVec3::Y, (32.0, 32.0)),
+                (IVec3::NEG_Y, (32.0, 32.0)),
+                (IVec3::X, (1.0, 32.0)),
+                (IVec3::NEG_X, (1.0, 32.0)),
+                (IVec3::Z, (32.0, 1.0)),
+                (IVec3::NEG_Z, (32.0, 1.0)),
+            ]),
+            "a free slab is 6 quads"
+        );
+
+        // Stepped terrain: the quad count per normal is the one the mesher
+        // produced before face shading (measured with every shade at 1.0).
+        let data = mesh(&plateau_terrain(&t));
+        let qs = quads(&data);
+        let count = |n: IVec3| with_normal(&qs, n).len();
+        let counts: Vec<(IVec3, usize)> = DIRS.iter().map(|&n| (n, count(n))).collect();
+        assert_eq!(counts, PLATEAU_QUADS.to_vec(), "quads per normal");
+        assert_eq!(
+            data.quad_count as usize,
+            PLATEAU_QUADS.iter().map(|c| c.1).sum::<usize>()
+        );
+        // Each quad has one shade on all four corners: its colors are the
+        // material color times that shade times one AO factor each.
+        let fits = |q: &Quad, base: [f32; 4]| {
+            let want = shaded(base, q.normal);
+            q.colors.iter().all(|c| {
+                c[3] == want[3]
+                    && AO_FACTORS
+                        .iter()
+                        .any(|f| (0..3).all(|k| (c[k] - want[k] * f).abs() < 1e-6))
+            })
+        };
+        for q in &qs {
+            assert!(
+                t.iter().any(|d| fits(q, vertex_base_color(&t, d.id))),
+                "quad {:?}: one material, one shade, AO per corner",
+                q.corners
+            );
+        }
+    }
+
+    /// Quads per normal, in [`DIRS`] order, of [`plateau_terrain`] before
+    /// face shading.
+    const PLATEAU_QUADS: [(IVec3, usize); 6] = [
+        (IVec3::X, 288),
+        (IVec3::NEG_X, 295),
+        (IVec3::Y, 516),
+        (IVec3::NEG_Y, 0),
+        (IVec3::Z, 287),
+        (IVec3::NEG_Z, 306),
+    ];
 
     /// A world over chunks -1..=1 on every axis.
     fn world_3x3x3(table: &Arc<MaterialTable>) -> World {
