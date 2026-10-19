@@ -1412,3 +1412,27 @@ Decisions:
 - Frame rate and mesh memory are not measured here (no GPU in the session; `MeshStats::mesh_bytes` is not yet in the stats panel). docs/perf.md says so and points to F082.
 Next: F082 (performance pass, initial-load upload burst) is unblocked; F083 (CI) is also unblocked.
 Blockers: none.
+
+## 2026-10-19 17:30 — F082 Performance pass against §13 targets; initial-load upload burst — passed
+Done:
+- Initial-load burst (SAD §11.2): the 32-per-frame upload budget was already in place, but the initial load ended on any frame where the pipeline was empty. Snapshots that arrive over more than one frame (the host runs on its own thread) could end the load early and drop the rest to 4 uploads per frame. The load now also needs every chunk inside the replica's bounds to be resident (`fully_resident` in meshpipe.rs). `MeshStats::initial_load_done` and the module docs say so.
+- Stats panel: `EditorStats::mesh_bytes` mirrors `MeshStats::mesh_bytes`, and the panel shows "Mesh memory: N MiB" (SAD §13: "stats panel; recorded").
+- docs/perf.md: mesh memory recorded at 58.4 MB (58,361,672 bytes, 55.7 MiB; 255 chunks with geometry, 317,183 quads) for the default world after boot_renders, against the 256 MB target. Also new: an "Initial load" section. The frame-rate row is still manual.
+- Mesher unchanged: mesh_chunk is 1.68 ms (< 2 ms), so the note's binary-greedy-meshing comparison does not apply.
+Tests added:
+- meshpipe::tests::initial_load_uses_burst_budget, with budgets 64/4/10. The snapshots arrive over two frames:
+  - The first 13 upload 10, 3, 0, and the load is not done.
+  - The rest and their re-dirtied neighbours upload 10, 10, the remainder, 0, and then the load is done.
+  - After the load, 10 edits upload 4, 4, 2, 0.
+  - A rejoin with all 27 starts a new burst: 10, 10, 7, 0.
+  - The test first failed with "13 of 27 chunks meshed … initial_load_done: true" (the check was stubbed to `true` to confirm this).
+- The existing panel test (editor.rs `panel_toggles_with_f1`) now also checks that mesh_bytes is 0 without a pipeline, and that it mirrors an inserted MeshStats (58,361,672 bytes shown as "Mesh memory: 55.7 MiB").
+- e2e:boot_renders now also asserts mesh_bytes < 256 MiB, as a regression guard for the §13 target (reviewer note). It passes on WARP; the screenshot docs/screens/boot_renders-123.png was re-shot and is unchanged.
+- Reviewer: GAPS (minor). Both test gaps are fixed: a nonzero panel value is now checked, and mesh memory is asserted. The panel unit is now labelled MiB.
+Decisions:
+- "Fully meshed" means every in-bounds chunk is resident and meshed. The host sends one snapshot per resident chunk, and today's hosts (generated world, or a save loaded over it) hold every in-bounds chunk, so this matches. Against a host that leaves chunks non-resident, the burst budget would never end and `initial_load_done` would stay false (the reviewer's concern). No protocol signal was added for "all snapshots sent". A frame-count fallback would bring back the early-end race. Revisit if Phase 2 or streaming ever sends a partial world.
+- The in-flight budget stays at 8 during the initial load (SAD: "8 jobs in flight"). So in practice at most 8 meshes per frame reach the 32 upload budget. boot_renders still meshes all 256 chunks within 120 steps.
+- Frame rate is not measured: sessions cannot open a window (rule 13), and the E2E adapters are software. It stays manual, using the stats panel's FPS.
+- The earlier "revisit in F082" notes (palette linear scan, hash allocation, iter_chunks_sorted) were left alone: host_tick_100 is 61 µs against 2 ms and gen_world 241 ms against 3 s.
+Next: F083 (CI).
+Blockers: none.
