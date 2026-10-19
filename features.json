@@ -966,8 +966,9 @@
       ],
       "e2e": false,
       "review": true,
-      "passes": false,
-      "notes": "Phase 1 gap found 2026-10-18: no feature wired rmc_app's main, which was still the kit stub, so `cargo run -p rmc_app` opened nothing. main parses the F075 CLI (--seed, --save), loads assets, generates or loads the world, starts the host on its own thread (F035) over ChannelTransport, and runs the client App with DefaultPlugins, a primary window and every rmc_client plugin that exists (net, replica, meshing, render, controller, fly camera, pickaxe, HUD, editor, save). Put the App construction in `app::build_game_app(cfg, windowed: bool)`; main calls it with true. Tests call it with false (no window, rule 12), step a few hundred frames and check that the player joins and the replica receives chunks. Do not run the binary in a session (rule 13). After this feature the 'How to play' command in docs/REPORT.md must work."
+      "passes": true,
+      "notes": "Phase 1 gap found 2026-10-18: no feature wired rmc_app's main, which was still the kit stub, so `cargo run -p rmc_app` opened nothing. main parses the F075 CLI (--seed, --save), loads assets, generates or loads the world, starts the host on its own thread (F035) over ChannelTransport, and runs the client App with DefaultPlugins, a primary window and every rmc_client plugin that exists (net, replica, meshing, render, controller, fly camera, pickaxe, HUD, editor, save). Put the App construction in `app::build_game_app(cfg, windowed: bool)`; main calls it with true. Tests call it with false (no window, rule 12), step a few hundred frames and check that the player joins and the replica receives chunks. Do not run the binary in a session (rule 13). After this feature the 'How to play' command in docs/REPORT.md must work.",
+      "passedAt": "2026-10-19T05:22:39Z"
     },
     {
       "id": "F086",

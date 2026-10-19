@@ -9,7 +9,9 @@
 //!   [`SessionPlugin`] hands the editor's Load action
 //!   ([`EditorState::load_requested`]) to the host thread, which loads the
 //!   save and replaces its world ([`Host::replace_world`]), so every client
-//!   rebuilds its replica from the new `Welcome` and snapshots. On
+//!   rebuilds its replica from the new `Welcome` and snapshots. The
+//!   editor's Regenerate ([`EditorState::regenerate_requested`]) goes the
+//!   same way, with a world generated from [`EditorState::seed`]. On
 //!   [`AppExit`] it stops the host and saves ([`quit_save`]); dropping a
 //!   [`GameHost`] that still runs does the same.
 //!
@@ -256,6 +258,23 @@ impl GameHost {
         })
     }
 
+    /// Asks the host thread to generate the world from `seed` and replace
+    /// its world with it; later saves carry `seed`. A failed generation is
+    /// logged and changes nothing. Returns false if the host has stopped.
+    pub fn request_regenerate(&self, seed: u64) -> bool {
+        let Some(handle) = &self.handle else {
+            return false;
+        };
+        let assets = self.assets.clone();
+        handle.submit(move |host: &mut Host| match generate_world(&assets, seed) {
+            Ok(world) => {
+                info!(seed, "world regenerated on request");
+                host.replace_world(world, assets.host_config(seed));
+            }
+            Err(e) => warn!("regenerate refused: {e:#}"),
+        })
+    }
+
     /// Stops the host and saves, once; later calls do nothing.
     pub fn quit_save(&mut self) -> Option<anyhow::Result<usize>> {
         self.handle.take().map(quit_save)
@@ -274,14 +293,17 @@ impl Drop for GameHost {
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionSystems;
 
-/// Hands the editor's Load to the host thread and saves on quit.
+/// Hands the editor's Load and Regenerate to the host thread and saves on
+/// quit.
 pub struct SessionPlugin;
 
 impl Plugin for SessionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            load_on_request.in_set(SessionSystems).after(EditorSystems),
+            (load_on_request, regenerate_on_request)
+                .in_set(SessionSystems)
+                .after(EditorSystems),
         )
         .add_systems(Last, save_on_exit.in_set(SessionSystems));
     }
@@ -298,6 +320,22 @@ fn load_on_request(editor: Option<ResMut<EditorState>>, host: Option<Res<GameHos
     match host {
         Some(host) if host.request_load() => info!("load requested"),
         _ => warn!("load requested, but no host is running"),
+    }
+}
+
+/// Takes the editor's Regenerate request and passes it, with the editor's
+/// seed, to the host thread.
+fn regenerate_on_request(editor: Option<ResMut<EditorState>>, host: Option<Res<GameHost>>) {
+    let Some(mut editor) = editor else {
+        return;
+    };
+    if !std::mem::take(&mut editor.regenerate_requested) {
+        return;
+    }
+    let seed = editor.seed;
+    match host {
+        Some(host) if host.request_regenerate(seed) => info!(seed, "regenerate requested"),
+        _ => warn!("regenerate requested, but no host is running"),
     }
 }
 
@@ -545,6 +583,71 @@ mod tests {
         let mut other = assets.clone();
         other.worldgen.surface.base_height += 1;
         assert!(start_world(&other, None, &dir.0).is_err());
+    }
+
+    #[test]
+    fn regenerate_request_replaces_world() {
+        let assets = small_assets();
+        let dir = TempDir::new("regenerate");
+        let start = start_world(&assets, None, &dir.0).unwrap();
+        let mut transport = ChannelTransport::new();
+        let endpoint = transport.connect();
+        let handle = spawn_host_thread(start.into_host(Box::new(transport)), HOST_HZ);
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            NetPlugin,
+            ReplicaPlugin,
+            SavePlugin,
+            SessionPlugin,
+        ))
+        .init_resource::<EditorState>()
+        .insert_resource(ClientMaterials(assets.materials.clone()))
+        .insert_resource(HostConnection::new(EndpointLink(endpoint)))
+        .insert_resource(GameHost::new(
+            handle,
+            Arc::new(assets.clone()),
+            dir.0.clone(),
+        ));
+        app.update();
+        let first = generate_world(&assets, DEFAULT_SEED).unwrap().hash();
+        step_until(&mut app, "the join", |app| replica_hash(app) == Some(first));
+
+        // Regenerate from the editor's seed: the replica gets that world.
+        let seed = 5;
+        let regenerated = generate_world(&assets, seed).unwrap().hash();
+        assert_ne!(regenerated, first);
+        {
+            let mut editor = app.world_mut().resource_mut::<EditorState>();
+            editor.seed = seed;
+            editor.regenerate_requested = true;
+        }
+        step_until(&mut app, "the regenerated world", |app| {
+            replica_hash(app) == Some(regenerated)
+        });
+        assert!(
+            !app.world().resource::<EditorState>().regenerate_requested,
+            "taken"
+        );
+
+        // A save now carries the new seed, and the next start loads it.
+        app.world_mut().resource_mut::<EditorState>().save_requested = true;
+        step_until(&mut app, "Saved", |app| {
+            app.world()
+                .resource::<SaveStatus>()
+                .last
+                .as_ref()
+                .is_some_and(|s| s.ok)
+        });
+        assert_eq!(save::read_header(&dir.0).unwrap().seed, seed);
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        assert!(!app.world().resource::<GameHost>().request_regenerate(seed));
+        let again = start_world(&assets, None, &dir.0).unwrap();
+        assert_eq!(again.origin, WorldOrigin::Loaded);
+        assert_eq!(again.host, assets.host_config(seed));
+        assert_eq!(again.world.hash(), regenerated);
     }
 
     #[test]
