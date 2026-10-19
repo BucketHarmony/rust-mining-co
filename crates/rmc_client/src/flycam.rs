@@ -12,11 +12,13 @@
 //!   Space up and Left Ctrl down along world Y. Shift multiplies the speed
 //!   by [`FlyCam::fast_multiplier`].
 //! - The mouse turns it: yaw about world Y, pitch clamped to ±[`MAX_PITCH_DEG`],
-//!   no roll.
+//!   no roll. With a [`CursorGrab`](crate::cursor::CursorGrab), only while
+//!   the cursor is grabbed.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 
+use crate::cursor::{CursorGrab, look_allowed};
 use crate::render::GameCamera;
 
 /// Turns the fly camera on and off.
@@ -102,13 +104,18 @@ fn fly_camera(
     fly: Res<FlyCam>,
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mouse: Option<Res<AccumulatedMouseMotion>>,
+    grab: Option<Res<CursorGrab>>,
     time: Res<Time>,
     mut cameras: Query<&mut Transform, With<GameCamera>>,
 ) {
     if !fly.enabled {
         return;
     }
-    let motion = mouse.map_or(Vec2::ZERO, |m| m.delta);
+    let motion = if look_allowed(grab.as_deref()) {
+        mouse.map_or(Vec2::ZERO, |m| m.delta)
+    } else {
+        Vec2::ZERO
+    };
     let dt = time.delta_secs();
     for mut transform in &mut cameras {
         if motion != Vec2::ZERO {

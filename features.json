@@ -1072,8 +1072,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Nothing in rmc_client sets CursorGrabMode or handles Escape, so mouse look in the windowed game (F077) would spin with a free cursor. New rmc_client::cursor plugin, added by rmc_app's windowed build: the primary window's cursor is Locked (or Confined where Locked is unsupported) and hidden while playing; Escape releases it; a left click in the window grabs it again without swinging; opening the editor (F1) releases it, closing grabs it. Mouse look applies only while grabbed. The test spawns a Window component entity under MinimalPlugins (no OS window, rule 12) and drives keys and EditorState."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Nothing in rmc_client sets CursorGrabMode or handles Escape, so mouse look in the windowed game (F077) would spin with a free cursor. New rmc_client::cursor plugin, added by rmc_app's windowed build: the primary window's cursor is Locked (or Confined where Locked is unsupported) and hidden while playing; Escape releases it; a left click in the window grabs it again without swinging; opening the editor (F1) releases it, closing grabs it. Mouse look applies only while grabbed. The test spawns a Window component entity under MinimalPlugins (no OS window, rule 12) and drives keys and EditorState.",
+      "passedAt": "2026-10-19T13:48:20Z"
     },
     {
       "id": "F092",

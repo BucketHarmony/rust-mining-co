@@ -21,9 +21,9 @@ use bevy::transform::TransformPlugin;
 use bevy::window::{ExitCondition, WindowPlugin};
 use rmc_client::controller::Player;
 use rmc_client::{
-    CameraStart, ClientMaterials, ControllerPlugin, EditorPanelPlugin, EditorPlugin, FlyCamPlugin,
-    FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe,
-    PickaxePlugin, Replica, ReplicaPlugin, SavePlugin,
+    CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
+    FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
+    NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin,
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
 use rmc_protocol::ServerMsg;
@@ -61,8 +61,8 @@ impl GameConfig {
 }
 
 /// The game: the host thread and the client app. `windowed` builds
-/// `DefaultPlugins` with a primary window and the editor's egui panel;
-/// otherwise the app has no window and does not render.
+/// `DefaultPlugins` with a primary window, the editor's egui panel and the
+/// cursor grab; otherwise the app has no window and does not render.
 ///
 /// The app is returned unfinished; `App::run` finishes it, and a caller
 /// that updates it by hand finishes it first.
@@ -104,7 +104,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             SpawnPlugin,
         ));
     if windowed {
-        app.add_plugins(EditorPanelPlugin);
+        app.add_plugins((EditorPanelPlugin, CursorPlugin));
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))
         .insert_resource(Pickaxe(assets.tools.pickaxe))

@@ -21,7 +21,9 @@
 //!   beyond reach sends nothing and does not restart the interval.
 //! - Releasing the button does not reset the interval.
 //! - While the fly camera is on, or the editor is open (the left button
-//!   then applies the brush), the pickaxe does not swing.
+//!   then applies the brush), the pickaxe does not swing. Nor while a
+//!   [`CursorGrab`] is released, or on the press that grabbed it, until
+//!   the button is let go.
 
 use std::time::Duration;
 
@@ -32,6 +34,7 @@ use rmc_world::world::World;
 use rmc_world::{Hit, ToolProfile, raycast};
 
 use crate::controller::{ControllerSystems, Player};
+use crate::cursor::{CursorGrab, swing_allowed};
 use crate::editor::EditorState;
 use crate::flycam::FlyCam;
 use crate::net::{CommandSeq, ToHost};
@@ -134,6 +137,7 @@ fn swing(
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     fly: Option<Res<FlyCam>>,
     editor: Option<Res<EditorState>>,
+    grab: Option<Res<CursorGrab>>,
     time: Res<Time>,
     mut state: ResMut<SwingState>,
     mut seq: ResMut<CommandSeq>,
@@ -148,7 +152,11 @@ fn swing(
         *since += time.delta();
     }
     let held = buttons.is_some_and(|b| b.pressed(SWING_BUTTON));
-    if !held || fly.is_some_and(|f| f.enabled) || editor.is_some_and(|e| e.open) {
+    if !held
+        || fly.is_some_and(|f| f.enabled)
+        || editor.is_some_and(|e| e.open)
+        || !swing_allowed(grab.as_deref())
+    {
         return;
     }
     let interval = Duration::from_secs_f32(profile.interval_s);

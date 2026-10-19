@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod controller;
+pub mod cursor;
 pub mod editor;
 pub mod flycam;
 pub mod gizmo;
@@ -20,6 +21,10 @@ pub mod save;
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
     PLAYER_HEIGHT_M, PLAYER_STATE_HZ, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,
+};
+pub use cursor::{
+    CursorGrab, CursorPlugin, CursorSystems, GRAB_BUTTON, GRABBED_MODE, RELEASE_KEY, look_allowed,
+    swing_allowed,
 };
 pub use editor::{
     BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS, EditorAction, EditorPlugin,

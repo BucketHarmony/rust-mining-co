@@ -37,7 +37,8 @@
 //!   cancel and diagonals are as fast as one axis. Shift sprints. Space
 //!   jumps when grounded (held, it jumps again on landing).
 //! - The mouse turns: yaw right for motion right, pitch clamped to
-//!   ±[`MAX_PITCH_DEG`].
+//!   ±[`MAX_PITCH_DEG`]. With a [`CursorGrab`] (the windowed game), only
+//!   while the cursor is grabbed.
 //!
 //! Once joined (a [`Replica`] exists), every third fixed step from the first
 //! ([`PLAYER_STATE_HZ`]) the plugin writes [`ToHost`]`(PlayerState)` with the
@@ -49,6 +50,7 @@ use rmc_protocol::ClientMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::world::World;
 
+use crate::cursor::{CursorGrab, look_allowed};
 use crate::editor::free_feet_near;
 use crate::flycam::{FlyCam, MAX_PITCH_DEG};
 use crate::interp::InterpolatedEye;
@@ -503,11 +505,12 @@ fn report_state(
 fn look_players(
     mouse: Option<Res<AccumulatedMouseMotion>>,
     fly: Option<Res<FlyCam>>,
+    grab: Option<Res<CursorGrab>>,
     config: Res<ControllerConfig>,
     mut players: Query<&mut Player>,
 ) {
     let motion = mouse.map_or(Vec2::ZERO, |m| m.delta);
-    if motion == Vec2::ZERO || fly_cam_on(fly) {
+    if motion == Vec2::ZERO || fly_cam_on(fly) || !look_allowed(grab.as_deref()) {
         return;
     }
     let max = MAX_PITCH_DEG.to_radians();

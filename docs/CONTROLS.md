@@ -17,6 +17,19 @@ test kit. Keys are named by their position on a US layout.
 
 The player climbs a one-cell rise by walking into it; two cells need a jump.
 
+## Cursor
+
+In the game window the cursor is hidden and held in the window while playing,
+and only then does the mouse turn the view.
+
+| Input | Action |
+|---|---|
+| `Escape` | Release the cursor |
+| `Left mouse` | In the window, with the cursor released: grab it again (that click does not swing) |
+
+Opening the editor (F1) releases the cursor for its panel, and closing it
+grabs the cursor again. Switching to another window releases it too.
+
 ## Fly camera
 
 | Input | Action |
