@@ -1346,3 +1346,49 @@ Decisions:
 - Running the E2E with a relative RMC_E2E_OUT writes into tests/e2e/target/ (ignored by git); scripts/e2e.sh uses an absolute path.
 Next: M7 is complete; the M7 playtester report follows. Then F080 (ChaosBot, soak_chaos).
 Blockers: none.
+
+## 2026-10-19 12:25 — F080 ChaosBot and soak_chaos E2E — passed
+Done:
+- `rmc_testkit::bots::ChaosBot { seed, frames }` with `ChaosAction` (Walk, Look, Dig, Place, Jump) and `ChaosReport`:
+  - It plays only through injected input, like the other bots.
+  - Actions come from a shuffled bag of all five kinds, refilled when empty, so every kind runs at least once in any ten actions in a row.
+  - Walk holds a random mix of W/S, A/D and sometimes Shift, with a slow view drift. Look turns to a random yaw and pitch over 5–30 frames. Dig looks down a random amount and holds the swing button, sometimes walking forward.
+  - Place opens the editor (F1), picks Set and a random shape (Cell, or Box and Sphere at the default size 1), sometimes picks the next material, clicks the brush 1–3 times at random spots, then closes the editor.
+  - Jump holds Space for 1–12 frames, sometimes walking forward, then waits up to 60 frames to land.
+  - Randomness is a local SplitMix64 seeded from `seed`, so no new crate was added.
+  - The run takes exactly `frames` timed steps. Cleanup steps after that (let go of every input, close the editor) are counted separately.
+  - The report records: the actions, swings, brush clicks, jumps, frames where the player's box overlaps a blocking cell (penetrating frames), and each step's wall time with `step_time_percentile(q)`.
+- New scenario tests/e2e/tests/soak_chaos.rs:
+  - Setup: the default world at 320×180. `RMC_SOAK_SEED` seeds both the world and the bot (default 1); `RMC_SOAK_FRAMES` sets the length (default 3600). The player spawns on the middle column.
+  - Asserts:
+    - the bot ran every frame;
+    - for a full-length run, every action kind ran, the pickaxe swung, the brush clicked and the host world changed;
+    - the editor is closed at the end;
+    - the mesh queue drains (idle, nothing awaiting upload, no dirty replica chunk) within 600 steps;
+    - the host and replica hashes are equal;
+    - no render failure.
+  - Records the step-time p50, p95 and max against the 33 ms target to `target/e2e/soak_chaos-stats.txt` and stderr. The target is not asserted (SAD §12.4).
+  - Screenshots are saved at spawn and at the end; a failure screenshot comes from `run_scenario`.
+- `scripts/soak.sh` now has a scenario to run.
+Tests added:
+- e2e:soak_chaos. It first failed to compile because ChaosBot and ChaosAction did not exist yet.
+  - Seed 1, 3600 frames, run twice on WARP with the same outcome: 82 actions (Walk 17, Look 16, Dig 16, Place 17, Jump 16), 38 swings, 35 brush clicks, 16 jumps, 0 penetrating frames, feet ending at (56.9, 46.5, 91.2).
+  - Step time p50 285 ms, p95 379 ms, max 549 ms, over the 33 ms target (WARP software rendering).
+  - Each run takes about 19–22 minutes.
+- bots::tests::chaos_bot_plays_every_action_reproducibly (logic only, about 1 s). Over 900 frames from the bot course it checks:
+  - the frame count is exact;
+  - every action kind ran, and each block of five actions holds one of each;
+  - swings, brush clicks and jumps happened, the player moved and the world changed;
+  - the percentiles are ordered;
+  - no key or button is still held and the editor is closed;
+  - the host and replica hashes match;
+  - the same seed gives the same actions, counts, end feet and host hash, and another seed gives different actions.
+- Reviewer: PASS with no gaps. Following its note, the unit test now asserts that the chaos changes the world.
+Decisions:
+- The soak uses the default world (the real game). A 128³ world cut the WARP step time only from about 280 ms to 205 ms, because most of the cost is fixed per frame, so the smaller world was not worth the loss of coverage.
+- The p95 is recorded, not asserted, on every adapter. SAD gives the target for lavapipe and says not to assert it on CI. WARP is about 10× over.
+- ChaosBot does not fail on penetration; it counts the frames. Chaos placing near the player is in scope, and the host already skips cells in player boxes.
+- The full-length assertions (every action kind ran, the world changed) apply only when `RMC_SOAK_FRAMES` ≥ 3600, so short manual soaks only check the SAD invariants.
+- Screenshots were not re-shot with screens.sh, because that would have been a third 20-minute soak. docs/screens/soak_chaos-66.png and -3672.png are the PNGs from the pass-feature run of the same scenario, copied as screens.sh does after it clears the old ones.
+Next: F081 (criterion benches).
+Blockers: none.
