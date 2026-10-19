@@ -936,3 +936,42 @@ Decisions:
   - Meshed: faint green (alpha 0.15), the resting state, so pending chunks stand out.
 Next: F074 (E2E: place_and_climb and editor_brush_sphere). F075 is also unblocked.
 Blockers: none.
+
+## 2026-10-19 04:10 — F074 E2E: place_and_climb and editor_brush_sphere — passed
+Done:
+- rmc_testkit::bots:
+  - New `BuilderBot { side }` (SAD §12.3).
+    - Lays out a side × side platform, one cell high, on the layer the feet stand in. It starts one cell (BUILD_GAP_CELLS) past the layer holding the box's front, and is centered across the heading (the yaw snapped to an axis).
+    - Drives the editor with keys only: F1, 1 (Set), 4 (Cell). It checks EditorState afterwards.
+    - Places each cell with one click at the middle of the top face of the cell under it. Before each click it checks that `brush_target(Set, raycast)` is that cell; afterwards it waits for the replica to show it.
+    - Closes the editor with F1 and walks until the feet pass the platform's middle on the heading.
+  - New `BuildReport`, a pub `look_at(t, point)`, and a private `tap(t, key)`.
+  - New BotError variants: NoRoom, EditorKeys, NoBrushMaterial, BrushMisaimed, Unplaced.
+- tests/e2e/tests/place_and_climb.rs: on a cleared course, BuilderBot(3) builds and climbs. The scenario asserts:
+  - the editor ends Set/Cell and closed;
+  - 9 distinct cells of the default `placeable` material (brass_plate) form a 3 × 3 × 1 slab on the floor, ahead of the start, with nothing else placed around it, on both host and replica;
+  - the player is grounded on top, with the box's footprint inside the platform and no penetration;
+  - the host and replica hashes are equal.
+  - Screenshot: turned around, looking down at the platform.
+- tests/e2e/tests/editor_brush_sphere.rs: keys only (F1, 2, 6, `]` ×3, F3) give Remove/Sphere/size 4 with the targeted-cell gizmo on. The player aims at a stone block's face, and the gizmo shows target = hit = AIM with normal +Z. One click then:
+  - clears exactly the block's half of the sphere: 153 of 257 cells. The test checks this against Shape::cells, against a brute-force hand count, against the solid count near AIM before and after, and by the block count;
+  - leaves those cells as Air on host and replica;
+  - starts ≥ 1 remesh job and ≥ 1 upload;
+  - leaves the host and replica hashes equal.
+  - Before and after screenshots show the crater and the gizmo.
+Tests added:
+- e2e:place_and_climb and e2e:editor_brush_sphere. Both first failed to compile: no BuilderBot / look_at.
+- bots::tests::builder_bot_places_and_climbs (logic-only):
+  - checks the exact cells, the placing order and the material (`editor::default_material`);
+  - checks that the bot ends on top past the middle;
+  - checks the NoRoom error when the platform would go into the wall.
+  - Its first run failed on a wrong expected middle in the test itself (25.0 instead of 25.25 m). That was fixed before any commit.
+Decisions:
+- "Climb" means walking onto a one-cell platform using the controller's auto step-up (SAD §11.4), with no jump. A 3 × 3 platform is placed as 9 Cell-brush clicks, not as one Box brush (a Box of size 1 is a 3 × 3 × 3 cube, not a platform).
+- Placing order is far row first, then outer columns before the middle, so a placed cell never blocks a later aim ray. The aim is still verified before every click.
+- The bot uses whatever brush material the editor holds (by default the first `placeable`). It never picks a material by key (rule 5). The e2e test, being a test, asserts the key brass_plate.
+- Reviewer: PASS. Its suggestion to pin the sphere count independently of Shape was taken (the hand count above). Left as is:
+  - The course's "stone" is the first plain diggable solid, which renders as topsoil. This is cosmetic, and step_up does the same.
+  - BuilderBot does not check headroom above the platform; a low ceiling shows up as Stuck.
+Next: F075 (save/load roundtrip), then F076, F077.
+Blockers: none.
