@@ -15,7 +15,8 @@
 //!   [`CameraStart`].
 //! - Lighting: a [`Sun`] (directional, with shadows), a high
 //!   `GlobalAmbientLight` so caves stay readable, and a [`Lantern`] point
-//!   light that moves with the camera, and a sky-blue `ClearColor`.
+//!   light that moves with the camera, carried behind the eye so a wall
+//!   right in front is not blown out, and a sky-blue `ClearColor`.
 //!
 //! Without `Assets<StandardMaterial>` (a logic-only app) there is no
 //! material; the camera and lights are spawned all the same, so systems that
@@ -42,8 +43,21 @@ pub const AMBIENT_BRIGHTNESS: f32 = 1200.0;
 pub const SUN_ILLUMINANCE: f32 = 8_000.0;
 
 /// The lantern's luminous power, in lumens, and its range in meters.
-pub const LANTERN_LUMENS: f32 = 400_000.0;
+///
+/// Light falls off with the square of the distance, so a lantern at the eye
+/// blows out a wall the player stands against (F087: basalt read near-white
+/// at 0.3 m with 400,000 lm). The lantern is carried
+/// [`LANTERN_OFFSET_M`] behind the eye instead, which caps how much closer
+/// a wall in front can get to it, and is dim enough that at 1.5 m it adds
+/// about a quarter of the ambient light: close rock is lit at most ~1.4 ×
+/// as brightly as rock at 1.5 m, and dark rock stays dark.
+pub const LANTERN_LUMENS: f32 = 160_000.0;
 pub const LANTERN_RANGE_M: f32 = 24.0;
+
+/// Where the lantern hangs relative to the camera, in the camera's frame
+/// (-Z is forward): 2 m behind the eye and 0.3 m above it. It casts no
+/// shadows, so the rock behind a player does not block it.
+pub const LANTERN_OFFSET_M: Vec3 = Vec3::new(0.0, 0.3, 2.0);
 
 /// Shadows are drawn this far from the camera, in meters.
 pub const SHADOW_DISTANCE_M: f32 = 96.0;
@@ -161,7 +175,7 @@ fn spawn_camera(mut commands: Commands, start: Res<CameraStart>) {
                 shadow_maps_enabled: false,
                 ..default()
             },
-            Transform::default(),
+            Transform::from_translation(LANTERN_OFFSET_M),
         )],
     ));
 }
@@ -188,6 +202,27 @@ fn spawn_sun(mut commands: Commands) {
             0.0,
         )),
     ));
+}
+
+/// The illuminance, in lux, that `light` at `light_pos` lights a surface at
+/// `point` facing along `normal` with, as Bevy's clustered point light
+/// computes it: luminous intensity (lumens / 4π) over the squared distance,
+/// times the smooth range falloff, times N·L.
+pub fn point_light_lux(light: &PointLight, light_pos: Vec3, point: Vec3, normal: Vec3) -> f32 {
+    let to_light = light_pos - point;
+    let distance_sq = to_light.length_squared().max(1e-4);
+    let falloff = (1.0 - (distance_sq / (light.range * light.range)).powi(2))
+        .clamp(0.0, 1.0)
+        .powi(2);
+    let n_dot_l = normal.normalize().dot(to_light.normalize()).max(0.0);
+    light.intensity / (4.0 * std::f32::consts::PI) * falloff / distance_sq * n_dot_l
+}
+
+/// The illuminance, in lux, that a light would need to make a surface as
+/// bright as ambient light of `brightness` (cd/m²) does: Bevy adds
+/// albedo × brightness for ambient light and albedo × E / π for a light.
+pub fn ambient_equivalent_lux(brightness: f32) -> f32 {
+    brightness * std::f32::consts::PI
 }
 
 /// Chunk meshes that have neither chunk material yet.
@@ -364,5 +399,80 @@ mod tests {
         let ambient = world.resource::<GlobalAmbientLight>();
         assert!(ambient.brightness > GlobalAmbientLight::default().brightness * 10.0);
         assert_eq!(world.resource::<ClearColor>().0, SKY_COLOR);
+    }
+
+    #[test]
+    fn lantern_is_soft_at_close_range() {
+        let mut app = render_app(false);
+        let world = app.world_mut();
+        let camera = world
+            .query_filtered::<&Transform, With<GameCamera>>()
+            .single(world)
+            .copied()
+            .expect("one game camera");
+        let (light, local) = world
+            .query_filtered::<(&PointLight, &Transform), With<Lantern>>()
+            .single(world)
+            .map(|(l, t)| (*l, *t))
+            .expect("one lantern");
+        let light_pos = camera.mul_transform(local).translation;
+        let forward = camera.forward().as_vec3();
+        let ambient = ambient_equivalent_lux(world.resource::<GlobalAmbientLight>().brightness);
+
+        // A wall facing the camera `d` meters in front of it: what the
+        // lantern and the ambient light light it with.
+        let lantern = |d: f32| {
+            point_light_lux(
+                &light,
+                light_pos,
+                camera.translation + forward * d,
+                -forward,
+            )
+        };
+        let total = |d: f32| ambient + lantern(d);
+
+        // From the near plane (0.1 m) to the reading distance, the wall is
+        // never more than MAX_CLOSE_GAIN times as lit as at 1.5 m. (1.5 in
+        // linear light is about 1.2 in sRGB bytes, under the 1.25 the
+        // lantern_close_wall scenario allows.)
+        const MAX_CLOSE_GAIN: f32 = 1.5;
+        let reading = total(1.5);
+        for cm in 10..=150u16 {
+            let d = f32::from(cm) / 100.0;
+            assert!(
+                total(d) <= MAX_CLOSE_GAIN * reading,
+                "at {d} m the wall gets {:.0} lx, over {MAX_CLOSE_GAIN} × the {reading:.0} lx at 1.5 m",
+                total(d)
+            );
+        }
+
+        // It is still a lantern: at the reading distance it adds at least a
+        // quarter of the ambient light, it fades with distance, and nothing
+        // past its range.
+        assert!(
+            lantern(1.5) >= ambient / 4.0,
+            "the lantern adds {:.0} lx at 1.5 m, ambient is {ambient:.0} lx",
+            lantern(1.5)
+        );
+        assert!(lantern(1.5) > lantern(4.0) && lantern(4.0) > lantern(10.0));
+        assert_eq!(lantern(LANTERN_RANGE_M + 1.0), 0.0);
+        // Up close the light comes from behind the eye, not from the eye.
+        assert!(
+            (light_pos - camera.translation).dot(forward) < 0.0,
+            "the lantern is carried behind the camera"
+        );
+
+        // The formula: a 4π-lumen bare light 1 m away lights a facing
+        // surface with 1 lx, 2 m away with 1/4 lx, and a surface turned
+        // away with nothing.
+        let unit = PointLight {
+            intensity: 4.0 * std::f32::consts::PI,
+            range: 100.0,
+            ..default()
+        };
+        let lux = |p: Vec3, n: Vec3| point_light_lux(&unit, Vec3::ZERO, p, n);
+        assert!((lux(Vec3::X, Vec3::NEG_X) - 1.0).abs() < 1e-3);
+        assert!((lux(Vec3::X * 2.0, Vec3::NEG_X) - 0.25).abs() < 1e-3);
+        assert_eq!(lux(Vec3::X, Vec3::X), 0.0);
     }
 }

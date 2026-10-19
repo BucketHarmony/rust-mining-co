@@ -1002,8 +1002,9 @@
       ],
       "e2e": true,
       "review": true,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. LANTERN_LUMENS is 400,000 with inverse-square falloff plus HDR bloom. Basalt (base color 62,62,70) renders pale lavender at 1.4 m and near-white at 0.2-0.3 m, and the label and crosshair become unreadable; facing a rock wall is the main view of this game. Fix with some combination of lower intensity, a larger light radius, and an exposure or bloom setting; the SAD fixes only that there is a lantern and bloom, and caves must stay readable. lantern_close_wall: face a basalt wall at 0.3 m and at 1.5 m and a light (topsoil) wall at 1.5 m. Assert that the mean luminance of the center block at 0.3 m is at most 1.25 times that at 1.5 m, that basalt stays darker than topsoil at the same distance, and that the 0.3 m frame is not near-white (center mean below a ceiling that the session derives and records). Re-shoot dig_tunnel's tunnel view."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. LANTERN_LUMENS is 400,000 with inverse-square falloff plus HDR bloom. Basalt (base color 62,62,70) renders pale lavender at 1.4 m and near-white at 0.2-0.3 m, and the label and crosshair become unreadable; facing a rock wall is the main view of this game. Fix with some combination of lower intensity, a larger light radius, and an exposure or bloom setting; the SAD fixes only that there is a lantern and bloom, and caves must stay readable. lantern_close_wall: face a basalt wall at 0.3 m and at 1.5 m and a light (topsoil) wall at 1.5 m. Assert that the mean luminance of the center block at 0.3 m is at most 1.25 times that at 1.5 m, that basalt stays darker than topsoil at the same distance, and that the 0.3 m frame is not near-white (center mean below a ceiling that the session derives and records). Re-shoot dig_tunnel's tunnel view.",
+      "passedAt": "2026-10-19T06:58:05Z"
     },
     {
       "id": "F088",
