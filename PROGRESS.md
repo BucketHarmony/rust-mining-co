@@ -1392,3 +1392,23 @@ Decisions:
 - Screenshots were not re-shot with screens.sh, because that would have been a third 20-minute soak. docs/screens/soak_chaos-66.png and -3672.png are the PNGs from the pass-feature run of the same scenario, copied as screens.sh does after it clears the old ones.
 Next: F081 (criterion benches).
 Blockers: none.
+
+## 2026-10-19 14:40 — F081 Criterion benches: mesh_chunk, gen_world, host_tick_100, palette_set_get; results in docs/perf.md — passed
+Done:
+- Four criterion benches (`harness = false`, criterion 0.8.2 already pinned in the workspace), each in the crate whose code it measures:
+  - `rmc_client/benches/mesh_chunk.rs`: `GreedyMesher` on the default world's surface chunk at the center column (seed 45, shipped worldgen.ron), border included. rmc_client gains rmc_worldgen as a dev-dependency to generate it.
+  - `rmc_worldgen/benches/gen_world.rs`: `Generator::new` + `generate_world` for the 256-chunk default world. 10 samples over 30 s.
+  - `rmc_host/benches/host_tick_100.rs`: one `Host::tick` handling 100 single-cell edits from a joined client on the default world. Iterations alternate Set (first `placeable`-tagged material, found by tag) and Remove on the same 100 cells, so every edit changes a cell. Only the tick is timed (`iter_custom`); sending and draining are outside.
+  - `rmc_world/benches/palette_set_get.rs`: 4096 scattered writes of 20 materials into a uniform chunk (promotes through 1/2/4/8-bit palettes), then 32768 reads.
+- docs/perf.md: results table plus the state of the other §13 targets.
+- Results (release, i9-12900KF): mesh_chunk 1.68 ms (target < 2 ms), gen_world 241 ms (< 3 s), host_tick_100 61 µs (< 2 ms), palette_set_get 542 µs (no target).
+Tests added:
+- bench_smoke::tests::benches_compile (rmc_world, `#[cfg(test)]` module). For each bench it checks that the crate has the criterion dev-dependency, a `[[bench]]` table with that name and `harness = false`, a `benches/<name>.rs` with `criterion_main!` registering that name, and a docs/perf.md row with a number. It first failed because docs/perf.md did not exist.
+- The benches themselves are compiled by `cargo clippy/test --all-targets` (the commit gate), and criterion runs each once in test mode under `cargo test --all-targets`. All four print "Success" in test mode, including with the `--exact … --include-ignored` args verify-features.sh passes.
+Decisions:
+- "benches_compile" cannot build the other crates' benches from inside rmc_world (rmc_world cannot depend on them), so the test checks the wiring and the recorded results. The compile itself is enforced by `--all-targets` in the commit gate.
+- Benches use the shipped assets and the real default world rather than synthetic chunks, so the numbers are what the game sees.
+- mesh_chunk meets 2 ms with about 15% margin on this CPU; F082 decides whether the mesher needs work (its note covers binary-greedy-meshing).
+- Frame rate and mesh memory are not measured here (no GPU in the session; `MeshStats::mesh_bytes` is not yet in the stats panel). docs/perf.md says so and points to F082.
+Next: F082 (performance pass, initial-load upload burst) is unblocked; F083 (CI) is also unblocked.
+Blockers: none.
