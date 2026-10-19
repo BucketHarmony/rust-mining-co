@@ -99,6 +99,12 @@ impl Host {
         self
     }
 
+    /// Points `SaveRequest` at `save` from now on; `None` refuses every
+    /// save.
+    pub fn set_save(&mut self, save: Option<SaveConfig>) {
+        self.save = save;
+    }
+
     /// Drains the inbound messages and handles each in arrival order.
     pub fn tick(&mut self) {
         for (player, msg) in self.transport.recv() {
@@ -1530,5 +1536,44 @@ mod tests {
         assert!(
             matches!(to_c[0], ServerMsg::Welcome { seed: 77, bounds: got, .. } if got == bounds)
         );
+    }
+
+    #[test]
+    fn set_save_redirects_save_requests() {
+        let tmp = TempDir::new("set_save");
+        let (first, second) = (tmp.0.join("first"), tmp.0.join("second"));
+        let mut transport = ChannelTransport::new();
+        let a = transport.connect();
+        let mut host = Host::new(test_world(), CONFIG, Box::new(transport));
+        a.send(hello(host.world())).unwrap();
+        host.tick();
+        assert_join(&host, a.player(), &a.drain());
+
+        let request = |host: &mut Host| {
+            a.send(ClientMsg::SaveRequest).unwrap();
+            host.tick();
+            a.drain()
+        };
+        // No save directory: refused.
+        assert_eq!(
+            request(&mut host),
+            vec![saved(false, std::path::Path::new(""))]
+        );
+
+        host.set_save(Some(save_config(&first)));
+        assert_eq!(request(&mut host), vec![saved(true, &first)]);
+        assert!(first.join(rmc_world::save::HEADER_FILE).is_file());
+
+        host.set_save(Some(save_config(&second)));
+        assert_eq!(request(&mut host), vec![saved(true, &second)]);
+        assert!(second.join(rmc_world::save::HEADER_FILE).is_file());
+        assert!(host.save().is_ok(), "Host::save follows it too");
+
+        host.set_save(None);
+        assert_eq!(
+            request(&mut host),
+            vec![saved(false, std::path::Path::new(""))]
+        );
+        assert!(matches!(host.save(), Err(HostSaveError::NoSaveDir)));
     }
 }

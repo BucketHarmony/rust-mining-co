@@ -3,7 +3,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 
-use image::RgbaImage;
+use image::{DynamicImage, RgbaImage};
+use image_compare::Algorithm;
 
 use crate::app::TestApp;
 
@@ -26,6 +27,19 @@ pub fn save_screenshot(image: &RgbaImage, name: &str, step: u32) -> PathBuf {
         .save(&path)
         .unwrap_or_else(|e| panic!("save {}: {e}", path.display()));
     path
+}
+
+/// How far apart two screenshots of the same size are: the root mean
+/// square difference of the worst RGB channel, normalized to 0..=1
+/// (image-compare's RMS, SAD §12.4). Alpha is ignored. 0 is identical.
+///
+/// Panics if the sizes differ.
+pub fn rms(a: &RgbaImage, b: &RgbaImage) -> f64 {
+    let rgb = |i: &RgbaImage| DynamicImage::ImageRgba8(i.clone()).to_rgb8();
+    let similarity =
+        image_compare::rgb_similarity_structure(&Algorithm::RootMeanSquared, &rgb(a), &rgb(b))
+            .unwrap_or_else(|e| panic!("comparing screenshots: {e}"));
+    1.0 - similarity.score
 }
 
 /// Runs a scenario's `body` on `t`. If it panics, saves what the camera
@@ -66,6 +80,30 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn rms_measures_difference() {
+        let black = RgbaImage::from_pixel(20, 10, image::Rgba([0, 0, 0, 255]));
+        assert_eq!(rms(&black, &black), 0.0);
+        let mut white = black.clone();
+        for p in white.pixels_mut() {
+            *p = image::Rgba([255, 255, 255, 0]);
+        }
+        assert!((rms(&black, &white) - 1.0).abs() < 1e-9, "alpha ignored");
+
+        // A tenth of the pixels fully off in red only: sqrt(0.1).
+        let mut part = black.clone();
+        for x in 0..2 {
+            for y in 0..10 {
+                part.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+        assert!((rms(&black, &part) - 0.1f64.sqrt()).abs() < 1e-6);
+        assert_eq!(rms(&black, &part), rms(&part, &black));
+        // Every pixel off by 51 (a fifth) in every channel: 0.2.
+        let gray = RgbaImage::from_pixel(20, 10, image::Rgba([51, 51, 51, 255]));
+        assert!((rms(&black, &gray) - 0.2).abs() < 1e-6);
     }
 
     #[test]

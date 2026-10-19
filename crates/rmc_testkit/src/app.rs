@@ -21,19 +21,25 @@ use bevy::winit::WinitPlugin;
 use rmc_client::{
     CameraStart, ClientInventory, ClientMaterials, ControllerPlugin, EditorPlugin, EditorState,
     FlyCamPlugin, GameCamera, GameRenderPlugin, HostConnection, HostLink, HudPlugin, HudState,
-    MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, SavePlugin, ToHost,
+    MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, SaveOutcome, SavePlugin,
+    SaveStatus, ToHost,
 };
-use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
+use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
 use rmc_world::coords::CellAabb;
 use rmc_world::edit::PlayerId;
 use rmc_world::inventory::Inventory;
 use rmc_world::materials::MaterialTable;
+use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::GenParams;
-use rmc_worldgen::Generator;
 use rmc_worldgen::params::WorldBounds;
+use rmc_worldgen::{Generator, NOISE_CRATE_VERSION};
+
+/// How many steps [`TestApp::save`] waits for the host's answer. It
+/// normally arrives two steps after the request.
+pub const MAX_SAVE_STEPS: u32 = 10;
 
 /// Frames per second of [`TestApp::step`].
 pub const FRAME_HZ: f64 = 60.0;
@@ -96,15 +102,88 @@ impl TestApp {
     ///
     /// Panics if the assets do not load or no render adapter is found.
     pub fn new(config: TestConfig) -> Self {
-        let materials = Arc::new(
-            MaterialTable::load(asset_path("materials.ron")).expect("assets/materials.ron loads"),
+        let materials = load_materials();
+        let params = gen_params(&config);
+        let world = generate_world(&config, &params, &materials);
+        Self::with_world(config, world, host_config(&config, &params), None)
+    }
+
+    /// Like [`TestApp::new`], but the host starts with the save in `dir`
+    /// (SAD §10 load: the world generated from `config.seed` and
+    /// `config.world_bounds`, then overwritten by the saved chunks), and
+    /// later saves go back to `dir`.
+    ///
+    /// Panics if the save does not load; see [`TestApp::try_load`].
+    pub fn load(dir: impl AsRef<Path>, config: TestConfig) -> Self {
+        let dir = dir.as_ref();
+        Self::try_load(dir, config)
+            .unwrap_or_else(|e| panic!("loading the save in {}: {e}", dir.display()))
+    }
+
+    /// [`TestApp::load`], failing if the save's header does not match what
+    /// `config` and `assets/` build (seed, bounds, material table, worldgen
+    /// parameters, noise crate) or a saved chunk is bad.
+    pub fn try_load(dir: impl AsRef<Path>, config: TestConfig) -> Result<Self, SaveError> {
+        let dir = dir.as_ref();
+        let materials = load_materials();
+        let params = gen_params(&config);
+        let host_config = host_config(&config, &params);
+        let header = SaveHeader::new(
+            config.seed,
+            config.world_bounds,
+            materials.hash(),
+            host_config.gen_params_hash,
+            NOISE_CRATE_VERSION,
         );
+        let world = save::load(dir, &header, || {
+            generate_world(&config, &params, &materials)
+        })?;
+        Ok(Self::with_world(
+            config,
+            world,
+            host_config,
+            Some(save_config(dir)),
+        ))
+    }
+
+    /// Saves the host's world into `dir` the way the game does: the host's
+    /// save directory becomes `dir`, the editor's Save action is raised
+    /// (as F5 or the panel's button do), and the app steps until the
+    /// client has the host's `Saved` answer, which is returned. Every edit
+    /// sent before the call is in the save.
+    ///
+    /// Panics if no answer arrives within [`MAX_SAVE_STEPS`] steps.
+    pub fn save(&mut self, dir: impl AsRef<Path>) -> SaveOutcome {
+        self.host.set_save(Some(save_config(dir.as_ref())));
+        let requested = self.app.world().resource::<SaveStatus>().requested;
+        self.editor().save_requested = true;
+        for _ in 0..MAX_SAVE_STEPS {
+            self.step();
+            let status = self.app.world().resource::<SaveStatus>();
+            if status.requested > requested
+                && status.pending == 0
+                && let Some(outcome) = status.last.clone()
+            {
+                return outcome;
+            }
+        }
+        panic!("no Saved answer within {MAX_SAVE_STEPS} steps");
+    }
+
+    /// The host and client app for `world`, booted (see [`TestApp::new`]).
+    fn with_world(
+        config: TestConfig,
+        world: CellWorld,
+        host_config: HostConfig,
+        save: Option<SaveConfig>,
+    ) -> Self {
+        let materials = world.materials().clone();
         let tools = ToolTable::load(asset_path("tools.ron")).expect("assets/tools.ron loads");
-        let (world, host_config) = generate_world(&config, &materials);
         let mut transport = ChannelTransport::new();
         let endpoint = transport.connect();
         let player = endpoint.player();
-        let host = Host::new(world, host_config, Box::new(transport));
+        let mut host = Host::new(world, host_config, Box::new(transport));
+        host.set_save(save);
 
         let mut app = App::new();
         if config.render {
@@ -247,10 +326,13 @@ fn asset_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The host's world: `assets/worldgen.ron` with its bounds replaced by
-/// `config.world_bounds` (so the bedrock shell follows them), every chunk
-/// in the bounds generated and inserted.
-fn generate_world(config: &TestConfig, materials: &Arc<MaterialTable>) -> (CellWorld, HostConfig) {
+fn load_materials() -> Arc<MaterialTable> {
+    Arc::new(MaterialTable::load(asset_path("materials.ron")).expect("assets/materials.ron loads"))
+}
+
+/// `assets/worldgen.ron` with its bounds replaced by `config.world_bounds`
+/// (so the bedrock shell follows them).
+fn gen_params(config: &TestConfig) -> GenParams {
     let mut params =
         GenParams::load(asset_path("worldgen.ron")).expect("assets/worldgen.ron loads");
     let bounds = config.world_bounds;
@@ -258,19 +340,41 @@ fn generate_world(config: &TestConfig, materials: &Arc<MaterialTable>) -> (CellW
         min: bounds.min.0.to_array(),
         max: bounds.max.0.to_array(),
     };
+    params
+}
+
+/// The host's world: every chunk in the bounds of `params`, generated from
+/// `config.seed` and inserted.
+fn generate_world(
+    config: &TestConfig,
+    params: &GenParams,
+    materials: &Arc<MaterialTable>,
+) -> CellWorld {
     let generator =
-        Generator::new(config.seed, &params, materials).expect("worldgen params fit the table");
-    let mut world = CellWorld::new(materials.clone(), bounds);
+        Generator::new(config.seed, params, materials).expect("worldgen params fit the table");
+    let mut world = CellWorld::new(materials.clone(), config.world_bounds);
     for (pos, chunk) in generator.generate_world() {
         world
             .insert_chunk(pos, chunk)
             .expect("generated chunks lie in the bounds");
     }
-    let host_config = HostConfig {
+    world
+}
+
+/// The facts `Welcome` reports for the world `params` generates.
+fn host_config(config: &TestConfig, params: &GenParams) -> HostConfig {
+    HostConfig {
         seed: config.seed,
         gen_params_hash: params.hash(),
-    };
-    (world, host_config)
+    }
+}
+
+/// Saves into `dir`, with the header's noise crate as worldgen's.
+fn save_config(dir: &Path) -> SaveConfig {
+    SaveConfig {
+        dir: dir.to_path_buf(),
+        noise_crate_version: NOISE_CRATE_VERSION.to_string(),
+    }
 }
 
 /// `DefaultPlugins` without a window or winit, rendering synchronously.
@@ -586,5 +690,105 @@ mod tests {
             t.host_world().hash(),
             "replica follows edits"
         );
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        use rmc_client::SaveStatus;
+        use rmc_world::save::{HEADER_FILE, HeaderField, SaveError};
+
+        let dir = std::env::temp_dir().join(format!("rmc_testkit_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut t = TestApp::new(logic_config());
+        t.step();
+        let p = t.player_id();
+        let world = t.host_world();
+        let stone = world
+            .materials()
+            .with_tag("stone")
+            .next()
+            .expect("a stone material")
+            .id;
+        let cell = CellPos::new(5, world.bounds().max.0.y, 7);
+        assert_eq!(world.get_cell(cell), Some(MaterialId::AIR));
+        let generated = world.hash();
+        t.send(ClientMsg::Edit(EditCommand {
+            id: CommandId { issuer: p, seq: 0 },
+            issuer: p,
+            op: EditOp::Set(stone),
+            // Sent before the save, so the save holds it.
+            shape: Shape::Cell(cell),
+        }));
+
+        // Saved through the client's SaveRequest; the edit is in it.
+        let requested = t.app().world().resource::<SaveStatus>().requested;
+        let outcome = t.save(&dir);
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.path, dir.display().to_string());
+        assert_eq!(
+            t.app().world().resource::<SaveStatus>().requested,
+            requested + 1,
+            "one request"
+        );
+        assert!(dir.join(HEADER_FILE).is_file());
+        assert_eq!(t.host_world().get_cell(cell), Some(stone));
+        let hash = t.host_world().hash();
+        assert_ne!(hash, generated);
+
+        // The loaded app starts from the save, and its replica joins it.
+        let mut u = TestApp::load(&dir, logic_config());
+        assert_eq!(u.host_world().hash(), hash);
+        assert_eq!(u.host_world().get_cell(cell), Some(stone));
+        u.step();
+        let replica = u.app().world().resource::<Replica>();
+        assert_eq!(replica.world().hash(), hash, "replica of the loaded world");
+
+        // Its F5 saves back to the same directory.
+        u.press(KeyCode::F1);
+        u.step();
+        u.release(KeyCode::F1);
+        u.press(KeyCode::F5);
+        u.steps(3);
+        let status = u.app().world().resource::<SaveStatus>();
+        assert_eq!(
+            status.last.as_ref().map(|o| (o.ok, o.path.clone())),
+            Some((true, dir.display().to_string())),
+            "{status:?}"
+        );
+
+        // A save loads only into what it was made from.
+        let mismatch = |config: TestConfig| match TestApp::try_load(&dir, config) {
+            Err(SaveError::HeaderMismatch { field, .. }) => Some(field),
+            Err(e) => panic!("not a header mismatch: {e}"),
+            Ok(_) => None,
+        };
+        let other_seed = TestConfig {
+            seed: 12,
+            ..logic_config()
+        };
+        assert_eq!(mismatch(other_seed), Some(HeaderField::Seed));
+        let other_bounds = TestConfig {
+            world_bounds: CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 127, 63)),
+            ..logic_config()
+        };
+        assert_eq!(mismatch(other_bounds), Some(HeaderField::Bounds));
+        let missing = dir.join("missing");
+        assert!(matches!(
+            TestApp::try_load(&missing, logic_config()),
+            Err(SaveError::Io { .. })
+        ));
+
+        // A TestApp::new host has no save directory and refuses.
+        let mut v = TestApp::new(logic_config());
+        v.step();
+        let outcome = v.save(&dir);
+        assert!(outcome.ok, "save() points the host at the directory");
+        let mut w = TestApp::new(logic_config());
+        w.step();
+        w.editor().save_requested = true;
+        w.steps(3);
+        let status = w.app().world().resource::<SaveStatus>();
+        assert_eq!(status.last.as_ref().map(|o| o.ok), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -9,7 +9,8 @@ pub mod player;
 pub mod screenshot;
 
 pub use app::{
-    FRAME_HZ, RenderFailure, TestApp, TestCamera, TestConfig, TestRenderTarget, frame_duration,
+    FRAME_HZ, MAX_SAVE_STEPS, RenderFailure, TestApp, TestCamera, TestConfig, TestRenderTarget,
+    frame_duration,
 };
 pub use player::PlayerSnapshot;
 pub use screenshot::{MAX_SCREENSHOT_STEPS, ScreenshotError};
