@@ -1229,3 +1229,32 @@ Decisions:
 - Environment: mid-session, links stalled with Windows Defender busy, and a killed build left a corrupt incremental cache (LNK2001 on anon symbols). `cargo clean -p rmc_client` fixed it; no code change was needed.
 Next: F089 (per-face directional shading) is now unblocked; F090, F091 and F092 are also ready.
 Blockers: none.
+
+## 2026-10-19 07:45 — F089 Terrain depth cues: per-face directional shading baked into vertex colors — passed
+Done:
+- rmc_client::mesher:
+  - New `FACE_SHADES` = [1.0, 0.8, 0.7, 0.55] (top, ±X, ±Z, bottom).
+  - New `face_shade(normal)`. `push_quad` now writes vertex color = linear material color × face shade × AO factor. Alpha (emissive strength) is unchanged.
+- The shade depends only on the normal, and the normal is fixed per meshing pass. The merge key (`FaceKey`) is unchanged, so quad counts are too.
+- Comments updated: the module doc and emissive.wesl. Glowing faces are now darkened by their face shade as well as by AO.
+- docs/SAD.md §11.2: one sentence records the owner's extension.
+Tests added:
+- mesher::tests::face_shade_differs_by_normal. It first failed with "face shade for normal [1, 0, 0]: left 1.0, right 0.8". It checks:
+  - the exact shade for each of the 6 normals;
+  - top > sides, ±X ≠ ±Z, and the bottom is darker than every side;
+  - side vs top is at least 10% apart after the sRGB encode;
+  - for every solid material, the unoccluded corners equal base × shade on all three channels, with alpha = emissive;
+  - AO multiplies on top of the shade, on both a floor and a wall face.
+- mesher::tests::face_shade_keeps_greedy_merging. It checks:
+  - a continuing 32×32 layer is still 2 quads, and a free 32×32×1 slab is still 6;
+  - on a stepped plateau terrain over the whole 34³ input, the quad count per normal equals the count measured before shading (288/295/516/0/287/306 for +X/−X/+Y/−Y/+Z/−Z, taken with every shade at 1.0);
+  - each quad fits one material × one shade × one AO factor per corner.
+- test-fix (commit a6cea6d, before the feature): single_cell_six_quads, slab_2x2_merges and the test helper Quad::level compared vertex colors to the bare material color. They now compare to base × face_shade(normal). That commit added face_shade as 1.0 for every normal, a no-op, so no expected value changed in it.
+- All 14 E2E scenarios pass with the shading (scripts/e2e.sh, WARP). Screenshots were not re-shot: the feature has e2e false.
+Decisions:
+- Shade values: the ones in the feature notes. ±X gets 0.8 and ±Z gets 0.7, so two walls meeting at a corner read apart.
+- The factors multiply the linear color, the same as AO. After the sRGB encode, top vs ±Z is about 1.0 vs 0.85.
+- Emissive faces are shaded too, consistent with how AO already darkens them. F092 (glow) can revisit this if the owner wants glow to be uniform.
+- Shades are render constants in code, next to AO_FACTORS, not RON data. They do not depend on any material.
+Next: F090 (hit feedback), F091 (cursor grab) and F092 (glow) are unblocked.
+Blockers: none.
