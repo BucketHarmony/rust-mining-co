@@ -1061,3 +1061,43 @@ Decisions:
 - Reviewer: PASS, no SAD violations. Its one test weakness (the outline in the control) is fixed as above.
 Next: F077 (rmc_app main: windowed game; `app::build_game_app(cfg, windowed)`, tests game_app_builds_headless and headless_game_joins_and_receives_chunks). F077 completes M7 once F086–F092 also pass.
 Blockers: none.
+
+## 2026-10-19 08:40 — F077 rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run — passed
+Done:
+- rmc_app::app (new):
+  - `GameConfig { assets, seed, save_dir }`; `GameConfig::from_cli(&Cli)` loads the tables from `assets_dir()`.
+  - `build_game_app(config, windowed) -> anyhow::Result<App>`:
+    - windowed: `DefaultPlugins` with `window_plugin()` (title "Rust Mining Co", `OnPrimaryClosed`, close on request) plus `EditorPanelPlugin` (egui + inspector).
+    - headless: `MinimalPlugins + InputPlugin + TransformPlugin`, no window, no rendering.
+    - Then `start_world` (load the save in `--save`, else generate), a `ChannelTransport` host on its own thread at `HOST_HZ` (60), and every client plugin: Net, Replica, MeshPipeline, GameRender, FlyCam, Controller, Pickaxe, Hud, Editor, Save, Session, Spawn.
+    - Resources: `CameraStart::overview`, `ClientMaterials`, `Pickaxe(tools.pickaxe)`, `HostConnection(EndpointLink)`, `GameHost`.
+    - The app is returned unfinished: `App::run` finishes it; tests finish it by hand.
+  - `SpawnPlugin` / `spawn_feet(world)`: once every chunk of the bounds is in the replica, the local `Player` stands on the topmost solid cell of the column at the middle of the bounds (`min + (max - min + 1) / 2`), in the cell's middle. Every `Welcome` (the editor's Load or Regenerate) sets `PendingSpawn`, and the same player is moved back there (`Player::at`, looking along −Z) once the new world is in.
+- main.rs: parses `Cli`, `GameConfig::from_cli`, `build_game_app(_, true).run()`; `AppExit::Error(n)` becomes an error.
+- session.rs: Regenerate (deferred from F075). `GameHost::request_regenerate(seed)` submits a job that generates from `seed` and calls `replace_world` with that seed's HostConfig, so later saves carry the new seed. `regenerate_on_request` takes `EditorState::regenerate_requested` with `EditorState::seed`.
+Tests added:
+- app::tests::game_app_builds_headless (failed first against a stub `bail!`). It checks:
+  - every plugin is added, and there is no WinitPlugin, WindowPlugin or Window entity;
+  - GameHost runs, and the client has ClientMaterials (same hash), Pickaxe, HostConnection and EditorState;
+  - `window_plugin()` fields;
+  - dropping the app saves; a different seed then fails the build with "seed mismatch", and so do other worldgen params;
+  - `from_cli` keeps the seed and save dir.
+- app::tests::headless_game_joins_and_receives_chunks (failed first against the stub). It checks:
+  - all 16 chunks arrive, with the replica hash equal to the generated world's;
+  - one player spawns at the expected surface cell and stands there, grounded, within 2 × SKIN_M;
+  - an edit round-trips through the host thread;
+  - AppExit stops and saves, and a second build loads the edit.
+- app::tests::new_world_re_places_the_player, from the reviewer's gap (failed first: "timed out waiting for the re-placed player"). The player is moved away, then Regenerate (seed 5) puts the same entity back at the spawn with yaw 0. After a save, a move and a Load, it is back again. A move after the world is in sticks.
+- session::tests::regenerate_request_replaces_world (failed first against a stub returning false). The replica gets seed 5's world, the flag is taken, the save header's seed is 5, the next start loads it, and a stopped host refuses.
+Decisions:
+- The game spawns the player itself (no feature did, and TestApp scenarios place their own). Spawn = topmost solid cell of the middle column, after the whole world is resident, so `blocks()` never sees a missing neighbour chunk.
+- After Load or Regenerate the player goes back to the spawn rather than keeping its pose: the save holds no player pose (§10), and a regenerated world can bury or strand the old position.
+- Headless means logic-only (no render plugins), as TestApp's `render: false`. That is what the tests need, and it is what the F108 `--headless --seasons N` path will want.
+- The windowed path was not run (rule 13). It uses the same plugin set as TestApp's rendering app, with WinitPlugin and a primary window, plus the egui panel. Quitting saves via SessionPlugin's `Last` system on AppExit (the window close sends it), with GameHost's Drop as the backstop.
+- HostTickTime (panel stats) is still not fed from the host thread; it shows nothing until something reports it.
+- Reviewer: GAPS. Fixed: the player was not re-placed after a new world. Not acted on:
+  - the egui panel under DefaultPlugins is never exercised by a test (it needs a renderer; e2e territory);
+  - the default ImagePlugin (chunks use vertex colors, no textures);
+  - cursor grab (that is F091).
+Next: F086 (player-overlap safety). Then F087–F092 to finish M7.
+Blockers: none.
