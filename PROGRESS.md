@@ -1258,3 +1258,33 @@ Decisions:
 - Shades are render constants in code, next to AO_FACTORS, not RON data. They do not depend on any material.
 Next: F090 (hit feedback), F091 (cursor grab) and F092 (glow) are unblocked.
 Blockers: none.
+
+## 2026-10-19 09:45 — F090 Hit feedback: every swing and every break gives visible feedback, mirrored in HudState — passed
+Done:
+- rmc_client::hud:
+  - HudState gains `swing_pulse: f32` and `last_break: Option<BreakEffect { cell, material, fade }>`.
+  - Swing pulse: each new swing in `SwingState` starts a pulse that is 1.0 on the swing's frame and falls linearly to 0 over `SWING_PULSE_S` (0.15 s, shorter than the 0.35 s interval). The crosshair arms grow by up to `SWING_PULSE_GROWTH` (60%) and blend toward `SWING_PULSE_COLOR` (warm yellow). The target outline grows by up to `OUTLINE_PULSE_GROWTH` and takes the same color.
+  - Break effect: in `track_host`, an `Applied` `Cells` delta that turns a solid cell into a non-solid one, where the cell is the targeted cell or one in this client's `DamageEstimate`, starts a `BREAK_EFFECT_S` (0.4 s) effect. The material is the cell's replica material before the delta: `track_host` is now ordered `.before(apply_host_messages)`, which is `pub(crate)` for that. When several cells break in one message, the targeted cell wins, else the first in delta order.
+  - Drawn with gizmos (only when the app has them): a white flash outline that grows to 1.5× and fades, plus 8 wireframe chips in the material's color thrown up and out under gravity, fading.
+  - `CrosshairArm { vertical }` marks the two arm nodes; `show_state` sizes and colors them from the pulse.
+- Timing uses `Time::elapsed()` stamps (`Feedback` resource), so a break delivered in PreUpdate shows fade 1.0 that frame.
+Tests added:
+- pickaxe::tests::swing_and_break_trigger_feedback. It first failed with "left: 0.0, right: 1.0" (no pulse on the swing frame). It checks:
+  - before a swing: pulse 0, no break, arms at rest;
+  - the swing frame: pulse exactly 1.0, both arms > 1.25× their rest length; the pulse falls strictly and is 0 within SWING_PULSE_S, and the arms return to rest;
+  - a one-swing topsoil cell: no break until the host's Applied arrives; on that frame last_break = {cell, topsoil, 1.0}, then the fade falls strictly and the effect is gone within BREAK_EFFECT_S;
+  - holding on the stone floor for 3 swings: the frames with a full pulse are exactly the swing frames; the non-breaking answers show no effect, and the breaking one shows {floor cell, stone};
+  - no effect for a removed cell the player neither aimed at nor damaged, or for the targeted cell replaced by another solid; the targeted cell removed by another player shows the effect with the material it held (granite);
+  - with the fly camera on: no swing and no pulse.
+  The pickaxe test Rig gained `with_hud` (adds NetPlugin, ReplicaPlugin, HudPlugin, ClientMaterials), `hud`, `deliver` and `arm_lengths`; the existing tests are unchanged.
+- test-fix (commit 90fc3c0, before the feature): hudstate_reflects_target compares a whole HudState literal. That commit added the two fields as inert defaults, and the literal now lists `swing_pulse: 0.0, last_break: None`. No assertion changed.
+- All 14 E2E scenarios pass with the feedback (scripts/e2e.sh, WARP). Screenshots were not re-shot: the feature has e2e false.
+Decisions:
+- Gizmo-drawn effects (wireframe flash and chips), not meshes or particles: no new crates, no assets, and nothing extra in logic-only apps.
+- Pulse and effect lengths are client render constants in hud.rs, like the existing HUD sizes; they are not RON data (rule 5 concerns material behavior).
+- `Full` deltas and snapshots show no break effect: a pickaxe swing (Cell or a small Sphere) never produces a Full delta.
+- A removal by another player of the cell this player targets also shows the effect. This follows the feature note's "a delta removes the targeted cell".
+- docs/SAD.md was not given an owner's-extension sentence: the project settings deny edits to it. This note records the extension: §11.5's HUD also shows a swing pulse and a break effect, mirrored in HudState.swing_pulse and HudState.last_break.
+- Environment: the first commit attempt timed out in the commit gate (900 s). A `rustc` for the rmc_testkit lib test hung idle for over 20 minutes; a later run died with exit 1 and no diagnostic. After killing it and `cargo clean -p rmc_testkit`, the build and the gate ran normally. No code change was needed.
+Next: F091 (cursor grab) and F092 (glow) are unblocked.
+Blockers: none.
