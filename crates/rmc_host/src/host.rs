@@ -22,6 +22,9 @@
 //! [`SaveConfig`] (SAD §10) right then, after every message that arrived
 //! before it, and the requester alone gets `Saved { ok, path }`. A host
 //! without a save directory answers `Saved { ok: false, path: "" }`.
+//!
+//! [`Host::replace_world`] swaps in another world (a loaded save) and sends
+//! every joined player `Welcome`, the snapshots and its inventory again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -108,6 +111,11 @@ impl Host {
         &self.world
     }
 
+    /// The world facts `Welcome` reports.
+    pub fn config(&self) -> HostConfig {
+        self.config
+    }
+
     /// The transport's arrival signal ([`Transport::wake_signal`]).
     pub fn wake_signal(&self) -> Option<Receiver<()>> {
         self.transport.wake_signal()
@@ -125,6 +133,33 @@ impl Host {
             config.noise_crate_version.clone(),
         );
         Ok(save::save(&config.dir, &header, &self.world)?)
+    }
+
+    /// Replaces the world (a loaded save, say) and the facts `Welcome`
+    /// reports. Every joined player, ascending, then gets `Welcome` and a
+    /// snapshot of every resident chunk, as on a join, so its replica is
+    /// rebuilt from the new world. Inventories are kept, and each player is
+    /// sent its own again (a new `Welcome` empties the client's).
+    pub fn replace_world(&mut self, world: World, config: HostConfig) {
+        self.world = world;
+        self.config = config;
+        let joined: Vec<PlayerId> = self.joined.iter().copied().collect();
+        for &player in &joined {
+            self.send_world(player);
+            let items = self
+                .inventories
+                .get(&player)
+                .map(Inventory::items)
+                .unwrap_or_default();
+            self.transport
+                .send(Recipient::One(player), ServerMsg::Inventory { items });
+        }
+        info!(
+            seed = config.seed,
+            chunks = self.world.chunk_count(),
+            players = joined.len(),
+            "world replaced"
+        );
     }
 
     /// Whether `player` has joined (sent a matching `Hello`).
@@ -181,6 +216,19 @@ impl Host {
             return;
         }
 
+        self.send_world(player);
+        self.joined.insert(player);
+        self.inventories.entry(player).or_default();
+        info!(
+            player = player.0,
+            chunks = self.world.chunk_count(),
+            "player joined"
+        );
+    }
+
+    /// Sends `player` `Welcome` and then one `ChunkSnapshot` per resident
+    /// chunk in position order: everything a replica is built from.
+    fn send_world(&mut self, player: PlayerId) {
         let to = Recipient::One(player);
         self.transport.send(
             to,
@@ -201,13 +249,6 @@ impl Host {
                 },
             );
         }
-        self.joined.insert(player);
-        self.inventories.entry(player).or_default();
-        info!(
-            player = player.0,
-            chunks = self.world.chunk_count(),
-            "player joined"
-        );
     }
 
     /// Applies `cmd` as an edit by `player`, whatever issuer the command
@@ -1399,6 +1440,95 @@ mod tests {
                 ok: false,
                 path: String::new()
             }]
+        );
+    }
+
+    #[test]
+    fn replace_world_rejoins_every_player() {
+        let first = test_world();
+        let (mut host, eps) = host_with(first.clone(), 3);
+        let (a, b, c) = (&eps[0], &eps[1], &eps[2]);
+        a.send(hello(&first)).unwrap();
+        b.send(hello(&first)).unwrap();
+        host.tick();
+        let _ = (a.drain(), b.drain());
+        // a digs something out, so its inventory is not empty.
+        a.send(edit(
+            a.player().0,
+            0,
+            EditOp::Damage(u16::MAX),
+            Shape::Cell(CellPos::new(5, 3, 5)),
+        ))
+        .unwrap();
+        host.tick();
+        let _ = (a.drain(), b.drain());
+        let inventory_a = host.inventory(a.player()).cloned().unwrap();
+        assert!(!inventory_a.items().is_empty());
+
+        // The replacement: a different world, seed and bounds.
+        let stone = mat(&first, "stone");
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 31));
+        let mut second = World::new(materials(), bounds);
+        for pos in bounds.chunks() {
+            second.insert_chunk(pos, Chunk::uniform(stone)).unwrap();
+        }
+        let config = HostConfig {
+            seed: 77,
+            gen_params_hash: 88,
+        };
+        host.replace_world(second.clone(), config);
+        assert_eq!(host.world().hash(), second.hash());
+
+        // Every joined player, ascending, gets Welcome with the new facts,
+        // a snapshot of every resident chunk, as on a join, and then its
+        // kept inventory (a new Welcome empties the client's).
+        let mut expected = vec![ServerMsg::Welcome {
+            player: a.player(),
+            seed: 77,
+            bounds,
+            gen_params_hash: 88,
+        }];
+        expected.extend(
+            second
+                .iter_chunks_sorted()
+                .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
+                    pos,
+                    revision: chunk.revision,
+                    storage: chunk.storage.clone(),
+                }),
+        );
+        let snapshots = expected.len() - 1;
+        expected.push(ServerMsg::Inventory {
+            items: inventory_a.items(),
+        });
+        assert_eq!(a.drain(), expected);
+        let to_b = b.drain();
+        assert_eq!(to_b.len(), expected.len());
+        assert!(
+            matches!(to_b[0], ServerMsg::Welcome { player, seed: 77, .. } if player == b.player())
+        );
+        assert_eq!(&to_b[1..=snapshots], &expected[1..=snapshots]);
+        assert_eq!(to_b.last(), Some(&ServerMsg::Inventory { items: vec![] }));
+        // A player that never joined hears nothing and stays out.
+        assert!(c.drain().is_empty());
+        assert!(!host.is_joined(c.player()));
+        // Inventories are kept.
+        assert_eq!(host.inventory(a.player()), Some(&inventory_a));
+
+        // Edits now go against the new world; c can still join it.
+        a.send(edit(
+            a.player().0,
+            1,
+            EditOp::Remove,
+            Shape::Cell(CellPos::new(40, 3, 5)),
+        ))
+        .unwrap();
+        c.send(hello(&second)).unwrap();
+        host.tick();
+        assert!(host.world().get_cell(CellPos::new(40, 3, 5)) == Some(MaterialId::AIR));
+        let to_c = c.drain();
+        assert!(
+            matches!(to_c[0], ServerMsg::Welcome { seed: 77, bounds: got, .. } if got == bounds)
         );
     }
 }

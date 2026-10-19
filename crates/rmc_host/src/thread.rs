@@ -4,7 +4,8 @@
 //! [`Host::tick`] at a fixed rate, and also as soon as a message arrives if
 //! the transport can signal arrivals ([`Transport::wake_signal`]), so edit
 //! latency is bounded by processing time, not by the tick interval. The app
-//! uses this; tests call `Host::tick` directly.
+//! uses this; tests call `Host::tick` directly. [`HostHandle::submit`] runs
+//! other work on the host (loading a save, say) on that thread between ticks.
 //!
 //! [`Transport::wake_signal`]: crate::transport::Transport::wake_signal
 
@@ -16,14 +17,25 @@ use tracing::info;
 
 use crate::host::Host;
 
+/// Work [`HostHandle::submit`] hands to the host thread.
+type HostJob = Box<dyn FnOnce(&mut Host) + Send>;
+
 /// A running host thread. [`HostHandle::stop`] ends it and gives the host
 /// back; dropping the handle ends it too.
 pub struct HostHandle {
     stop: Sender<()>,
+    jobs: Sender<HostJob>,
     thread: Option<JoinHandle<Host>>,
 }
 
 impl HostHandle {
+    /// Runs `job` on the host thread with the host, before its next tick,
+    /// waking it at once. Jobs run in submission order. Returns false if the
+    /// thread is gone.
+    pub fn submit(&self, job: impl FnOnce(&mut Host) + Send + 'static) -> bool {
+        self.jobs.send(Box::new(job)).is_ok()
+    }
+
     /// Stops the thread, waiting for any tick in progress to finish, and
     /// returns the host.
     ///
@@ -54,6 +66,7 @@ pub fn spawn_host_thread(host: Host, hz: u32) -> HostHandle {
     assert!(hz > 0, "host tick rate must be above 0 Hz");
     let period = Duration::from_secs(1) / hz;
     let (stop, stop_rx) = crossbeam_channel::bounded::<()>(1);
+    let (jobs, jobs_rx) = crossbeam_channel::unbounded::<HostJob>();
     let thread = std::thread::Builder::new()
         .name("rmc-host".into())
         .spawn(move || {
@@ -72,7 +85,16 @@ pub fn spawn_host_thread(host: Host, hz: u32) -> HostHandle {
                             wake = crossbeam_channel::never();
                         }
                     }
+                    recv(jobs_rx) -> job => {
+                        if let Ok(job) = job {
+                            job(&mut host);
+                        }
+                    }
                     default(timeout) => {}
+                }
+                // Every job submitted so far runs before the tick, in order.
+                while let Ok(job) = jobs_rx.try_recv() {
+                    job(&mut host);
                 }
                 // Tokens are drained before the tick reads the messages, so a
                 // message that lands after this has a token left for the next
@@ -87,6 +109,7 @@ pub fn spawn_host_thread(host: Host, hz: u32) -> HostHandle {
         .expect("spawn host thread");
     HostHandle {
         stop,
+        jobs,
         thread: Some(thread),
     }
 }
@@ -283,6 +306,55 @@ mod tests {
         // Dropping the handle stopped the thread and dropped the transport.
         let _ = a.drain();
         assert!(a.send(hello(&world)).is_err());
+    }
+
+    #[test]
+    fn submitted_job_runs_on_host_thread() {
+        let world = world();
+        let mut transport = ChannelTransport::new();
+        let a = transport.connect();
+        let host = Host::new(world.clone(), HostConfig::default(), Box::new(transport));
+        // 1 Hz: anything inside 50 ms comes from a wake, not the timer.
+        let handle = spawn_host_thread(host, 1);
+        a.send(hello(&world)).unwrap();
+        recv_within_bound(&a, Duration::from_secs(5), "Welcome");
+        recv_within_bound(&a, Duration::from_secs(5), "snapshot");
+
+        // A job runs on the host thread, between ticks, woken at once: here
+        // it replaces the world, so a hears the new Welcome inside the bound.
+        let (ran_on, ran_on_rx) = crossbeam_channel::bounded(1);
+        let mut replacement = world.clone();
+        let cmd = nth_edit(&world, a.player(), 0);
+        assert_eq!(replacement.apply(&cmd).status, EditStatus::Applied);
+        let want = replacement.hash();
+        let config = HostConfig {
+            seed: 5,
+            gen_params_hash: 6,
+        };
+        assert!(handle.submit(move |host: &mut Host| {
+            let _ = ran_on.send(std::thread::current().name().map(str::to_owned));
+            host.replace_world(replacement, config);
+        }));
+        let welcome = recv_within_bound(&a, Duration::from_secs(5), "Welcome after the job");
+        assert!(matches!(welcome, ServerMsg::Welcome { seed: 5, .. }));
+        assert_eq!(
+            ran_on_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Some("rmc-host".to_string())
+        );
+
+        // Jobs run in submission order.
+        let (order, order_rx) = crossbeam_channel::unbounded();
+        for n in 0..5 {
+            let order = order.clone();
+            assert!(handle.submit(move |_: &mut Host| order.send(n).unwrap()));
+        }
+        let got: Vec<i32> = (0..5)
+            .map(|_| order_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(got, vec![0, 1, 2, 3, 4]);
+
+        let host = handle.stop();
+        assert_eq!(host.world().hash(), want);
     }
 
     #[test]

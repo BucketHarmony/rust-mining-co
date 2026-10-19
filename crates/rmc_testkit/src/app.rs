@@ -21,7 +21,7 @@ use bevy::winit::WinitPlugin;
 use rmc_client::{
     CameraStart, ClientInventory, ClientMaterials, ControllerPlugin, EditorPlugin, EditorState,
     FlyCamPlugin, GameCamera, GameRenderPlugin, HostConnection, HostLink, HudPlugin, HudState,
-    MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, ToHost,
+    MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, SavePlugin, ToHost,
 };
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -127,6 +127,7 @@ impl TestApp {
                 PickaxePlugin,
                 HudPlugin,
                 EditorPlugin,
+                SavePlugin,
             ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(Pickaxe(tools.pickaxe))

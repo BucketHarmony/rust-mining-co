@@ -15,6 +15,7 @@ pub mod panel;
 pub mod pickaxe;
 pub mod render;
 pub mod replica;
+pub mod save;
 
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
@@ -55,3 +56,6 @@ pub use pickaxe::{
 };
 pub use render::{CameraStart, GameCamera, GameRenderPlugin};
 pub use replica::{Replica, ReplicaError, ReplicaPlugin};
+pub use save::{
+    AUTOSAVE_INTERVAL, Autosave, SaveCause, SaveOutcome, SavePlugin, SaveStatus, SaveSystems,
+};
