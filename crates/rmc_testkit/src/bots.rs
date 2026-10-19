@@ -6,6 +6,7 @@
 //! player's box is clear of blocking cells.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use rmc_client::controller::SKIN_M;
@@ -591,6 +592,454 @@ impl BuilderBot {
     }
 }
 
+/// One kind of thing a [`ChaosBot`] does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ChaosAction {
+    /// Holds a random mix of the walk keys, maybe sprinting, while the view
+    /// drifts.
+    Walk,
+    /// Turns the view to a random heading and pitch over a few frames.
+    Look,
+    /// Looks down a random amount and holds the swing button, maybe
+    /// walking forward.
+    Dig,
+    /// Opens the editor, picks Set, a random shape and maybe the next
+    /// material, clicks the brush a few times at random spots, and closes
+    /// it.
+    Place,
+    /// Holds Space for a few frames, maybe walking forward, then waits to
+    /// land.
+    Jump,
+}
+
+impl ChaosAction {
+    pub const ALL: [ChaosAction; 5] = [
+        ChaosAction::Walk,
+        ChaosAction::Look,
+        ChaosAction::Dig,
+        ChaosAction::Place,
+        ChaosAction::Jump,
+    ];
+}
+
+/// What [`ChaosBot::run`] did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChaosReport {
+    /// The actions, in the order they started. The last one may have been
+    /// cut short by the end of the run.
+    pub actions: Vec<ChaosAction>,
+    /// Steps taken by the actions: exactly [`ChaosBot::frames`].
+    pub frames: u32,
+    /// Steps taken after them to let go of every input and close the
+    /// editor.
+    pub cleanup_frames: u32,
+    pub swings: u64,
+    pub brush_clicks: u32,
+    pub jumps: u32,
+    /// Steps after which the player's box shared volume with a blocking
+    /// cell. Recorded only: the bot checks nothing about the world.
+    pub penetrating_frames: u32,
+    /// Wall-clock time of each of the [`frames`](Self::frames) steps, the
+    /// GPU's included when rendering.
+    pub step_times: Vec<Duration>,
+    /// The feet when the bot started and when it stopped.
+    pub start: Vec3,
+    pub end: Vec3,
+}
+
+impl ChaosReport {
+    /// How many actions of `kind` started.
+    pub fn count(&self, kind: ChaosAction) -> usize {
+        self.actions.iter().filter(|&&a| a == kind).count()
+    }
+
+    /// The `q`-th percentile (0..=100) of the step times, nearest rank
+    /// below; zero with no steps.
+    pub fn step_time_percentile(&self, q: u32) -> Duration {
+        let mut times = self.step_times.clone();
+        times.sort_unstable();
+        let rank = times.len().saturating_sub(1) * q.min(100) as usize / 100;
+        times.get(rank).copied().unwrap_or_default()
+    }
+
+    /// One line for logs.
+    pub fn summary(&self) -> String {
+        let counts: Vec<String> = ChaosAction::ALL
+            .iter()
+            .map(|&k| format!("{k:?} {}", self.count(k)))
+            .collect();
+        format!(
+            "{} actions ({}), {} swings, {} brush clicks, {} jumps, feet {} -> {}",
+            self.actions.len(),
+            counts.join(", "),
+            self.swings,
+            self.brush_clicks,
+            self.jumps,
+            self.start,
+            self.end
+        )
+    }
+}
+
+/// Plays at random for [`ChaosBot::frames`] steps: walks, looks, digs,
+/// places and jumps (SAD §12.3), for the soak test.
+///
+/// The actions come from a shuffled bag of every [`ChaosAction`], refilled
+/// when empty, so every kind runs within any ten actions in a row. All
+/// randomness comes from [`ChaosBot::seed`]: the same seed gives the same
+/// inputs. Like the other bots it only injects input; unlike them it checks
+/// nothing about the world, which is the scenario's job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChaosBot {
+    pub seed: u64,
+    pub frames: u32,
+}
+
+impl ChaosBot {
+    pub fn new(seed: u64, frames: u32) -> Self {
+        Self { seed, frames }
+    }
+
+    /// Runs actions until [`frames`](Self::frames) steps are taken, then
+    /// lets go of every key and button and closes the editor.
+    ///
+    /// Fails if the editor keys do not set the brush up, or the editor is
+    /// still open after the cleanup.
+    pub fn run(&self, t: &mut TestApp) -> Result<ChaosReport, BotError> {
+        let start = t.player().pos;
+        let swings0 = swings(t);
+        let mut chaos = Chaos {
+            t: &mut *t,
+            rng: SplitMix64(self.seed),
+            left: self.frames,
+            report: ChaosReport {
+                start,
+                step_times: Vec::with_capacity(self.frames as usize),
+                ..ChaosReport::default()
+            },
+        };
+        let mut bag = Vec::new();
+        while chaos.left > 0 {
+            if bag.is_empty() {
+                bag = ChaosAction::ALL.to_vec();
+                chaos.shuffle(&mut bag);
+            }
+            let action = bag.pop().expect("the bag was refilled");
+            chaos.report.actions.push(action);
+            match action {
+                ChaosAction::Walk => chaos.walk(),
+                ChaosAction::Look => chaos.look(),
+                ChaosAction::Dig => chaos.dig(),
+                ChaosAction::Place => chaos.place()?,
+                ChaosAction::Jump => chaos.jump(),
+            }
+        }
+        chaos.cleanup()?;
+        let mut report = chaos.report;
+        report.swings = swings(t) - swings0;
+        report.end = t.player().pos;
+        Ok(report)
+    }
+}
+
+/// Keys a [`ChaosBot`] may hold.
+const CHAOS_KEYS: [KeyCode; 6] = [
+    KeyCode::KeyW,
+    KeyCode::KeyA,
+    KeyCode::KeyS,
+    KeyCode::KeyD,
+    KeyCode::ShiftLeft,
+    KeyCode::Space,
+];
+/// What a walk holds on each axis, picked evenly: nothing or one key.
+/// With nothing on both, it holds W.
+const CHAOS_ALONG_KEYS: [Option<KeyCode>; 3] = [None, Some(KeyCode::KeyW), Some(KeyCode::KeyS)];
+const CHAOS_ACROSS_KEYS: [Option<KeyCode>; 3] = [None, Some(KeyCode::KeyA), Some(KeyCode::KeyD)];
+/// Frames a walk lasts.
+const CHAOS_WALK_FRAMES: (u32, u32) = (20, 90);
+/// Fastest view drift while walking, in radians per frame.
+const CHAOS_DRIFT_RAD: f32 = 0.03;
+/// Frames a look takes.
+const CHAOS_LOOK_FRAMES: (u32, u32) = (5, 30);
+/// Pitch a look or a brush click aims at, in radians.
+const CHAOS_LOOK_PITCH: (f32, f32) = (-1.2, 0.5);
+/// Pitch a dig aims at, in radians: mostly down, where the ground is.
+const CHAOS_DIG_PITCH: (f32, f32) = (-1.3, 0.2);
+/// Frames the swing button is held.
+const CHAOS_DIG_FRAMES: (u32, u32) = (20, 150);
+/// Brush clicks per placing.
+const CHAOS_CLICKS: (u32, u32) = (1, 3);
+/// Largest turn between brush clicks, in radians.
+const CHAOS_CLICK_TURN_RAD: f32 = 0.5;
+/// Frames Space is held.
+const CHAOS_JUMP_FRAMES: (u32, u32) = (1, 12);
+/// Frames a jump waits to land.
+const CHAOS_LAND_FRAMES: u32 = 60;
+/// The brush shapes a placing picks from, by key: Cell as often as Box and
+/// Sphere together.
+const CHAOS_SHAPE_KEYS: [KeyCode; 4] = [
+    KeyCode::Digit4,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+];
+const NEXT_MATERIAL_KEY: KeyCode = KeyCode::Period;
+
+/// A seeded generator (SplitMix64), so a seed gives the same chaos on
+/// every platform.
+#[derive(Clone, Debug)]
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `lo..=hi`.
+    fn range(&mut self, (lo, hi): (u32, u32)) -> u32 {
+        lo + (self.next_u64() % u64::from(hi - lo + 1)) as u32
+    }
+
+    /// Uniform in `lo..hi`.
+    fn between(&mut self, (lo, hi): (f32, f32)) -> f32 {
+        let unit = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
+        lo + (hi - lo) * unit
+    }
+
+    /// True one time in `n`.
+    fn one_in(&mut self, n: u32) -> bool {
+        self.range((1, n)) == 1
+    }
+
+    /// One of `items`.
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[self.range((0, items.len() as u32 - 1)) as usize]
+    }
+}
+
+/// A [`ChaosBot`] run in progress. Every action stops early once the run
+/// has no steps left, leaving the keys it held to [`Chaos::cleanup`].
+struct Chaos<'a> {
+    t: &'a mut TestApp,
+    rng: SplitMix64,
+    /// Steps left in the run.
+    left: u32,
+    report: ChaosReport,
+}
+
+impl Chaos<'_> {
+    /// One timed step, if the run has any left. Returns whether it stepped.
+    fn step(&mut self) -> bool {
+        if self.left == 0 {
+            return false;
+        }
+        let clock = Instant::now();
+        self.t.step();
+        self.report.step_times.push(clock.elapsed());
+        self.left -= 1;
+        self.report.frames += 1;
+        if !self.t.player_penetration().is_empty() {
+            self.report.penetrating_frames += 1;
+        }
+        true
+    }
+
+    /// `n` steps; false if the run ended first.
+    fn steps(&mut self, n: u32) -> bool {
+        (0..n).all(|_| self.step())
+    }
+
+    /// Presses and releases `key`, one step each.
+    fn tap(&mut self, key: KeyCode) -> bool {
+        self.t.press(key);
+        let pressed = self.step();
+        self.t.release(key);
+        pressed && self.step()
+    }
+
+    fn shuffle<T>(&mut self, items: &mut [T]) {
+        for i in (1..items.len()).rev() {
+            let j = self.rng.range((0, i as u32)) as usize;
+            items.swap(i, j);
+        }
+    }
+
+    fn sensitivity(&self) -> f32 {
+        self.t
+            .app()
+            .world()
+            .resource::<ControllerConfig>()
+            .sensitivity_rad
+    }
+
+    /// The mouse motion per step that turns the view by `yaw` radians
+    /// (positive turns left) and to `pitch` in `frames` equal steps.
+    fn turn_per_frame(&self, yaw: f32, pitch: f32, frames: u32) -> Vec2 {
+        let p = self.t.player();
+        Vec2::new(-yaw, p.pitch - pitch) / (self.sensitivity() * frames as f32)
+    }
+
+    /// Turns by `yaw` and to `pitch` in one step.
+    fn aim(&mut self, yaw: f32, pitch: f32) -> bool {
+        let m = self.turn_per_frame(yaw, pitch, 1);
+        self.t.look(m.x, m.y);
+        self.step()
+    }
+
+    fn walk(&mut self) {
+        let mut keys = Vec::new();
+        keys.extend(self.rng.pick(&CHAOS_ALONG_KEYS));
+        keys.extend(self.rng.pick(&CHAOS_ACROSS_KEYS));
+        if keys.is_empty() {
+            keys.push(KeyCode::KeyW);
+        }
+        if self.rng.one_in(3) {
+            keys.push(KeyCode::ShiftLeft);
+        }
+        let frames = self.rng.range(CHAOS_WALK_FRAMES);
+        let drift = self.rng.between((-CHAOS_DRIFT_RAD, CHAOS_DRIFT_RAD)) / self.sensitivity();
+        for &key in &keys {
+            self.t.press(key);
+        }
+        for _ in 0..frames {
+            self.t.look(drift, 0.0);
+            if !self.step() {
+                break;
+            }
+        }
+        for &key in &keys {
+            self.t.release(key);
+        }
+    }
+
+    fn look(&mut self) {
+        let yaw = self.rng.between((-PI, PI));
+        let pitch = self.rng.between(CHAOS_LOOK_PITCH);
+        let frames = self.rng.range(CHAOS_LOOK_FRAMES);
+        let m = self.turn_per_frame(yaw, pitch, frames);
+        for _ in 0..frames {
+            self.t.look(m.x, m.y);
+            if !self.step() {
+                break;
+            }
+        }
+    }
+
+    fn dig(&mut self) {
+        let pitch = self.rng.between(CHAOS_DIG_PITCH);
+        let forward = self.rng.one_in(3);
+        let frames = self.rng.range(CHAOS_DIG_FRAMES);
+        if !self.aim(0.0, pitch) {
+            return;
+        }
+        if forward {
+            self.t.press(KeyCode::KeyW);
+        }
+        self.t.mouse_down(SWING_BUTTON);
+        self.steps(frames);
+        self.t.mouse_up(SWING_BUTTON);
+        if forward {
+            self.t.release(KeyCode::KeyW);
+        }
+    }
+
+    fn place(&mut self) -> Result<(), BotError> {
+        let shape = self.rng.pick(&CHAOS_SHAPE_KEYS);
+        let next_material = self.rng.one_in(2);
+        let clicks = self.rng.range(CHAOS_CLICKS);
+        let opened = self.t.editor().open || self.tap(TOGGLE_EDITOR_KEY);
+        if !(opened && self.tap(SET_KEY) && self.tap(shape)) {
+            return Ok(());
+        }
+        if next_material && !self.tap(NEXT_MATERIAL_KEY) {
+            return Ok(());
+        }
+        let editor = self.t.editor().clone();
+        if !(editor.open && editor.op == BrushOp::Set) {
+            return Err(BotError::EditorKeys {
+                op: editor.op,
+                shape: editor.shape,
+                open: editor.open,
+            });
+        }
+        for _ in 0..clicks {
+            let yaw = self
+                .rng
+                .between((-CHAOS_CLICK_TURN_RAD, CHAOS_CLICK_TURN_RAD));
+            let pitch = self.rng.between(CHAOS_LOOK_PITCH);
+            if !self.aim(yaw, pitch) {
+                return Ok(());
+            }
+            self.t.mouse_down(BRUSH_BUTTON);
+            let pressed = self.step();
+            self.t.mouse_up(BRUSH_BUTTON);
+            if !pressed {
+                return Ok(());
+            }
+            self.report.brush_clicks += 1;
+            if !self.steps(PLACE_SLACK_FRAMES) {
+                return Ok(());
+            }
+        }
+        self.tap(TOGGLE_EDITOR_KEY);
+        Ok(())
+    }
+
+    fn jump(&mut self) {
+        let frames = self.rng.range(CHAOS_JUMP_FRAMES);
+        let forward = self.rng.one_in(2);
+        if forward {
+            self.t.press(KeyCode::KeyW);
+        }
+        self.t.press(KeyCode::Space);
+        self.report.jumps += 1;
+        let held = self.steps(frames);
+        self.t.release(KeyCode::Space);
+        if held {
+            for _ in 0..CHAOS_LAND_FRAMES {
+                if !self.step() || self.t.player().grounded {
+                    break;
+                }
+            }
+        }
+        if forward {
+            self.t.release(KeyCode::KeyW);
+        }
+    }
+
+    /// Lets go of every key and button and closes the editor, in steps
+    /// that do not count toward the run.
+    fn cleanup(&mut self) -> Result<(), BotError> {
+        for key in CHAOS_KEYS {
+            self.t.release(key);
+        }
+        self.t.mouse_up(SWING_BUTTON);
+        self.t.mouse_up(BRUSH_BUTTON);
+        self.t.step();
+        self.report.cleanup_frames += 1;
+        if self.t.editor().open {
+            self.t.press(TOGGLE_EDITOR_KEY);
+            self.t.step();
+            self.t.release(TOGGLE_EDITOR_KEY);
+            self.t.step();
+            self.report.cleanup_frames += 2;
+        }
+        let editor = self.t.editor().clone();
+        if editor.open {
+            return Err(BotError::EditorKeys {
+                op: editor.op,
+                shape: editor.shape,
+                open: editor.open,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Places `cell` with one brush click (Set, Cell) at the middle of the top
 /// face of the cell under it, after checking that the brush targets it,
 /// then steps until the replica shows it.
@@ -881,5 +1330,66 @@ mod tests {
                 cell: CellPos::new(34, 101, 34)
             })
         );
+    }
+
+    /// Plays a seeded chaos run of `frames` from the course's floor, 2 m
+    /// out from the wall, and returns the report and the app.
+    fn chaos(seed: u64, frames: u32) -> (ChaosReport, TestApp) {
+        let (mut t, _) = course();
+        t.spawn_player(Vec3::new(17.5, FLOOR_M, 20.0));
+        t.steps(20);
+        let before = t.host_world().hash();
+        let report = ChaosBot::new(seed, frames)
+            .run(&mut t)
+            .expect("the chaos runs");
+        assert_ne!(t.host_world().hash(), before, "the chaos changed the world");
+        (report, t)
+    }
+
+    /// Through the real host: the bot takes exactly its frames, does every
+    /// kind of action, leaves no input held and the editor closed, and the
+    /// same seed plays the same game.
+    #[test]
+    fn chaos_bot_plays_every_action_reproducibly() {
+        let frames = 900;
+        let (report, mut t) = chaos(7, frames);
+        assert_eq!(report.frames, frames);
+        assert_eq!(report.step_times.len(), frames as usize);
+        assert!(report.cleanup_frames >= 1);
+        for kind in ChaosAction::ALL {
+            assert!(report.count(kind) > 0, "no {kind:?}: {}", report.summary());
+        }
+        // The shuffled bag: every five actions from the start hold each
+        // kind once.
+        let (bags, _) = report.actions.as_chunks::<{ ChaosAction::ALL.len() }>();
+        for bag in bags {
+            let mut kinds = *bag;
+            kinds.sort();
+            assert_eq!(kinds, ChaosAction::ALL);
+        }
+        assert!(report.swings > 0 && report.brush_clicks > 0 && report.jumps > 0);
+        assert!(report.start.distance(report.end) > 0.0, "the player moved");
+        assert!(report.step_time_percentile(95) >= report.step_time_percentile(50));
+        assert_eq!(
+            report.step_time_percentile(100),
+            *report.step_times.iter().max().unwrap()
+        );
+        assert!(!t.editor().open);
+        let input = t.app().world().resource::<ButtonInput<KeyCode>>();
+        assert_eq!(input.get_pressed().count(), 0, "keys let go");
+        let mouse = t.app().world().resource::<ButtonInput<MouseButton>>();
+        assert_eq!(mouse.get_pressed().count(), 0, "buttons let go");
+        t.step();
+        assert_eq!(replica(&t).hash(), t.host_world().hash());
+
+        let (again, t2) = chaos(7, frames);
+        assert_eq!(again.actions, report.actions);
+        assert_eq!(
+            (again.swings, again.brush_clicks, again.jumps, again.end),
+            (report.swings, report.brush_clicks, report.jumps, report.end)
+        );
+        assert_eq!(t2.host_world().hash(), t.host_world().hash());
+        let (other, _) = chaos(8, frames);
+        assert_ne!(other.actions, report.actions, "another seed, another game");
     }
 }
