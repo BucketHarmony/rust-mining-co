@@ -1322,3 +1322,27 @@ Decisions:
 - docs/SAD.md is not edited (settings deny it, as noted for F090). This note records the extension: §11.4's mouse look and §11.5's swing are gated by the windowed game's cursor grab, and §11.6's editor releases it.
 Next: F092 (glow) is unblocked and is the last M7 feature; after it, run the M7 playtester.
 Blockers: none.
+
+## 2026-10-19 10:24 — F092 Glow shown where it matters: crystal in a dark cave, and failure screenshots for the older scenarios — passed
+Done:
+- New E2E scenario tests/e2e/tests/glow_in_cave.rs, run through `e2e::run_scenario`:
+  - Builds a closed stone chamber near the top of a 4×4×4-chunk world with a stone wall inside. A 4×4-cell (2 m) patch of the first emissive solid (glowcrystal) sits flush in the wall's face.
+  - The lantern is off and no sun reaches inside, so only the ambient light reaches the wall.
+  - The camera faces the patch from 6 m. The crystal's pixel rectangle comes from projecting the patch corners through the game camera (`Camera::world_to_viewport`, scaled to the screenshot size). The crystal sample is that rectangle inset by 15%. The stone sample is the ring between the rectangle grown by 25% and by 50%, which keeps edges and the bloom halo out. The crosshair box is excluded from both.
+  - Two screenshots: emissive on, then with `emissive_scale` 0.
+  - Asserts: stone with the glow on < 110 (dark), stone with it off > 1 (drawn), crystal − stone ≥ 60 with the glow on, and that margin ≥ the glow-off margin + 30.
+- boot_renders, fly_camera and emissive_glow now run their bodies through `e2e::run_scenario`, so a failure saves `<name>-fail-<frame>.png` (the F063 reviewer note). Their assertions are unchanged; only `&mut t`/`&t` became `t`.
+- Re-shot every scenario with scripts/screens.sh, one scenario at a time. Stale frame numbers fixed: dig_cell_visible 43/71→41/68, emissive_glow 23/27→22/26, latency_dig 67→65, step_up 611→595. The new shots are docs/screens/glow_in_cave-18.png and glow_in_cave-off-22.png.
+Tests added:
+- e2e:glow_in_cave. It first failed because its stone ring ran off the image at a 4 m view distance. The camera now stands at 6 m and the ring is narrower.
+  - Measured on WARP: crystal 190.0 vs stone 83.7 with the glow (margin 106.3); 120.7 vs 82.7 without (margin 38.0).
+  - The thresholds are about half the measured margin and gain. The measured values are recorded next to the constants.
+- All 14 E2E scenarios pass (WARP), run one by one through scripts/screens.sh.
+Decisions:
+- The lantern is off in glow_in_cave: the note's "closed dark room". Ambient stays as the game has it (§11.3: caves stay readable), so the stone is dim gray (83.7), not black.
+- The crystal is flush in the wall rather than protruding. That way the projected front face is the crystal's whole visible area, and the pixel classification needs no side faces.
+- emissive_glow is kept as is, apart from run_scenario. glow_in_cave is the scenario that shows glow against geometry.
+- Environment: the first smoke run failed to link the E2E binaries with "The paging file is too small for this operation" (os error 1455). It passed on rerun with CARGO_BUILD_JOBS=8; no code change was needed.
+- Running the E2E with a relative RMC_E2E_OUT writes into tests/e2e/target/ (ignored by git); scripts/e2e.sh uses an absolute path.
+Next: M7 is complete; the M7 playtester report follows. Then F080 (ChaosBot, soak_chaos).
+Blockers: none.
