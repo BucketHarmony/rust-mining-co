@@ -88,10 +88,6 @@ jobs:
     env:
       WGPU_BACKEND: vulkan
       WGPU_ADAPTER_NAME: llvmpipe
-      # The whole suite takes ~38 min on a desktop CPU and ~8x that on a 2-core runner, so CI runs one
-      # scenario per area: boot and initial load, dig and remesh, editor brush, lighting, latency, save/load.
-      # pass-feature.sh and verify-features.sh --all run every scenario.
-      RMC_CI_E2E: boot_renders dig_cell_visible editor_brush_sphere glow_in_cave latency_dig save_load_roundtrip
     steps:
       - name: Free disk space
         run: |
@@ -112,14 +108,7 @@ jobs:
         run: cargo test -p rmc_e2e --tests --no-run
       - name: End-to-end (lavapipe)
         if: hashFiles('tests/e2e/tests/*.rs') != ''
-        run: |
-          rc=0
-          for s in $RMC_CI_E2E; do
-            echo "::group::$s"
-            scripts/e2e.sh "$s" || { echo "::error::E2E failed: $s"; rc=1; }
-            echo "::endgroup::"
-          done
-          exit $rc
+        run: scripts/e2e.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -150,7 +139,8 @@ jobs:
       # The game binary is built by windows-release; this builds the client, testkit and scenarios.
       - name: Build scenarios
         run: cargo test -p rmc_e2e --tests --no-run
-      # boot_renders alone is ~15 min on WARP with 2 cores; the Linux job covers the other areas.
+      # WARP on 2 cores is ~10x slower than lavapipe (boot_renders ~12 min vs ~80 s), so Windows runs
+      # boot_renders and the Linux job runs every scenario.
       - name: End-to-end (WARP)
         if: hashFiles('tests/e2e/tests/*.rs') != ''
         shell: bash
