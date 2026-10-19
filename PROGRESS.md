@@ -975,3 +975,52 @@ Decisions:
   - BuilderBot does not check headroom above the platform; a low ceiling shows up as Stuck.
 Next: F075 (save/load roundtrip), then F076, F077.
 Blockers: none.
+
+## 2026-10-19 05:20 — F075 Save/load from the app: autosave timer, quit save, SaveRequest, CLI --save path, load on start — passed
+Done:
+- New rmc_client::save (re-exported):
+  - `SavePlugin` (Update, `SaveSystems`, after EditorSystems) sends `ToHost(SaveRequest)` when the editor's Save flag is raised (it takes the flag) or when the `Autosave` timer runs out (`AUTOSAVE_INTERVAL` = 300 s of game time, SAD §10).
+  - At most one request per frame; any request restarts the timer. `Autosave::interval = None` turns it off.
+  - `SaveStatus { requested, pending, last_cause, last: Option<SaveOutcome { ok, path }> }` records the host's `Saved` answers.
+  - Added to TestApp's plugin tuple, so F5 in a scenario reaches the host (TestApp's host has no save dir yet and answers ok: false; F076 adds TestApp::save/load).
+- rmc_host:
+  - `Host::replace_world(world, config)`: swaps the world and the Welcome facts, then sends every joined player (ascending) Welcome, every snapshot and its kept `Inventory` (a new Welcome empties the client's inventory display). Join messages now share `send_world` with `hello`.
+  - `Host::config()`.
+  - `HostHandle::submit(job)`: an unbounded job channel to the host thread. Jobs wake the thread, run in submission order, and all run before the next tick.
+- rmc_app is now lib + bin (main.rs is still the stub; F077 wires it):
+  - `cli::Cli` (clap): `--seed <u64>` (optional), `--save <DIR>` (default `save`).
+  - `session`:
+    - `GameAssets::load(dir)` (materials, tools, worldgen), `host_config(seed)`, `save_header(seed)`; `assets_dir()` (`./assets` if it holds the tables, else the workspace's).
+    - `generate_world`, `has_save`, `load_world` (SAD §10 load: generate, overwrite, fail on any header mismatch).
+    - `start_world(assets, seed, save_dir) -> StartWorld { world, host, save, origin }`: loads the save if the dir holds `header.ron`, else generates. `StartWorld::into_host(transport)` builds the Host with its SaveConfig.
+    - `quit_save(handle)`: stop the thread, `Host::save`.
+    - `EndpointLink` (HostLink over a ClientEndpoint) for F077.
+    - `GameHost` resource (the HostHandle, assets, save dir) + `SessionPlugin`: the editor's Load (F9 / panel button) is taken and submitted to the host thread, which loads the save at the host's current seed and calls `replace_world`; a missing or mismatched save is logged and nothing changes. On `AppExit` (Last) the host is stopped and saved, once. Dropping a GameHost that still runs does the same.
+Tests added:
+- cli::tests::parses_seed_and_save_path: values in either order and `=` form, u64::MAX, a path with spaces, defaults (no seed, `save`), and refusals (non-number, negative, overflow, missing values, unknown flag, stray arg). It failed to compile before cli.rs existed; clap's derive is the implementation, so it passed on its first run.
+- save::tests::save_request_round_trips: failed first against stub systems ("editor Save sends SaveRequest", left 0). It checks:
+  - the editor Save sends exactly one request and the flag is taken;
+  - a world with one edited chunk, saved with rmc_world::save, loads back to the same hash, and the `Saved` answer is recorded;
+  - autosave fires after a full interval (frame 59-61 at 60 fps for 1 s), twice;
+  - an editor save restarts the timer, and editor + timer in one frame give one request;
+  - extra `Saved` answers never drive `pending` below 0; a failed save is recorded;
+  - autosave off sends nothing.
+- host::tests::replace_world_rejoins_every_player (failed first against a stub on the hash check): exact message sequence to a, the same for b with its own Welcome, empty-inventory resend to b, nothing to a non-joined player, inventories kept, edits and a later Hello use the new world.
+- thread::tests::submitted_job_runs_on_host_thread (failed first: stub submit returned false): the job runs on `rmc-host`, its Welcome arrives within the 50 ms wake bound at 1 Hz, jobs run in order, the stopped host has the job's world.
+- session::tests::load_request_reloads_saved_world (failed first against stubs: "taken"): a real host thread with a 2 x 4 x 2-chunk world and a MinimalPlugins client (Net, Replica, Save, Session). It checks:
+  - start without a save generates from DEFAULT_SEED;
+  - Load with no save changes nothing;
+  - the editor Save writes the dir;
+  - Load after a further edit restores the saved world in the replica (hash equal);
+  - AppExit stops the host and saves, and a second quit_save does nothing;
+  - the next start_world loads the save, from the save's seed;
+  - a different `--seed` fails with "Seed mismatch", and so do changed worldgen params.
+- session::tests::dropping_a_running_game_host_saves.
+Decisions:
+- `--seed` is optional. With a save in `--save`, the save's seed is used; an explicit seed that differs fails the load loudly (SAD §10 "fail loudly on any mismatch"). With no save, DEFAULT_SEED = 1 (TestApp's default).
+- The autosave timer is client-side (a SaveRequest every 5 min of game time), so the host's existing SaveRequest path is the only writer. The quit save is host-side (stop the thread, then `Host::save`), because a SaveRequest sent while quitting could race the thread's stop.
+- Runtime Load has no protocol message (SAD §8.4 lists none). It goes from the app, which owns the host thread, as a `HostHandle::submit` job. Clients see an ordinary Welcome + snapshots, which the replica and mesh pipeline already handle as a rejoin.
+- Loading a save keeps inventories, since the save format holds none (SAD §10).
+- Regenerate (F8) is still unconsumed. It fits the same path: a job that generates from `EditorState::seed` and calls `replace_world`. Left for F077, to keep this feature to save/load.
+Next: F076 (E2E save_load_roundtrip: TestApp::save(path) / TestApp::load(path), §12.2; `rmc_app::session` cannot be used from rmc_testkit, but rmc_world::save::load and Host::save are enough). Then F077 wires main with Cli, start_world, spawn_host_thread, GameHost + SessionPlugin + SavePlugin and EndpointLink.
+Blockers: none.
