@@ -1151,3 +1151,35 @@ Decisions:
 - Reviewer: PASS. Acted on: the SAD §8.2 sentence, the direct rmc_world test (damage kept, chunk-straddling box). Recorded only: Set(air) skipped, the stale box after replace_world, and the loose y bound in the unloaded-chunk case (x/z are exact).
 Next: F087 (lantern falloff). F088 and F092 follow F087; F090 and F091 are unblocked by F086.
 Blockers: none.
+
+## 2026-10-19 12:40 — F087 Lantern falloff: close rock is not blown out; dark materials stay dark at every distance — passed
+Done:
+- rmc_client::render:
+  - `LANTERN_LUMENS` went from 400,000 to 160,000.
+  - New `LANTERN_OFFSET_M` = (0, 0.3, 2.0) in the camera's frame. The lantern child of GameCamera now hangs 2 m behind the eye and 0.3 m above it, instead of at the eye.
+  - New `point_light_lux` and `ambient_equivalent_lux` mirror Bevy 0.20's point-light and ambient math. They are used by the unit test.
+- With the light 2 m back, a wall in front can get no closer to it than 2 m. The inverse-square gain from 1.5 m down to the near plane is then about 2.5× in the lantern term instead of 225×. At 1.5 m the lantern adds about 27% of the ambient light.
+- Screenshots re-shot: dig_tunnel (both frames; the tunnel view reads as green topsoil with a legible label) and the new lantern_close_wall frames, in docs/screens.
+Tests added:
+- render::tests::lantern_is_soft_at_close_range. It first failed: "at 0.1 m the wall gets 3186857 lx, over 1.5 × the 17917 lx at 1.5 m". It checks:
+  - from 0.1 m to 1.5 m, ambient plus lantern on a facing wall stays at most 1.5× its value at 1.5 m (linear light);
+  - the lantern adds at least ambient/4 at 1.5 m, fades with distance, and gives 0 past its range;
+  - it sits behind the camera;
+  - the formula itself (a 4π lm light gives 1 lx at 1 m, 1/4 lx at 2 m, and 0 on a back-facing surface).
+- e2e lantern_close_wall. It first failed against the old lantern: basalt 241.5 at 0.3 m vs 130.2 at 1.5 m.
+  - Setup: a closed basalt chamber, so there is no sun, holding a basalt wall and a topsoil wall. The camera faces each at 0.3 m and at 1.5 m and takes the center block's mean Rec. 709 luminance, with the crosshair region left out.
+  - Basalt at 0.3 m must be ≤ 1.25 × basalt at 1.5 m, and below the ceiling of 120.
+  - Basalt must be darker than topsoil at 0.3 m, at 1.5 m, and up close versus topsoil at 1.5 m.
+  - From the reviewer: with the lantern off, basalt at 1.5 m drops by at least 6.
+  - Measured on WARP: basalt 74.3 (0.3 m), 61.5 (1.5 m), 48.7 (lantern off); topsoil 119.3 / 102.4.
+- All 13 e2e scenarios pass with the change.
+Decisions:
+- Derived ceiling: 120. That is about twice basalt's own color luminance (62.6). The measured value after the fix is 74.3 and before it was 241.5. It leaves room for adapter differences, and a lantern that washes basalt out to a light gray still fails.
+- Fix approach: offset the light and dim it. A larger radius would not work, because in Bevy 0.20 `PointLight::radius` only softens specular; the diffuse falloff stays a bare 1/d² (checked in bevy_pbr pbr_lighting.wesl). Exposure and bloom changes would not work either, because they scale near and far alike and do not change the ratio.
+- The lantern has no shadows. Hung 2 m behind the eye, it can light faces of a cavity behind thin rock behind the player. This is accepted: it is minor, and shadows on the lantern would cost too much on WARP.
+- The close/far ratio on WARP is 1.21 against the 1.25 limit, which is a thin margin. It follows from the geometry (offset and intensity), not from the adapter. llvmpipe was not available on this machine.
+- Reviewer: GAPS. Acted on: the lantern on/off check, the dig_tunnel re-shoot, a deleted stale failure screenshot, and recording the ceiling and offset decisions. Not acted on:
+  - a luminance ceiling in dig_tunnel (not in the feature's tests);
+  - HUD and crosshair readability up close (headless frames without a Player have no HUD; F090 and F091 touch the HUD).
+Next: F088 (horizon/fog/sky), then F092 and F089; F090 and F091 are unblocked.
+Blockers: none.
