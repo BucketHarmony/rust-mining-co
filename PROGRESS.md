@@ -1183,3 +1183,49 @@ Decisions:
   - HUD and crosshair readability up close (headless frames without a Player have no HUD; F090 and F091 touch the HUD).
 Next: F088 (horizon/fog/sky), then F092 and F089; F090 and F091 are unblocked.
 Blockers: none.
+
+## 2026-10-19 06:45 — F088 Readable horizon: distance fog, a sky with a sun direction, a world shell that does not read as a black void — passed
+Done:
+- rmc_client::render:
+  - The GameCamera gets a linear `DistanceFog` (`distance_fog()`): `HORIZON_COLOR` srgb(0.72, 0.81, 0.90), from `FOG_START_M` 24 m to `FOG_END_M` 96 m, with no sun tint.
+  - With `Assets<Image>` present, the camera also gets a `Skybox` built by `sky_cubemap()`. It is an Rgba16Float cubemap with 256² faces holding `sky_radiance(dir)`:
+    - exactly `HORIZON_COLOR` at and below the horizon (so fogged terrain meets the sky without a seam);
+    - a gradient (`e^0.5`) up to `ZENITH_COLOR` srgb(0.33, 0.55, 0.88);
+    - a warm glow (cos^256) and an HDR sun disc (radius 1.5°, edge smoothed over ±0.5°) around `sun_direction()`.
+  - The skybox's brightness is `1 / Exposure::default().exposure()`, so a texel reaches the screen at its own linear value, like the fog and clear colors.
+  - `sun_transform()` is now shared by `spawn_sun` and the sky. `cube_texel_direction` encodes wgpu face order and Bevy's skybox z-flip.
+  - `SKY_COLOR` (the ClearColor, shown only without a skybox) is now `HORIZON_COLOR`.
+- docs/SAD.md §11.3: one sentence records the owner's extension (fog in the horizon color, skybox gradient and sun disc).
+- Re-shot: boot_renders-123, walk_and_jump-190, fly_camera-199, and the horizon_readable frames. The stale boot_renders-129/130, fly_camera-205 and walk_and_jump-195 are removed; each of these scenarios saves one frame.
+Tests added:
+- render::tests::camera_has_distance_fog_matching_sky. It first failed with NoEntities: the camera had no DistanceFog. It checks:
+  - linear fog with the constants; start ≥ 16 m; the default world's shell 64 m from the spawn is at least half fog but not all fog;
+  - fog = ClearColor = HORIZON_COLOR, untinted;
+  - sky_radiance equals the fog color at and below the horizon at all 360 azimuths; the zenith is darker and bluer; the sky darkens steadily upward;
+  - the disc sits along the spawned Sun's back() and is HDR, with a glow around it;
+  - every skybox texel equals sky_radiance (f16 tolerance), texels below the horizon equal the fog, and the brightest texel lies inside the disc; face orientation;
+  - brightness × exposure = 1;
+  - a logic-only app has fog and no skybox.
+- e2e horizon_readable. Default world. The scene and the WARP measurements:
+  - From above the -X edge, it measures the rendered fog color from below-horizon sky pixels: (156.7, 172.4, 187.5), max deviation 1.1.
+  - Terrain past 92 m must be within 20 of that color; it measured 0.9, so the fog shader agrees with the sky.
+  - The sky 17° up is darker and bluer: (124.9, 151.3, 190.3).
+  - Looking at sun_direction(), the center block is ≥ 230 (247.8); the mirrored direction measured 130.6.
+  - The player then stands at the default spawn (the top of the middle column) and looks level north, east, south and west. Measured in each direction: upper-third p10 luminance 144.6–146.0 (must be > 64), and far terrain and shell p10 142–145 (must be > 64).
+  - Mean color distance to the fog, with near and far classed by raycasting each sampled pixel into the host world: far (> 56 m) 33–40 against near (< 24 m) 122–148; the limit is far ≤ 0.6 × near.
+  - Red run: with fog and skybox off, it failed on the flat sky. In a diagnostic run with the sky checks off, north measured p10 49.9, and far terrain was farther from the fog than near (206.6 vs 137.0).
+- test-fix (commit 9d9406d, before the feature): testkit screenshot::tests::captures_nonblack_image checks that a capture shows the ClearColor, and changes to it, at the corners. The skybox draws over the clear color, so its scene now removes the camera's Skybox. No assertion changed; on the old code the removal is a no-op.
+- All 14 E2E scenarios passed with the first version: 128² cubemap, hard disc edge. After the reviewer's notes, the cubemap went to 256² with a smoothed disc edge, and the fog reference moved to the world's edge. horizon_readable, boot_renders, walk_and_jump and fly_camera were re-run and pass; the other 10 were not re-run for that change, which touches only the sky texture.
+Decisions:
+- Sky: a CPU-generated cubemap Skybox, not Bevy's Atmosphere. It is cheap on WARP: one full-screen pass, ~3 MB, built once at startup. Its horizon equals the fog color by construction.
+- Fog: linear rather than exponential, so nothing within 24 m (walls, tunnels, rooms, the lantern tests) is touched. It has no directional-light tint: Bevy's tint varies with shadows, which would break the seamless match with the sky.
+- Threshold NEAR_BLACK 64: the old look measured p10 49.9 in a level view (the slab itself was about 25). The new look measures about 145.
+- Accepted exception: walk_and_jump-190 still shows a dark wall in its upper part. That scenario's world is 32 m wide, so its bedrock shell is 12–16 m away, inside the fog-free 24 m, and it shows bedrock's own color (24, 22, 28). A shell close by is dark at any distance at the world's edge, in the real game too. Pulling the fog in to reach it would haze every wall and tunnel. A brighter bedrock color (assets/materials.ron) or a shell that stops at the surface (worldgen) would fix it; both are outside F088's render scope and left to the owner.
+- Reviewer: GAPS. Acted on:
+  - the jagged sun disc (256² faces, smoothed edge);
+  - the fog reference measured only from the skybox (added the check that terrain past 92 m matches it);
+  - the upper-third check mostly hitting sky (added the far-terrain and shell p10 check).
+  Recorded only: the walk_and_jump exception above.
+- Environment: mid-session, links stalled with Windows Defender busy, and a killed build left a corrupt incremental cache (LNK2001 on anon symbols). `cargo clean -p rmc_client` fixed it; no code change was needed.
+Next: F089 (per-face directional shading) is now unblocked; F090, F091 and F092 are also ready.
+Blockers: none.
