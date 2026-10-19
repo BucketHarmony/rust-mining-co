@@ -411,8 +411,15 @@ mod tests {
             )
         );
         assert_eq!(player(&mut app).unwrap().feet, feet);
-        // It stands there: grounded, not moved (the controller rests
-        // SKIN_M above the floor).
+        // It stands there, grounded (the controller rests SKIN_M above the
+        // floor). The spawn column is free, but the box also reaches into
+        // the neighbouring columns, and where those hold rock the controller
+        // pushes the player out to the nearest free spot (F086), which is
+        // free_feet_near's.
+        let rest = [
+            feet,
+            rmc_client::free_feet_near(&generated, feet).expect("a free spot near the spawn"),
+        ];
         step_until(&mut app, "grounded", |app| {
             player(app).is_some_and(|p| p.grounded)
         });
@@ -423,8 +430,8 @@ mod tests {
         let p = player(&mut app).unwrap();
         assert!(p.grounded);
         assert!(
-            (p.feet - feet).length() <= 2.0 * SKIN_M,
-            "{:?} vs {feet:?}",
+            rest.iter().any(|r| (p.feet - *r).length() <= 2.0 * SKIN_M),
+            "{:?} vs {rest:?}",
             p.feet
         );
         assert_eq!(player_count(&mut app), 1, "spawned once");
