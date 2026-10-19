@@ -17,5 +17,11 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
+rmc_worldgen.workspace = true
 proptest.workspace = true
 wesl.workspace = true
+
+[[bench]]
+name = "mesh_chunk"
+harness = false

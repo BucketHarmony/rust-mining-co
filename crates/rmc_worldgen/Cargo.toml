@@ -17,3 +17,10 @@ thiserror.workspace = true
 tracing.workspace = true
 xxhash-rust.workspace = true
 postcard.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "gen_world"
+harness = false

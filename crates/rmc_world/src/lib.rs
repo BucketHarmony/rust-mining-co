@@ -1,6 +1,7 @@
 //! Bevy-free world core: storage, materials, shapes, edits, queries, raycast, save format.
 #![deny(unsafe_code)]
 
+mod bench_smoke;
 pub mod chunk;
 pub mod coords;
 pub mod damage;
