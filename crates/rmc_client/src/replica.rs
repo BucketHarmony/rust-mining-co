@@ -262,7 +262,7 @@ impl Plugin for ReplicaPlugin {
 }
 
 /// The `ServerMsg` handler: the only place the client changes cells.
-fn apply_host_messages(
+pub(crate) fn apply_host_messages(
     mut commands: Commands,
     mut inbox: MessageReader<FromHost>,
     mut outbox: MessageWriter<ToHost>,

@@ -1055,8 +1055,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. One-swing materials (topsoil) vanish with no swing animation, flash, particles or sound, so digging feels weightless. Add a short crosshair or outline pulse on every swing and a brief break effect at the cell when a delta removes the targeted cell (a few cheap chip cubes or a flash; no new crates unless one is confirmed for the pinned Bevy minor). HudState gains fields mirroring the feedback (for example swing_pulse and last_break) so the test asserts them without pixels."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. One-swing materials (topsoil) vanish with no swing animation, flash, particles or sound, so digging feels weightless. Add a short crosshair or outline pulse on every swing and a brief break effect at the cell when a delta removes the targeted cell (a few cheap chip cubes or a flash; no new crates unless one is confirmed for the pinned Bevy minor). HudState gains fields mirroring the feedback (for example swing_pulse and last_break) so the test asserts them without pixels.",
+      "passedAt": "2026-10-19T13:34:46Z"
     },
     {
       "id": "F091",

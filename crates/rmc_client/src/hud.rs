@@ -20,8 +20,19 @@
 //!   after every `Applied` result that yields (SAD §8.4). [`ClientInventory`]
 //!   holds the last totals; `Welcome` empties it. Yields in `Applied` are
 //!   not added on top, so counts are never doubled.
+//! - Swing feedback: every swing the pickaxe sends ([`SwingState`]) starts a
+//!   pulse of [`SWING_PULSE_S`]: the crosshair arms grow and warm, and the
+//!   outline grows and lights up, both fading back.
+//! - Break feedback: when an `Applied` delta turns a solid cell into a
+//!   non-solid one, and that cell was the targeted cell or one this client
+//!   has damaged, the cell gets a break effect of [`BREAK_EFFECT_S`]: a
+//!   flash outline that grows and fades, and chips in the cell's material
+//!   color flying out (gizmos, when the app has them). The material is read
+//!   from the replica before the delta applies. `Full` deltas (big edits,
+//!   never a pickaxe swing) and snapshots show no effect.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use bevy::gizmos::GizmoPlugin;
 use bevy::prelude::*;
@@ -35,9 +46,9 @@ use rmc_world::materials::{MaterialId, MaterialTable};
 use crate::controller::Player;
 use crate::flycam::FlyCam;
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
-use crate::pickaxe::{PickTarget, PickaxeSystems};
+use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
 use crate::render::GameCamera;
-use crate::replica::Replica;
+use crate::replica::{Replica, apply_host_messages};
 
 /// The targeted cell's outline color: dark, to read against the mostly
 /// light terrain colors.
@@ -55,6 +66,39 @@ pub const DAMAGE_BAR_SIZE: Vec2 = Vec2::new(120.0, 6.0);
 
 /// The crosshair's arm length and thickness, in logical pixels.
 pub const CROSSHAIR_SIZE: Vec2 = Vec2::new(14.0, 2.0);
+
+/// How long the crosshair and outline pulse after a swing, in seconds.
+pub const SWING_PULSE_S: f32 = 0.15;
+
+/// How long the effect at a broken cell lasts, in seconds.
+pub const BREAK_EFFECT_S: f32 = 0.4;
+
+/// The crosshair arms' extra length at the peak of a swing pulse, as a
+/// fraction of [`CROSSHAIR_SIZE`].
+pub const SWING_PULSE_GROWTH: f32 = 0.6;
+
+/// The crosshair and outline color at the peak of a swing pulse.
+pub const SWING_PULSE_COLOR: Color = Color::srgb(1.0, 0.82, 0.35);
+
+/// The outline's extra size at the peak of a swing pulse, relative to the
+/// cell.
+pub const OUTLINE_PULSE_GROWTH: f32 = 0.12;
+
+/// The break flash outline's extra size at the end of the effect, relative
+/// to the cell.
+pub const BREAK_FLASH_GROWTH: f32 = 0.5;
+
+/// Number of chips a breaking cell throws.
+pub const BREAK_CHIPS: usize = 8;
+
+/// A chip's edge length, in meters.
+pub const CHIP_SIZE_M: f32 = 0.1;
+
+/// A chip's initial speed, in meters per second.
+pub const CHIP_SPEED_M_S: f32 = 2.0;
+
+/// The downward acceleration on chips, in meters per second squared.
+pub const CHIP_GRAVITY_M_S2: f32 = 9.8;
 
 /// Damage dealt to the targeted cell so far, out of its hardness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +189,21 @@ impl DamageEstimate {
     }
 }
 
+/// When the last swing and the last break happened, in `Time` elapsed.
+#[derive(Resource, Debug, Default)]
+struct Feedback {
+    /// [`SwingState::swings`] as of the last frame.
+    seen_swings: u64,
+    swung_at: Option<Duration>,
+    /// The broken cell, the material it held, and when it broke.
+    broke: Option<(CellPos, MaterialId, Duration)>,
+}
+
+/// `1.0` at age zero, falling linearly to `0.0` at `length_s`.
+fn fade(age: Duration, length_s: f32) -> f32 {
+    (1.0 - age.as_secs_f32() / length_s).max(0.0)
+}
+
 /// [`HudPlugin`]'s system sets.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HudSystems {
@@ -162,6 +221,12 @@ pub struct HudRoot;
 
 #[derive(Component, Debug)]
 struct CrosshairNode;
+
+/// One of the crosshair's two arms.
+#[derive(Component, Debug)]
+pub(crate) struct CrosshairArm {
+    pub(crate) vertical: bool,
+}
 
 #[derive(Component, Debug)]
 struct TargetText;
@@ -187,12 +252,15 @@ impl Plugin for HudPlugin {
             .init_resource::<ClientInventory>()
             .init_resource::<DamageEstimate>()
             .init_resource::<PickTarget>()
+            .init_resource::<Feedback>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 PreUpdate,
                 track_host
                     .in_set(HudSystems::Track)
-                    .after(NetSystems::Receive),
+                    .after(NetSystems::Receive)
+                    // Reads the cells a delta replaces before they change.
+                    .before(apply_host_messages),
             )
             .add_systems(
                 Update,
@@ -208,37 +276,65 @@ impl Plugin for HudPlugin {
             );
         // A logic-only app has no gizmos.
         if app.is_plugin_added::<GizmoPlugin>() {
-            app.add_systems(Update, draw_outline.after(HudSystems::Show));
+            app.add_systems(Update, (draw_outline, draw_break).after(HudSystems::Show));
         }
     }
 }
 
-/// Follows the host: inventory totals, and cells whose estimate is void.
+/// Follows the host: inventory totals, cells whose estimate is void, and
+/// cells the player sees break.
+#[allow(clippy::too_many_arguments)]
 fn track_host(
     mut inbox: MessageReader<FromHost>,
+    replica: Option<Res<Replica>>,
+    target: Res<PickTarget>,
+    time: Res<Time>,
     mut inventory: ResMut<ClientInventory>,
     mut estimate: ResMut<DamageEstimate>,
+    mut feedback: ResMut<Feedback>,
 ) {
+    let world = replica.as_deref().map(Replica::world);
+    let solid = |id: Option<MaterialId>| {
+        let def = id.and_then(|id| world.and_then(|w| w.materials().get(id)));
+        def.is_some_and(|d| d.is_solid())
+    };
+    let aimed = target.0.map(|hit| hit.cell);
     for FromHost(msg) in inbox.read() {
         match msg {
             ServerMsg::Welcome { .. } => {
                 inventory.0 = Inventory::new();
                 estimate.0.clear();
+                feedback.broke = None;
             }
             ServerMsg::Inventory { items } => inventory.0 = Inventory::from_items(items),
             ServerMsg::ChunkSnapshot { pos, .. } => estimate.clear_chunk(*pos),
             ServerMsg::Applied(result) => {
+                // The targeted cell's break wins over the other cells'.
+                let mut broke: Option<(CellPos, MaterialId)> = None;
                 for delta in &result.deltas {
                     match delta {
                         ChunkDelta::Cells { pos, changes, .. } => {
-                            for &(index, _) in changes {
+                            for &(index, new) in changes {
                                 let cell =
                                     CellPos::from_chunk_local(*pos, LocalPos::from_index(index));
+                                let ours = aimed == Some(cell) || estimate.0.contains_key(&cell);
+                                let old = world.and_then(|w| w.get_cell(cell));
+                                if ours
+                                    && solid(old)
+                                    && !solid(Some(new))
+                                    && let Some(old) = old
+                                    && (broke.is_none() || aimed == Some(cell))
+                                {
+                                    broke = Some((cell, old));
+                                }
                                 estimate.0.remove(&cell);
                             }
                         }
                         ChunkDelta::Full { pos, .. } => estimate.clear_chunk(*pos),
                     }
+                }
+                if let Some((cell, material)) = broke {
+                    feedback.broke = Some((cell, material, time.elapsed()));
                 }
             }
             ServerMsg::Rejected { .. } | ServerMsg::PlayerStates(_) | ServerMsg::Saved { .. } => {}
@@ -291,9 +387,19 @@ fn update_state(
     estimate: Res<DamageEstimate>,
     inventory: Res<ClientInventory>,
     fly: Option<Res<FlyCam>>,
+    swings: Option<Res<SwingState>>,
+    time: Res<Time>,
+    mut feedback: ResMut<Feedback>,
     players: Query<(), With<Player>>,
     mut hud: ResMut<HudState>,
 ) {
+    let now = time.elapsed();
+    if let Some(swings) = swings
+        && swings.swings() != feedback.seen_swings
+    {
+        feedback.seen_swings = swings.swings();
+        feedback.swung_at = Some(now);
+    }
     let world = replica.as_deref().map(Replica::world);
     let materials = world
         .map(|w| w.materials().as_ref())
@@ -312,6 +418,17 @@ fn update_state(
                 count,
             })
             .collect(),
+        swing_pulse: feedback
+            .swung_at
+            .map_or(0.0, |at| fade(now.saturating_sub(at), SWING_PULSE_S)),
+        last_break: feedback.broke.and_then(|(cell, material, at)| {
+            let fade = fade(now.saturating_sub(at), BREAK_EFFECT_S);
+            (fade > 0.0).then_some(BreakEffect {
+                cell,
+                material,
+                fade,
+            })
+        }),
         ..default()
     };
     let aimed = target.0.filter(|_| crosshair && !flying);
@@ -354,6 +471,7 @@ fn spawn_hud(mut commands: Commands) {
     };
     let arm = |w: f32, h: f32| {
         (
+            CrosshairArm { vertical: h > w },
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(-w / 2.0),
@@ -455,9 +573,25 @@ fn show_state(
     mut crosshair: Query<&mut Visibility, (With<CrosshairNode>, Without<DamageBar>)>,
     mut bar: Query<&mut Visibility, (With<DamageBar>, Without<CrosshairNode>)>,
     mut fill: Query<&mut Node, With<DamageFill>>,
+    mut arms: Query<(&CrosshairArm, &mut Node, &mut BackgroundColor), Without<DamageFill>>,
     mut target_text: Query<&mut Text, (With<TargetText>, Without<InventoryText>)>,
     mut inventory_text: Query<&mut Text, (With<InventoryText>, Without<TargetText>)>,
 ) {
+    let pulse = hud.swing_pulse;
+    let len = CROSSHAIR_SIZE.x * (1.0 + SWING_PULSE_GROWTH * pulse);
+    let color = pulse_color(Color::WHITE, pulse);
+    for (arm, mut node, mut background) in &mut arms {
+        let (w, h) = if arm.vertical {
+            (CROSSHAIR_SIZE.y, len)
+        } else {
+            (len, CROSSHAIR_SIZE.y)
+        };
+        node.left = Val::Px(-w / 2.0);
+        node.top = Val::Px(-h / 2.0);
+        node.width = Val::Px(w);
+        node.height = Val::Px(h);
+        background.set_if_neq(BackgroundColor(color));
+    }
     let shown = |on: bool| {
         if on {
             Visibility::Inherited
@@ -488,13 +622,61 @@ fn show_state(
     }
 }
 
-/// Outlines the targeted cell.
+/// `base` blended toward [`SWING_PULSE_COLOR`] by `pulse` (0.0..=1.0).
+fn pulse_color(base: Color, pulse: f32) -> Color {
+    base.mix(&SWING_PULSE_COLOR, pulse)
+}
+
+/// Outlines the targeted cell; a swing makes it grow and light up.
 fn draw_outline(hud: Res<HudState>, mut gizmos: Gizmos) {
     if let Some(cell) = hud.target {
+        let scale = OUTLINE_SCALE + OUTLINE_PULSE_GROWTH * hud.swing_pulse;
         gizmos.cube(
             Transform::from_translation(cell.center_m())
-                .with_scale(Vec3::splat(CELL_SIZE_M * OUTLINE_SCALE)),
-            OUTLINE_COLOR,
+                .with_scale(Vec3::splat(CELL_SIZE_M * scale)),
+            pulse_color(OUTLINE_COLOR, hud.swing_pulse),
+        );
+    }
+}
+
+/// The break effect: a flash outline growing out of the cell, and
+/// [`BREAK_CHIPS`] chips of the cell's material thrown up and out from its
+/// center, all fading out.
+fn draw_break(
+    hud: Res<HudState>,
+    replica: Option<Res<Replica>>,
+    client_materials: Option<Res<ClientMaterials>>,
+    mut gizmos: Gizmos,
+) {
+    let Some(effect) = hud.last_break else {
+        return;
+    };
+    let materials = replica
+        .as_deref()
+        .map(|r| r.world().materials().as_ref())
+        .or(client_materials.as_deref().map(|m| m.0.as_ref()));
+    let [r, g, b, _] = materials
+        .and_then(|m| m.get(effect.material))
+        .map_or([255; 4], |d| d.color);
+    let chip_color = Color::srgba_u8(r, g, b, u8::MAX).with_alpha(effect.fade);
+    let age = BREAK_EFFECT_S * (1.0 - effect.fade);
+    let center = effect.cell.center_m();
+    let flash = CELL_SIZE_M * (OUTLINE_SCALE + BREAK_FLASH_GROWTH * (1.0 - effect.fade));
+    gizmos.cube(
+        Transform::from_translation(center).with_scale(Vec3::splat(flash)),
+        Color::WHITE.with_alpha(effect.fade),
+    );
+    for i in 0..BREAK_CHIPS {
+        // Evenly around the vertical axis, alternately steep and shallow.
+        let angle = std::f32::consts::TAU * i as f32 / BREAK_CHIPS as f32;
+        let rise = if i % 2 == 0 { 1.0 } else { 0.4 };
+        let velocity = Vec3::new(angle.cos(), rise, angle.sin()).normalize() * CHIP_SPEED_M_S;
+        let pos = center + velocity * age + Vec3::NEG_Y * (CHIP_GRAVITY_M_S2 * age * age / 2.0);
+        gizmos.cube(
+            Transform::from_translation(pos)
+                .with_rotation(Quat::from_rotation_y(angle + age * CHIP_SPEED_M_S))
+                .with_scale(Vec3::splat(CHIP_SIZE_M)),
+            chip_color,
         );
     }
 }

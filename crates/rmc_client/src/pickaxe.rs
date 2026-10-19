@@ -190,6 +190,14 @@ mod tests {
     use std::sync::Arc;
 
     use crate::controller::ControllerPlugin;
+    use crate::hud::{
+        BREAK_EFFECT_S, BreakEffect, CROSSHAIR_SIZE, CrosshairArm, HudPlugin, HudState,
+        SWING_PULSE_S,
+    };
+    use crate::net::{ClientMaterials, FromHost, NetPlugin};
+    use crate::replica::ReplicaPlugin;
+    use rmc_protocol::ServerMsg;
+    use rmc_world::edit::EditResult;
 
     const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
     const TOOLS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/tools.ron");
@@ -259,6 +267,17 @@ mod tests {
         /// second (one fixed step per frame), a player standing at `feet`
         /// looking along -Z, and one frame run.
         fn new(world: World, feet: Vec3, profile: ToolProfile) -> Self {
+            Self::build(world, feet, profile, false)
+        }
+
+        /// [`Rig::new`] plus the HUD, the replica's message handler and the
+        /// network messages, so host answers can be delivered with
+        /// [`Rig::deliver`].
+        fn with_hud(world: World, feet: Vec3, profile: ToolProfile) -> Self {
+            Self::build(world, feet, profile, true)
+        }
+
+        fn build(world: World, feet: Vec3, profile: ToolProfile, hud: bool) -> Self {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins)
                 .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
@@ -270,11 +289,15 @@ mod tests {
                 .init_resource::<FlyCam>()
                 .init_resource::<Sent>()
                 .init_resource::<Frame>()
+                .insert_resource(ClientMaterials(world.materials().clone()))
                 .insert_resource(Replica::from_world(world))
                 .insert_resource(Pickaxe(profile))
                 .add_plugins((ControllerPlugin, PickaxePlugin))
                 .add_systems(First, count_frame)
                 .add_systems(Last, record);
+            if hud {
+                app.add_plugins((NetPlugin, ReplicaPlugin, HudPlugin));
+            }
             let player = app.world_mut().spawn(Player::at(feet)).id();
             let mut rig = Self { app, player };
             rig.frames(1);
@@ -327,6 +350,36 @@ mod tests {
 
         fn target(&self) -> Option<Hit> {
             self.app.world().resource::<PickTarget>().0
+        }
+
+        fn hud(&self) -> HudState {
+            self.app.world().resource::<HudState>().clone()
+        }
+
+        /// Delivers `msgs` as if the host had sent them, and runs a frame.
+        fn deliver(&mut self, msgs: impl IntoIterator<Item = ServerMsg>) {
+            for msg in msgs {
+                self.app.world_mut().write_message(FromHost(msg));
+            }
+            self.frames(1);
+        }
+
+        /// The drawn length of the crosshair's horizontal and vertical arms.
+        fn arm_lengths(&mut self) -> (f32, f32) {
+            let px = |v: Val| match v {
+                Val::Px(px) => px,
+                other => panic!("arm size {other:?}"),
+            };
+            let mut lengths = (0.0, 0.0);
+            let world = self.app.world_mut();
+            for (arm, node) in world.query::<(&CrosshairArm, &Node)>().iter(world) {
+                if arm.vertical {
+                    lengths.1 = px(node.height);
+                } else {
+                    lengths.0 = px(node.width);
+                }
+            }
+            lengths
         }
 
         fn expected_hit(&self) -> Option<Hit> {
@@ -521,6 +574,177 @@ mod tests {
         rig.hold(true);
         rig.frames(30);
         assert_eq!(rig.target(), None);
+        assert!(rig.edits().is_empty());
+    }
+
+    /// Applies `op` over `shape` to `world` as player `issuer`.
+    fn apply(world: &mut World, issuer: u32, op: EditOp, shape: Shape) -> EditResult {
+        world.apply(&EditCommand {
+            id: CommandId::default(),
+            issuer: PlayerId(issuer),
+            op,
+            shape,
+        })
+    }
+
+    #[test]
+    fn swing_and_break_trigger_feedback() {
+        let p = profile();
+        let fps = 60.0;
+        // The wall cell straight ahead of the eye is topsoil: one swing
+        // breaks it.
+        let wall_cell = CellPos::new(32, 7, 27);
+        let soil_world = || {
+            let mut w = world(Some(27));
+            let topsoil = w.materials().id("topsoil").unwrap();
+            assert!(w.materials().get(topsoil).unwrap().hardness <= p.damage);
+            let set = apply(&mut w, 0, EditOp::Set(topsoil), Shape::Cell(wall_cell));
+            assert_eq!(set.status, EditStatus::Applied);
+            w
+        };
+        let mut host = soil_world();
+        let topsoil = host.materials().id("topsoil").unwrap();
+        let stone = host.materials().id("stone").unwrap();
+        let mut rig = Rig::with_hud(soil_world(), feet_at_z(16.0), p);
+
+        // Before any swing: no pulse, no break, the crosshair at rest.
+        let hud = rig.hud();
+        assert_eq!(hud.target, Some(wall_cell));
+        assert_eq!((hud.swing_pulse, hud.last_break), (0.0, None));
+        let rest = (CROSSHAIR_SIZE.x, CROSSHAIR_SIZE.x);
+        assert_eq!(rig.arm_lengths(), rest);
+
+        // The swing's frame: a full pulse, and the crosshair grows.
+        rig.hold(true);
+        rig.frames(1);
+        rig.hold(false);
+        assert_eq!(rig.edits().len(), 1);
+        assert_eq!(rig.hud().swing_pulse, 1.0);
+        let (h, v) = rig.arm_lengths();
+        assert!(h > 1.25 * CROSSHAIR_SIZE.x && v == h, "{h} {v}");
+
+        // It fades steadily and is gone within SWING_PULSE_S.
+        let pulse_frames = (SWING_PULSE_S * fps).ceil() as u32;
+        let mut last = 1.0;
+        for _ in 0..pulse_frames {
+            rig.frames(1);
+            let now = rig.hud().swing_pulse;
+            assert!(now < last || now == 0.0, "{now} after {last}");
+            last = now;
+        }
+        assert_eq!(last, 0.0);
+        assert_eq!(rig.arm_lengths(), rest);
+
+        // Nothing breaks until the host says so.
+        assert_eq!(rig.hud().last_break, None);
+        let result = host.apply(&rig.edits()[0].1);
+        assert_eq!(result.status, EditStatus::Applied);
+        assert!(!result.deltas.is_empty(), "one swing breaks topsoil");
+        rig.deliver([ServerMsg::Applied(result)]);
+        let replica = rig.app.world().resource::<Replica>();
+        assert_eq!(replica.world().get_cell(wall_cell), Some(MaterialId::AIR));
+        assert_eq!(
+            rig.hud().last_break,
+            Some(BreakEffect {
+                cell: wall_cell,
+                material: topsoil,
+                fade: 1.0
+            })
+        );
+
+        // The break effect fades steadily and is gone within BREAK_EFFECT_S.
+        let break_frames = (BREAK_EFFECT_S * fps).ceil() as u32;
+        let mut last = 1.0;
+        for _ in 0..break_frames {
+            rig.frames(1);
+            let now = rig.hud().last_break.map_or(0.0, |b| b.fade);
+            assert!(now < last || now == 0.0, "{now} after {last}");
+            last = now;
+        }
+        assert_eq!(rig.hud().last_break, None);
+
+        // Every swing pulses: hold at the stone floor until it has taken the
+        // swings that break it.
+        rig.player_mut().pitch = -1.0;
+        rig.frames(30);
+        let floor = rig.expected_hit().expect("the floor is in reach").cell;
+        let hardness = host.materials().get(stone).unwrap().hardness;
+        let swings = usize::from(hardness.div_ceil(p.damage));
+        assert!(swings >= 3, "stone takes several swings");
+        let before = rig.edits().len();
+        let mut pulse_peaks = Vec::new();
+        rig.hold(true);
+        while rig.edits().len() < before + swings {
+            rig.frames(1);
+            if rig.hud().swing_pulse == 1.0 {
+                pulse_peaks.push(rig.frame());
+            }
+            assert!(rig.frame() < 400, "the swings never came");
+        }
+        rig.hold(false);
+        let edits = rig.edits().split_off(before);
+        let swing_frames: Vec<u32> = edits.iter().map(|(f, _)| *f).collect();
+        assert_eq!(pulse_peaks, swing_frames, "one full pulse per swing");
+
+        // The host's answers: the swings before the last damage without
+        // breaking (no effect), the last breaks the floor cell.
+        for (i, (_, cmd)) in edits.iter().enumerate() {
+            assert_eq!(cmd.shape, Shape::Cell(floor));
+            let result = host.apply(cmd);
+            let breaks = i + 1 == swings;
+            assert_eq!(result.deltas.is_empty(), !breaks, "answer {i}");
+            rig.deliver([ServerMsg::Applied(result)]);
+            let expected = breaks.then_some(BreakEffect {
+                cell: floor,
+                material: stone,
+                fade: 1.0,
+            });
+            assert_eq!(rig.hud().last_break, expected, "answer {i}");
+        }
+        rig.frames(break_frames);
+        assert_eq!(rig.hud().last_break, None);
+
+        // A cell removed that the player neither aimed at nor damaged: no
+        // effect.
+        let target = rig
+            .expected_hit()
+            .expect("the floor below is in reach")
+            .cell;
+        let far = CellPos::new(10, 3, 10);
+        assert_ne!(far, target);
+        let removed = apply(&mut host, 2, EditOp::Remove, Shape::Cell(far));
+        assert!(!removed.deltas.is_empty());
+        rig.deliver([ServerMsg::Applied(removed)]);
+        assert_eq!(rig.hud().last_break, None);
+
+        // The targeted cell replaced by another solid: not a break.
+        let granite = host.materials().id("granite").unwrap();
+        let set = apply(&mut host, 2, EditOp::Set(granite), Shape::Cell(target));
+        assert!(!set.deltas.is_empty());
+        rig.deliver([ServerMsg::Applied(set)]);
+        assert_eq!(rig.hud().last_break, None);
+
+        // The targeted cell removed, even by another player: the effect
+        // shows, with the material the cell held.
+        let removed = apply(&mut host, 2, EditOp::Remove, Shape::Cell(target));
+        rig.deliver([ServerMsg::Applied(removed)]);
+        assert_eq!(
+            rig.hud().last_break,
+            Some(BreakEffect {
+                cell: target,
+                material: granite,
+                fade: 1.0
+            })
+        );
+
+        // With the fly camera on there is no swing, so no pulse.
+        let mut rig = Rig::with_hud(soil_world(), feet_at_z(16.0), p);
+        rig.app.world_mut().resource_mut::<FlyCam>().enabled = true;
+        rig.hold(true);
+        for _ in 0..30 {
+            rig.frames(1);
+            assert_eq!(rig.hud().swing_pulse, 0.0);
+        }
         assert!(rig.edits().is_empty());
     }
 }
