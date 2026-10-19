@@ -1101,3 +1101,53 @@ Decisions:
   - cursor grab (that is F091).
 Next: F086 (player-overlap safety). Then F087–F092 to finish M7.
 Blockers: none.
+
+## 2026-10-19 10:30 — F086 Player-overlap safety: host skips Set cells inside a player's box; controller pushes an embedded player out — passed
+Done:
+- rmc_protocol: `PLAYER_WIDTH_M` (0.6) and `PLAYER_HEIGHT_M` (1.7) now live in `rmc_protocol::msg` and are re-exported at the crate root. They describe the box whose bottom face is centered on `PlayerState::pos`. `rmc_client::controller` re-exports them, so existing paths still work.
+- rmc_world: `World::apply_keeping_clear(cmd, &[CellAabb])`. It is `apply`, except that a `Set` also skips each cell inside one of the boxes, the same way the other §8.2 skips work. A skipped cell keeps its material and damage. Paint, Remove and Damage ignore the boxes. `apply` is `apply_keeping_clear(cmd, &[])`.
+- rmc_host:
+  - The host stores each joined player's last `PlayerState` as the cell box its 0.6 × 1.7 m box overlaps (`player_cells`). Touching faces do not count; far-off coordinates saturate.
+  - Non-finite positions are ignored, and the last box stays. Players that have not joined are ignored too.
+  - `Host::protected_cells(player)` exposes the box. Every Edit goes through `apply_keeping_clear` with all the players' boxes, the issuer's own included.
+  - glam moved from a dev-dependency to a dependency.
+- rmc_client::controller: `step` starts with `push_out`. If the box overlaps a `Solid` cell, the feet move to `editor::free_feet_near`'s spot (nearest first, then higher, deterministic). Velocity and step smoothing are dropped and `grounded` is cleared.
+  - Overlap with cells that block without being solid (an unloaded chunk, outside the bounds) does not trigger it. With no free spot in reach, the player stays.
+  - The module doc no longer says an embedded box is not pushed out.
+- docs/SAD.md §8.2: one sentence records the owner's extension (Set skips cells inside a joined player's last-reported box; a player with no PlayerState is not protected).
+Tests added:
+- host::tests::set_skips_cells_inside_a_player_box. It first failed against a `protected_cells` stub that returned None. It checks:
+  - no protection before any PlayerState;
+  - the exact cell box for feet (20, 16, 5) (the floor row only touches it);
+  - a 6 × 7 × 6 Set from another player sets all but the 16 box cells, and the delta count matches;
+  - the issuer's own Set is skipped, and a Set wholly inside the box is Applied with no delta;
+  - Paint is unaffected;
+  - two players are protected at once, and a moved player's old cells are no longer protected;
+  - NaN/inf states are ignored, and an unjoined player's state is ignored;
+  - both replicas hash equal to the host throughout.
+- controller::tests::embedded_player_is_pushed_out. It first failed: "pushed out to (16, 2.001, 16)", the player still in the stone. It checks:
+  - a Set over the head moves the player to free_feet_near's spot, standing on the floor, and it walks on;
+  - sunk 0.2 m into the floor, it is pushed straight up (up wins ties), and the fall velocity is dropped;
+  - a box in an unloaded chunk is not moved sideways;
+  - in all-solid rock it stays put;
+  - through ControllerPlugin, a player spawned in rock is out after the first fixed steps.
+  - never_penetrates_solid_proptest stays green.
+- world::tests::apply_keeping_clear_skips_set_cells_only, from the reviewer's note. It was written after the code, so it never ran red. It checks:
+  - with no boxes, the result equals `apply`;
+  - a box straddling the x = 0 chunk border is skipped and keeps its damage;
+  - a Set inside a box gives an empty Applied result with nothing changed;
+  - Paint, Remove and Damage ignore the boxes.
+- test-fix (commit 1531853, before the feature): app::tests::headless_game_joins_and_receives_chunks asserted that the spawned player rests within 2·SKIN_M of `spawn_feet`.
+  - With the default seed, the 0.6 m box reaches into a neighbouring column that holds rock one cell higher, so F086 pushes the player up one cell (feet 48.5 → 49.0).
+  - The test-fix commit accepted either the spawn or `free_feet_near(spawn)`, so it passed on the old code. The feature commit made the check exact again: the rest is `free_feet_near(generated, spawn)`, which is the spawn itself when its box is free.
+- All 12 E2E scenarios (scripts/e2e.sh) pass with the change, including place_and_climb, editor_brush_sphere, save_load_roundtrip and the M6 playtest scenario.
+Decisions:
+- `World::apply_keeping_clear` is a variant of `World::apply`, not a new way to change cells. Rule 2's list is read as including it. The floats (player box → cell box) stay in rmc_host. rmc_world gets only integer `CellAabb`s (rule 3).
+- The skip covers every `Set`, `Set(air)` included, which is the owner's "any Set cell" wording. An embedded player can still be freed with Remove, or by the client's push-out.
+- The protected box is the last reported one (20 Hz). A Set that lands between reports can still catch a moving player; the client's push-out covers that.
+- `player_cells` is kept across `replace_world`: the client re-places its player after the new Welcome and reports at once. Clearing it would only drop protection for one report interval.
+- Push-out triggers only on `Solid` overlap, not on every `blocks` cell. A player waiting at an unloaded chunk is not moved somewhere else. Its target spot is `free_feet_near`'s, which does require the box clear of every blocking cell.
+- `spawn_feet` is unchanged (topmost solid cell of the middle column). The push-out handles an embedded spawn, as the owner's note lists. Making the spawn itself free would be a separate change to F077's decision.
+- Reviewer: PASS. Acted on: the SAD §8.2 sentence, the direct rmc_world test (damage kept, chunk-straddling box). Recorded only: Set(air) skipped, the stale box after replace_world, and the loose y bound in the unloaded-chunk case (x/z are exact).
+Next: F087 (lantern falloff). F088 and F092 follow F087; F090 and F091 are unblocked by F086.
+Blockers: none.
