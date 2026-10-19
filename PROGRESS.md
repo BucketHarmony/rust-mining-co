@@ -900,3 +900,39 @@ Decisions:
   - regenerate has no protocol message (F072 decision)
 Next: F073.
 Blockers: none.
+
+## 2026-10-18 23:45 — F073 Gizmos: chunk bounds, targeted cell, mesh-queue state — passed
+Done:
+- New module rmc_client::gizmo:
+  - `EditorGizmos` resource mirrors what the gizmos show, like HudState, so tests assert on it and not on pixels. It holds `chunk_bounds: Vec<ChunkPos>`, `target: Option<TargetGizmo { cell, face_normal, brush }>` and `mesh_queue: Vec<(ChunkPos, ChunkMeshState)>`, all ascending. It is empty while the editor is closed, and each part is empty while its `GizmoToggles` flag is off.
+  - `update_gizmos` (GizmoSystems::Update) runs after EditorSystems, FlyCamSystems, ControllerSystems::Look and MeshSystems.
+  - `draw_gizmos` (GizmoSystems::Draw) is added only when Bevy's GizmoPlugin is present, the same pattern as the HUD outline.
+  - `EditorGizmoPlugin` is added by EditorPlugin, so TestApp and the future app get it with no change.
+- rmc_client::editor:
+  - New `brush_target(op, hit)`: the cell on the face-normal side for Set (None for a zero normal), the hit cell for Remove / Paint. brush_command now uses it.
+  - New `view_ray` / `brush_hit` (pub(crate)), taken out of apply_brush. The brush and the targeted-cell gizmo share one ray, so they cannot disagree.
+- rmc_client::meshpipe: new `MeshQueue::states()` lists every known chunk with its earliest state, ascending.
+- rmc_client::replica: new `#[cfg(test)] Replica::mark_all_dirty`.
+Tests added: gizmo::tests::targeted_cell_gizmo_matches_hit.
+- It was written first against a stub update_gizmos that always gave an empty mirror. It failed with "Set: hit, and the cell in front: left None".
+- What it checks:
+  - closed, and open with every toggle off: no gizmos;
+  - Set: the target equals the brush raycast from the eye, and the brush cell is the face-normal neighbour; a click sends Shape::Cell at exactly that cell;
+  - Remove: the brush cell is the hit cell, and the click agrees;
+  - the target follows the player when the player moves, and follows the fly camera when it is on (beyond pickaxe reach);
+  - a camera inside rock gives a zero normal and no brush cell;
+  - looking at the sky gives no target;
+  - chunk bounds are the 8 chunks around the camera's chunk;
+  - with a zero in-flight budget, every chunk is listed as Queued;
+  - each toggle switches its part alone, and closing the editor clears everything.
+- Render sanity: a scratch E2E (not committed) turned on F2/F3/F4 in a render TestApp on WARP and confirmed that the gizmos draw.
+Decisions:
+- Chunk bounds draw only the resident chunks within CHUNK_BOUNDS_RADIUS = 1 chunk (on each axis) of the view ray's origin chunk: the fly camera while it is on, else the player's eye. Drawing every chunk of a 256-chunk world hid the terrain. With no view ray (no player, fly off), no bounds are drawn.
+- The targeted-cell gizmo shows the brush's target, not the pickaxe's: same ray, BRUSH_REACH_M, fly camera aware. The HUD already outlines the pickaxe target. The gizmo draws the hit cell (magenta) and, when it differs (Set), the cell the brush shape is centered on (cyan).
+- Mesh queue lists every chunk the pipeline knows, with MeshQueue::state's earliest state. Each is drawn as a box 4 % inside the chunk:
+  - Queued: yellow
+  - InFlight: orange
+  - AwaitingUpload: blue
+  - Meshed: faint green (alpha 0.15), the resting state, so pending chunks stand out.
+Next: F074 (E2E: place_and_climb and editor_brush_sphere). F075 is also unblocked.
+Blockers: none.
