@@ -180,6 +180,23 @@ impl MeshQueue {
         }
     }
 
+    /// Every chunk the pipeline knows with its earliest state
+    /// ([`MeshQueue::state`]), ascending.
+    pub fn states(&self) -> Vec<(ChunkPos, ChunkMeshState)> {
+        let known: BTreeSet<ChunkPos> = self
+            .queued
+            .iter()
+            .chain(self.in_flight.keys())
+            .chain(self.ready.keys())
+            .chain(self.meshed.keys())
+            .copied()
+            .collect();
+        known
+            .into_iter()
+            .filter_map(|pos| self.state(pos).map(|state| (pos, state)))
+            .collect()
+    }
+
     /// Chunks whose job is running, ascending.
     pub fn in_flight(&self) -> impl Iterator<Item = ChunkPos> + '_ {
         self.in_flight.keys().copied()

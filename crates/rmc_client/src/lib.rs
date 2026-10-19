@@ -4,6 +4,7 @@
 pub mod controller;
 pub mod editor;
 pub mod flycam;
+pub mod gizmo;
 pub mod hud;
 pub mod interp;
 pub mod material;
@@ -22,9 +23,13 @@ pub use controller::{
 pub use editor::{
     BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS, EditorAction, EditorPlugin,
     EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE, SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY,
-    brush_command, free_feet_near,
+    brush_command, brush_target, free_feet_near,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
+pub use gizmo::{
+    BRUSH_CELL_COLOR, CELL_GIZMO_SCALE, CHUNK_BOUNDS_COLOR, CHUNK_BOUNDS_RADIUS, EditorGizmoPlugin,
+    EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
+};
 pub use hud::{
     ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot, HudState,
     HudSystems,

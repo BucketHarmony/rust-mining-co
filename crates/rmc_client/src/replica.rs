@@ -87,6 +87,17 @@ impl Replica {
         }
     }
 
+    /// Marks every resident chunk dirty, for tests of the mesh pipeline's
+    /// readers.
+    #[cfg(test)]
+    pub(crate) fn mark_all_dirty(&mut self) {
+        self.dirty = self
+            .world
+            .iter_chunks_sorted()
+            .map(|(pos, _)| pos)
+            .collect();
+    }
+
     /// The replica world. Read-only: only host messages change it.
     pub fn world(&self) -> &World {
         &self.world

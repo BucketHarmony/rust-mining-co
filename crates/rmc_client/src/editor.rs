@@ -37,6 +37,7 @@ use rmc_world::{Hit, raycast};
 
 use crate::controller::{Aabb, ControllerSystems, EYE_HEIGHT_M, Player, blocks};
 use crate::flycam::{FlyCam, FlyCamSystems};
+use crate::gizmo::EditorGizmoPlugin;
 use crate::interp::InterpolatedEye;
 use crate::net::{ClientMaterials, CommandSeq, FromHost, ToHost};
 use crate::panel::{EditorStats, HostTickTime, sample_stats};
@@ -266,6 +267,17 @@ fn cycle_material(
     Some(list[next])
 }
 
+/// The cell `op`'s shape is centered on for a ray `hit`: the cell on the
+/// face-normal side for Set (`None` for a zero normal), the hit cell for
+/// Remove and Paint. See [`brush_command`].
+pub fn brush_target(op: BrushOp, hit: Hit) -> Option<CellPos> {
+    match op {
+        BrushOp::Set if hit.face_normal == IVec3::ZERO => None,
+        BrushOp::Set => Some(CellPos(hit.cell.0 + hit.face_normal)),
+        BrushOp::Remove | BrushOp::Paint => Some(hit.cell),
+    }
+}
+
 /// The op and shape the brush sends for a ray `hit`, or `None` when it
 /// sends nothing.
 ///
@@ -281,16 +293,11 @@ pub fn brush_command(
     table: &MaterialTable,
     hit: Hit,
 ) -> Option<(EditOp, Shape)> {
-    let (op, target) = match state.op {
-        BrushOp::Set => {
-            if hit.face_normal == IVec3::ZERO {
-                return None;
-            }
-            let material = state.brush_material(table)?;
-            (EditOp::Set(material), CellPos(hit.cell.0 + hit.face_normal))
-        }
-        BrushOp::Remove => (EditOp::Remove, hit.cell),
-        BrushOp::Paint => (EditOp::Paint(state.brush_material(table)?), hit.cell),
+    let target = brush_target(state.op, hit)?;
+    let op = match state.op {
+        BrushOp::Set => EditOp::Set(state.brush_material(table)?),
+        BrushOp::Remove => EditOp::Remove,
+        BrushOp::Paint => EditOp::Paint(state.brush_material(table)?),
     };
     let size = state.size.clamp(1, MAX_BRUSH_SIZE);
     let half = IVec3::splat(i32::from(size));
@@ -399,8 +406,8 @@ pub fn mouse_label(button: MouseButton) -> &'static str {
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EditorSystems;
 
-/// The debug editor's state, keys, brush and stats, and the drop out of the
-/// fly camera. The egui panel is [`EditorPanelPlugin`](crate::panel::EditorPanelPlugin).
+/// The debug editor's state, keys, brush, stats and gizmos
+/// ([`EditorGizmoPlugin`]), and the drop out of the fly camera. The egui panel is [`EditorPanelPlugin`](crate::panel::EditorPanelPlugin).
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
@@ -411,6 +418,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<CommandSeq>()
             .init_resource::<EditorStats>()
             .init_resource::<HostTickTime>()
+            .add_plugins(EditorGizmoPlugin)
             .add_systems(
                 Update,
                 (
@@ -477,19 +485,7 @@ fn apply_brush(
     let (Some(materials), Some(replica)) = (materials, replica) else {
         return;
     };
-    let ray = if fly.is_some_and(|f| f.enabled) {
-        cameras
-            .iter()
-            .next()
-            .map(|t| (t.translation, t.rotation * Vec3::NEG_Z))
-    } else {
-        players
-            .iter()
-            .next()
-            .map(|p| (p.eye(), p.rotation() * Vec3::NEG_Z))
-    };
-    let Some((origin, dir)) = ray else { return };
-    let Some(hit) = raycast(replica.world(), origin, dir, BRUSH_REACH_M) else {
+    let Some(hit) = brush_hit(replica.world(), fly.as_deref(), &cameras, &players) else {
         return;
     };
     let Some((op, shape)) = brush_command(&state, &materials.0, hit) else {
@@ -503,6 +499,38 @@ fn apply_brush(
         shape,
     })));
     debug!(?op, ?shape, "editor brush");
+}
+
+/// The brush's view ray as `(origin, direction)`: from the game camera
+/// while the fly camera is on, else from the player's eye.
+pub(crate) fn view_ray(
+    fly: Option<&FlyCam>,
+    cameras: &Query<&Transform, With<GameCamera>>,
+    players: &Query<&Player>,
+) -> Option<(Vec3, Vec3)> {
+    if fly.is_some_and(|f| f.enabled) {
+        cameras
+            .iter()
+            .next()
+            .map(|t| (t.translation, t.rotation * Vec3::NEG_Z))
+    } else {
+        players
+            .iter()
+            .next()
+            .map(|p| (p.eye(), p.rotation() * Vec3::NEG_Z))
+    }
+}
+
+/// The cell a click of the brush would hit: the first solid cell along the
+/// [`view_ray`] within [`BRUSH_REACH_M`].
+pub(crate) fn brush_hit(
+    world: &World,
+    fly: Option<&FlyCam>,
+    cameras: &Query<&Transform, With<GameCamera>>,
+    players: &Query<&Player>,
+) -> Option<Hit> {
+    let (origin, dir) = view_ray(fly, cameras, players)?;
+    raycast(world, origin, dir, BRUSH_REACH_M)
 }
 
 /// When the fly camera turns off, moves the player under the camera (see
