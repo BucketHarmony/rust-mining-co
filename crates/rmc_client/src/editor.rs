@@ -1037,10 +1037,20 @@ mod tests {
         assert!((stats.fps - 60.0).abs() < 1.0, "fps {}", stats.fps);
         assert_eq!(stats.chunks, 0, "no replica");
         assert_eq!(stats.host_tick_ms, None, "nobody reports the host");
+        assert_eq!(stats.mesh_bytes, 0, "no mesh pipeline");
         app.world_mut().resource_mut::<HostTickTime>().0 = Some(2.5);
+        app.world_mut().insert_resource(crate::meshpipe::MeshStats {
+            mesh_bytes: 58_361_672,
+            ..Default::default()
+        });
         frame(&mut app);
+        assert_eq!(
+            app.world().resource::<EditorStats>().mesh_bytes,
+            58_361_672,
+            "mesh memory mirrors MeshStats"
+        );
         let (_, texts, _) = draw_panel(&mut app, &ctx);
-        for want in ["FPS: 60", "Host tick: 2.5 ms"] {
+        for want in ["FPS: 60", "Host tick: 2.5 ms", "Mesh memory: 55.7 MiB"] {
             assert!(
                 texts.iter().any(|t| t.contains(want)),
                 "panel lacks {want:?}: {texts:?}"

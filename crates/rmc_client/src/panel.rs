@@ -51,6 +51,9 @@ pub struct EditorStats {
     pub mesh_in_flight: usize,
     /// How long the most recently uploaded mesh took to build, in ms.
     pub last_remesh_ms: f32,
+    /// Vertex and index bytes over all uploaded chunk meshes (SAD §13 mesh
+    /// memory).
+    pub mesh_bytes: u64,
     /// How long the host's last tick took, in ms, if whoever runs the host
     /// reports it ([`HostTickTime`]).
     pub host_tick_ms: Option<f32>,
@@ -200,6 +203,7 @@ fn panel_body(
         stats.mesh_queued, stats.mesh_in_flight
     ));
     ui.label(format!("Last remesh: {:.1} ms", stats.last_remesh_ms));
+    ui.label(format!("Mesh memory: {}", mesh_memory(stats.mesh_bytes)));
     ui.label(match stats.host_tick_ms {
         Some(ms) => format!("Host tick: {ms:.1} ms"),
         None => "Host tick: n/a".to_string(),
@@ -225,6 +229,12 @@ fn panel_body(
             actions.push(EditorAction::Load);
         }
     });
+}
+
+/// `bytes` in MiB with one decimal, the stats panel's mesh memory.
+fn mesh_memory(bytes: u64) -> String {
+    const MIB: f64 = (1u64 << 20) as f64;
+    format!("{:.1} MiB", bytes as f64 / MIB)
 }
 
 /// Samples [`EditorStats`] once a frame.
@@ -259,6 +269,7 @@ pub(crate) fn sample_stats(
         stats.mesh_queued = mesh.queued;
         stats.mesh_in_flight = mesh.in_flight;
         stats.last_remesh_ms = mesh.last_mesh_ms;
+        stats.mesh_bytes = mesh.mesh_bytes;
     }
     stats.host_tick_ms = host.0;
 }

@@ -5,6 +5,9 @@ use image::{Rgba, RgbaImage};
 use rmc_client::{GameCamera, MeshQueue, MeshStats, Replica};
 use rmc_testkit::{TestApp, TestConfig, e2e};
 
+/// SAD §13 mesh memory target for the 256-chunk world.
+const MESH_MEMORY_TARGET_BYTES: u64 = 256 << 20;
+
 /// A pixel is sky when no channel differs from the sky reference by more.
 const SKY_TOLERANCE: i32 = 24;
 
@@ -79,6 +82,12 @@ fn run(t: &mut TestApp) {
         stats.meshed_chunks >= 200,
         "MeshStats reports {} chunks meshed",
         stats.meshed_chunks
+    );
+    // SAD §13: mesh memory for the 256-chunk world under 256 MB.
+    assert!(
+        stats.mesh_bytes < MESH_MEMORY_TARGET_BYTES,
+        "mesh memory {} bytes",
+        stats.mesh_bytes
     );
     assert!(
         sky_up * 100 >= pixels * 99,

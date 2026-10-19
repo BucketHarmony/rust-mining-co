@@ -1139,8 +1139,9 @@
       ],
       "e2e": true,
       "review": true,
-      "passes": false,
-      "notes": "If mesh_chunk exceeds 2 ms after optimization, evaluate binary-greedy-meshing behind the ChunkMesher trait and record the comparison."
+      "passes": true,
+      "notes": "If mesh_chunk exceeds 2 ms after optimization, evaluate binary-greedy-meshing behind the ChunkMesher trait and record the comparison.",
+      "passedAt": "2026-10-19T17:13:57Z"
     },
     {
       "id": "F083",

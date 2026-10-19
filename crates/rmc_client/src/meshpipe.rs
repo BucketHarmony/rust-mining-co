@@ -13,7 +13,10 @@
 //!   chunk's revision, so the old result is still uploaded first).
 //! - Budgets ([`MeshBudget`]): at most 8 jobs in flight and 4 uploads per
 //!   frame. Until the replica has been fully meshed once (the initial load)
-//!   the upload budget is 32.
+//!   the upload budget is 32. The initial load ends on the first frame where
+//!   every chunk inside the bounds is resident and nothing is queued,
+//!   running, awaiting upload or dirty, so snapshots that arrive over several
+//!   frames all upload at the burst budget.
 //! - Nearest first: jobs start, and finished meshes upload, in order of the
 //!   squared cell distance from the chunk's center to the camera, ties by
 //!   chunk position. The camera is the active `Camera3d` with the lowest
@@ -125,7 +128,8 @@ pub struct MeshStats {
     pub uploads_last_frame: usize,
     /// How long the job of the most recent upload took to mesh, in ms.
     pub last_mesh_ms: f32,
-    /// Whether the replica has been fully meshed once since the last `Welcome`.
+    /// Whether the replica has been fully meshed once since the last
+    /// `Welcome`: every chunk in its bounds resident and meshed.
     pub initial_load_done: bool,
 }
 
@@ -486,12 +490,21 @@ fn upload_meshes(
             && queue.is_idle()
             && replica.dirty().is_empty()
             && !queue.meshed.is_empty()
+            && fully_resident(replica.world())
         {
             queue.initial_load_done = true;
             info!(chunks = queue.meshed.len(), "initial meshing done");
         }
     }
     *stats = queue.stats();
+}
+
+/// Whether every chunk inside the world's bounds is resident. The host sends
+/// one snapshot per chunk after `Welcome`, and they can arrive over several
+/// frames, so an idle pipeline alone does not mean the replica is fully
+/// meshed.
+fn fully_resident(world: &rmc_world::world::World) -> bool {
+    world.chunk_count() == world.bounds().chunks().count()
 }
 
 /// Replaces `pos`'s mesh with `finished`.
@@ -1110,6 +1123,109 @@ mod tests {
         assert_eq!(f.stats().uploads_last_frame, 7);
         f.step();
         assert_eq!(f.stats().uploads_last_frame, 3);
+    }
+
+    #[test]
+    fn initial_load_uses_burst_budget() {
+        let budget = MeshBudget {
+            max_in_flight: 64,
+            uploads_per_frame: 4,
+            initial_uploads_per_frame: 10,
+        };
+        let mut f = Fixture::new(true, budget, true);
+        let snapshots: Vec<ServerMsg> = f
+            .host
+            .iter_chunks_sorted()
+            .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
+                pos,
+                revision: chunk.revision,
+                storage: chunk.storage.clone(),
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 27);
+        let welcome = ServerMsg::Welcome {
+            player: PLAYER,
+            seed: 1,
+            bounds: bounds(),
+            gen_params_hash: 2,
+        };
+
+        // The snapshots arrive over two frames, as they can from a host on
+        // another thread. Meshing the first part empties the pipeline, but
+        // the replica is not fully meshed yet: the initial load goes on.
+        let mut first = vec![welcome.clone()];
+        first.extend(snapshots[..13].iter().cloned());
+        f.deliver(first);
+        assert_eq!(f.stats().in_flight, 13);
+        f.wait_jobs();
+        let mut per_frame = Vec::new();
+        for _ in 0..3 {
+            f.step();
+            per_frame.push(f.stats().uploads_last_frame);
+        }
+        assert_eq!(per_frame, vec![10, 3, 0], "burst budget for the first part");
+        let s = f.stats();
+        assert!(f.queue().is_idle(), "{s:?}");
+        assert_eq!(s.meshed_chunks, 13);
+        assert!(!s.initial_load_done, "13 of 27 chunks meshed: {s:?}");
+
+        // The rest arrives: still the burst budget, then the load is done.
+        // The new snapshots also re-dirty their meshed neighbours.
+        f.deliver(snapshots[13..].to_vec());
+        let jobs = f.stats().in_flight;
+        assert!(jobs > 20, "14 new chunks and their neighbours: {jobs}");
+        f.wait_jobs();
+        let mut per_frame = Vec::new();
+        for _ in 0..4 {
+            f.step();
+            per_frame.push(f.stats().uploads_last_frame);
+        }
+        assert_eq!(
+            per_frame,
+            vec![10, 10, jobs - 20, 0],
+            "burst budget for the rest"
+        );
+        let s = f.stats();
+        assert_eq!(s.meshed_chunks, 27);
+        assert!(s.initial_load_done, "{s:?}");
+
+        // Once loaded, edits upload at the steady budget.
+        let mut results = Vec::new();
+        let edited: Vec<ChunkPos> = bounds().chunks().take(10).collect();
+        for &pos in &edited {
+            let cell = CellPos(pos.origin_cell().0 + IVec3::splat(10));
+            results.push(ServerMsg::Applied(f.edit(Shape::Cell(cell))));
+        }
+        f.deliver(results);
+        f.wait_jobs();
+        let mut per_frame = Vec::new();
+        for _ in 0..4 {
+            f.step();
+            per_frame.push(f.stats().uploads_last_frame);
+        }
+        assert_eq!(per_frame, vec![4, 4, 2, 0], "steady budget after the load");
+
+        // A new Welcome starts a new replica and a new initial load.
+        let mut rejoin = vec![welcome];
+        rejoin.extend(
+            f.host
+                .iter_chunks_sorted()
+                .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
+                    pos,
+                    revision: chunk.revision,
+                    storage: chunk.storage.clone(),
+                }),
+        );
+        f.deliver(rejoin);
+        assert!(!f.stats().initial_load_done);
+        f.wait_jobs();
+        let mut per_frame = Vec::new();
+        for _ in 0..4 {
+            f.step();
+            per_frame.push(f.stats().uploads_last_frame);
+        }
+        assert_eq!(per_frame, vec![10, 10, 7, 0], "burst budget after a rejoin");
+        assert!(f.stats().initial_load_done);
     }
 
     #[test]
