@@ -175,3 +175,59 @@ Not possible this session:
 8. (Low) Make glow read as light: a little halo or spill onto adjacent cells, and rework emissive_glow-22/-off-26 to show a crystal beside rock, or remove the scenario (glow_in_cave covers it).
 9. (Low) The black square at the end of dig_tunnel-1747 and the near-black slab in small test worlds: make the shell the same fog color everywhere, so test shots are representative.
 10. (Low) The speck at (150,180) in pt-113; coyote time; scripts/screens.sh should skip the playtest_* scenarios, which add 24 stray PNGs to docs/screens and 10 minutes.
+
+## Playtest 2026-10-19 at 105d692 (milestone M8: soak_chaos F080, criterion benches F081, performance pass / initial-load burst / mesh memory in stats panel F082, CI F083)
+
+Method: headless rmc_testkit on WARP (software D3D12), 640x360 unless noted, the real 256x128x256 default world. Nobody has run the windowed game. Compared against the M7 report above (c0d1cd9). "pt-N" means `target/e2e/playtest_20261020-N.png` (not committed). The log is `target/e2e/playtest_20261020.log`.
+
+### Results
+- `scripts/screens.sh` (no argument, `CARGO_BUILD_JOBS=8`): 17 of 17 scenarios pass, about 52 min of scenario time. Slowest: soak_chaos at 3,600 frames (1,031 s), playtest_20261019 (534 s), dig_tunnel (345 s), playtest_20261018 (282 s). No scenario failed and no failure screenshot was written. The log has 36 "waiting for the GPU: Wait timed out" WARNs from the screenshot readback; the capture retried every time and none failed. All 35 committed PNGs in docs/screens came out unchanged (git shows no modified tracked file), so M8 changed nothing a player sees in those scenes.
+- `scripts/soak.sh` (seed 17247, 3,600 frames) passes in 960 s. `soak_chaos` also passed inside screens.sh with its default seed 1. Recorded step times on WARP at 320x180 (the scenario records them and does not assert):
+  - seed 1: p50 278.40 ms, p95 373.36 ms, max 456.77 ms; 82 actions (Walk 17, Look 16, Dig 16, Place 17, Jump 16), 38 swings, 35 brush clicks, 16 jumps, 0 penetrating frames.
+  - seed 17247: p50 267.02 ms, p95 351.57 ms, max 449.29 ms; 90 actions (18 of each), 44 swings, 38 brush clicks, 18 jumps, 0 penetrating frames.
+  - Both are "over target" against 33 ms. That is the software rasterizer, not the game: the step includes the render. The number cannot show a CPU regression. The scenario does assert that host and replica hash the same after the drain, that the mesh queue drains, and that the world changed; all held on both seeds.
+- My scenario: `tests/e2e/tests/playtest_20261020.rs`, run with `scripts/e2e.sh playtest_20261020` (539 s, passes). It boots and logs the initial load, drops in at the middle column, turns four quarter turns, opens F1 and toggles F2/F3/F4, walks 2 s and sprints 2 s, jumps, swings at topsoil, places with the F1 brush by mouse click, digs a shaft straight down, and flies up. My first draft used BuilderBot and TunnelBot in the natural terrain. Both refused ("... is not an air cell on a solid one", "no solid cell within 32 cells ahead"): those bots need flat ground or a wall, which only the test courses have. I replaced them with direct input.
+- Not possible: season play (no `advance_season` in rmc_testkit, no Moisture overlay; Phase 2), a real window, and viewing the egui panel (see below).
+
+### M8 features as a player meets them
+- Initial load (F082): `initial_load_done` after 33 steps, with exactly 8 uploads per frame from step 2 to 33 (0, 8, 8, ... 8). That is the in-flight cap, as the F082 notes say, not the 32 budget. 256 meshes, 0 discarded, 0 queued, 0 awaiting at the end. It never dropped to the post-load budget of 4, so the early-end race is not visible. 41 s wall on WARP.
+- Mesh memory: `mesh_bytes` 58,361,672 (55.7 MiB), 255 chunks with geometry, 317,183 quads. Identical to docs/perf.md, so the record is reproducible. After my edits (a handful of cells) it was 58,370,136 with 273 uploads.
+- Stats panel: the panel cannot be seen in any screenshot. pt-143 (F1 open) is pixel-for-pixel the closed view (pt-97), and pt-625 (editor open, four clicks) equals pt-640 (editor closed). The egui layer is not in the headless capture, so the "Mesh memory: N MiB" line is covered only by the unit test. F1 itself works: `editor.open` went true, then false. The gizmos do draw: pt-161 shows a cyan/magenta box on the brush target and one thin white vertical line from the top edge (the chunk-bounds gizmo), over the scene.
+- Brush by mouse click (the only place path): four clicks with F1 open, Set and Cell chosen by keys 1 and 4, each changed the host world hash. One brass cube shows in pt-625 and pt-640 (the orange cube at the right edge). It works, but the editor has to be open, which stops mouse look.
+- CI (F083) is outside what I can play; the screens run's pass/fail is the local equivalent.
+
+### A. BROKEN (bug, crash, failing scenario, camera in a wall, flat grey, a control that does nothing)
+1. A one-cell hole cannot be descended, so "dig down" does nothing for movement. In the log, swings straight down (pitch -1.55) broke topsoil, dirt, dirt (inventory topsoil 1, dirt 2; the target cell went y 103, 102, 101) while the feet stayed at y 52.00, `grounded true`, for the whole shaft (pt-670, pt-770). The player is 0.6 m wide (`PLAYER_WIDTH_M`) and a cell is 0.5 m, so the box rests on the cell rims either side of the hole and a hole one cell wide holds nothing. The player hovers over a 1.5 m pit and looks at the surface (pt-864, "level view from inside the shaft", is the top-of-ground view). TunnelBot already knows this (`width_cells()` is 2). A player digging down will think the pickaxe is broken, since the only feedback is the inventory counter. Fix within Phase 1: make the player box narrower than a cell (for example 0.45 m), or have a dig-down swing also take the cell(s) the box overlaps, or let the player slide into the hole.
+2. The fly camera (V) can leave the world and then shows a single flat grey. After Space with Shift held for 120 frames (pt-722 and pt-749 in my first run, pt-1113 in the final run) the view is a uniform grey-blue (about RGB 156,172,184) with only the crosshair and HUD text. Sixty frames up (pt-983, pt-662) still shows readable terrain, so the fog hides the ground once the camera is beyond the fog distance and above the shell. Nothing in the view says where the world is. Fix within Phase 1: clamp the fly camera to the world bounds plus a margin, or fade the fog out with height.
+3. Nothing crashed, no scenario failed, the player was never inside rock (0 penetration frames in about 1,100 scenario frames and 7,200 soak frames), and host and replica hashes agree after both soaks.
+
+### B. Look/feel wishes and missing features
+Still standing from M7 (same shots, unchanged):
+- No place/spend control. CONTROLS.md still lists only the F1 brush. The inventory (topsoil 1, dirt 2) only counts up. Largest gap. (M7 #1)
+- The fog band has a hard top edge. New evidence that it is geometry: looking along a diagonal the edge tilts. In pt-864 (yaw -4.54) it runs from y=45 at the left to y=28 at the right, which is a corner of a box, not haze. Same edge in horizon_readable-east/north/south/west, boot_renders-123 and pt-97. (M7 #2)
+- Break feedback is still a wireframe cube in dig_cell_visible-68 and latency_dig-65. Not re-shot at close range this time. (M7 #3)
+- Surfaces are flat colours: lantern_close_wall-*, the steep-down shots (pt-536 is one green field), and the shaft wall at pt-670. (M7 #5)
+- Glow still reads as a lighter flat colour; emissive_glow-22 and -off-26 are still full-screen single colours with no geometry. (M7 #8)
+- Black end of the tunnel and black shell in small worlds: dig_tunnel-1747 and walk_and_jump-190. (M7 #9)
+- The dark-blue dash at about (150,180) is still in horizon_readable-south-91. (M7 #10)
+- `scripts/screens.sh` still runs the playtest scenarios and leaves their PNGs in docs/screens. (M7 #10)
+
+New this time:
+- The mining HUD is silent when a swing has no target. Standing on a ledge and looking 20 and 40 degrees down, `target` was None (ground beyond the 3.0 m reach) and two swings gave no label, no outline and no counter change (pt-498, pt-536). A "too far" hint or a dimmed outline would explain it.
+- The HUD target label disappears while F1 is open, even though a click still changes the cell (`target None, world changed true`, four of four). With the editor open you can see what you will change only through the gizmo (F3).
+- A dug shaft looks good from above (pt-770): a lit near wall and a dark floor give depth.
+- soak p95 is not a performance signal on WARP (350 to 370 ms). A CPU-only timer around the sim and mesh systems, separate from the render, would make the number comparable to the 33 ms target.
+- Walk and sprint feel right: 22.0 m in 240 frames (2 s walk, 2 s sprint), +4.0 m of climb with no snag over rolling terrain; landing from 3 m was clean (feet y 48.00 at frame 97).
+
+### What changed since M7's "Prioritized issues"
+- #7 (F080 soak_chaos): done. It runs, passes on two seeds, and the soak script has something to run. Its p95 reads "over target" on WARP, which is expected and not a finding.
+- #1, #2, #3, #5, #6, #8, #9, #10: unchanged (see B). #4 (run once in a real window): still impossible from here.
+- New: A1 (cannot descend a one-cell hole) and A2 (fly camera blank above the world).
+
+### Top 3 fixes within Phase 1 scope
+1. A1: let a dug hole be entered (narrower player box than a cell, or dig-down takes the overlapped cells).
+2. M7 #1: a place/spend control from the inventory against the targeted face, using the host's overlap rule.
+3. M7 #2 and A2: blend the fog and shell into the sky so the world no longer ends in a straight line, and clamp the fly camera or fade fog with height. Both come from the same fog and shell setup.
+
+### Files added to docs/screens by `scripts/screens.sh` (untracked; please delete)
+All 57 are `docs/screens/playtest_20261018-*.png` (24 files) and `docs/screens/playtest_20261019-*.png` (33 files). No playtest_20261020 PNG was copied there (it was run with `scripts/e2e.sh`, so its shots are only under target/e2e). The one new source file is `tests/e2e/tests/playtest_20261020.rs` (untracked until you commit it).
