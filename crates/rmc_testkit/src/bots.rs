@@ -10,8 +10,9 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use bevy::prelude::*;
 use rmc_client::controller::SKIN_M;
 use rmc_client::{
-    ControllerConfig, PLAYER_HEIGHT_M, PLAYER_WIDTH_M, PickTarget, Pickaxe, Replica, SWING_BUTTON,
-    SwingState,
+    BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, ControllerConfig, PLAYER_HEIGHT_M,
+    PLAYER_WIDTH_M, PickTarget, Pickaxe, Replica, SWING_BUTTON, SwingState, TOGGLE_EDITOR_KEY,
+    brush_target,
 };
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::materials::MaterialId;
@@ -33,6 +34,16 @@ const STANDOFF_M: f32 = 0.5;
 const END_GAP_M: f32 = 0.05;
 /// How many cells ahead a [`TunnelBot`] looks for the wall to dig into.
 const SCAN_CELLS: i32 = 32;
+/// Cells a [`BuilderBot`] leaves between the front of the player's box
+/// and the near edge of its platform.
+const BUILD_GAP_CELLS: i32 = 1;
+/// Frames a brush click may take to show in the replica: the click, the
+/// host's tick and the replica's update.
+const PLACE_SLACK_FRAMES: u32 = 4;
+/// The editor keys a [`BuilderBot`] presses: brush op Set, shape Cell
+/// (`docs/CONTROLS.md`).
+const SET_KEY: KeyCode = KeyCode::Digit1;
+const CELL_SHAPE_KEY: KeyCode = KeyCode::Digit4;
 
 /// Why a bot gave up.
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -54,6 +65,23 @@ pub enum BotError {
     Penetrating { cells: Vec<CellPos> },
     #[error("no solid cell within {cells} cells ahead to tunnel into")]
     NoWall { cells: i32 },
+    #[error("{cell:?} is not an air cell on a solid one in the replica")]
+    NoRoom { cell: CellPos },
+    #[error("the editor keys left op {op:?}, shape {shape:?}, open {open}")]
+    EditorKeys {
+        op: BrushOp,
+        shape: BrushShape,
+        open: bool,
+    },
+    #[error("the brush has no material")]
+    NoBrushMaterial,
+    #[error("aimed to place {cell:?}, but the brush targets {target:?}")]
+    BrushMisaimed {
+        cell: CellPos,
+        target: Option<CellPos>,
+    },
+    #[error("{cell:?} was not placed within {frames} frames")]
+    Unplaced { cell: CellPos, frames: u32 },
 }
 
 /// One step, then the player must be clear of blocking cells.
@@ -98,6 +126,20 @@ fn aim(t: &mut TestApp, yaw: f32, pitch: f32) -> Result<(), BotError> {
         wrap(p.yaw - yaw) / sensitivity,
         (p.pitch - pitch) / sensitivity,
     );
+    step(t)
+}
+
+/// Turns the view, in one step, to look from the eye at `point`.
+pub fn look_at(t: &mut TestApp, point: Vec3) -> Result<(), BotError> {
+    let (yaw, pitch) = view_towards(point - t.player().eye);
+    aim(t, yaw, pitch)
+}
+
+/// Presses and releases `key`, one step each.
+fn tap(t: &mut TestApp, key: KeyCode) -> Result<(), BotError> {
+    t.press(key);
+    step(t)?;
+    t.release(key);
     step(t)
 }
 
@@ -387,6 +429,197 @@ impl TunnelBot {
     }
 }
 
+/// What [`BuilderBot::run`] did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BuildReport {
+    /// The platform's cells, in the order they were placed.
+    pub cells: Vec<CellPos>,
+    /// The brush material the platform is made of.
+    pub material: MaterialId,
+    pub frames: u32,
+    /// The feet when the bot started.
+    pub start: Vec3,
+}
+
+/// Places a square platform, [`BuilderBot::side`] cells on a side and one
+/// cell high, with the editor brush, then walks onto it (SAD §12.3).
+///
+/// The heading is the player's yaw snapped to the nearest world axis. The
+/// platform lies on the cell layer the feet stand in, centered across the
+/// heading as near the feet as the grid allows, and starts
+/// [`BUILD_GAP_CELLS`] cells beyond the cell layer holding the front of the
+/// player's box. Every platform cell must be air with a solid cell under
+/// it.
+///
+/// The bot drives the editor with keys only: F1 opens it, Set and the Cell
+/// shape are picked, and each cell is one click at the middle of the top
+/// face of the cell under it, so Set fills on the face-normal side. The
+/// material is the brush's as the editor holds it. F1 closes the editor
+/// before the walk, and the bot stops with the feet over the platform's
+/// middle on the heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuilderBot {
+    pub side: i32,
+}
+
+/// Where a platform lies: depth `k` from the near edge along axis
+/// `along`, column `c` across it.
+#[derive(Clone, Copy, Debug)]
+struct Platform {
+    along: usize,
+    sign: i32,
+    across: usize,
+    first_column: i32,
+    row: i32,
+    near_layer: i32,
+    side: i32,
+}
+
+impl Platform {
+    fn cell(&self, k: i32, column: i32) -> CellPos {
+        let mut c = IVec3::ZERO;
+        c[self.along] = self.near_layer + self.sign * k;
+        c[self.across] = self.first_column + column;
+        c.y = self.row;
+        CellPos(c)
+    }
+
+    /// Placing order: far rows first, and in a row the outer columns
+    /// first, so no placed cell stands between the eye and a later target.
+    fn cells(&self) -> Vec<CellPos> {
+        let mut order: Vec<(i32, i32)> = (0..self.side)
+            .flat_map(|k| (0..self.side).map(move |c| (k, c)))
+            .collect();
+        let off_middle = |c: i32| (2 * c - (self.side - 1)).abs();
+        order.sort_by_key(|&(k, c)| (-k, -off_middle(c), c));
+        order.into_iter().map(|(k, c)| self.cell(k, c)).collect()
+    }
+
+    /// The platform's middle along the heading, in meters.
+    fn middle(&self) -> f32 {
+        let low = self
+            .near_layer
+            .min(self.near_layer + self.sign * (self.side - 1));
+        (low as f32 + self.side as f32 / 2.0) * CELL_SIZE_M
+    }
+}
+
+impl BuilderBot {
+    pub fn new(side: i32) -> Self {
+        Self { side }
+    }
+
+    /// Lays out the platform, places it with the brush, then walks onto it.
+    pub fn run(&self, t: &mut TestApp) -> Result<BuildReport, BotError> {
+        let (frame0, start) = (t.frame(), t.player().pos);
+        let quarter = (t.player().yaw / FRAC_PI_2).round();
+        let heading = quarter * FRAC_PI_2;
+        aim(t, heading, 0.0)?;
+        let platform = self.lay_out(t, quarter as i32)?;
+
+        if !t.editor().open {
+            tap(t, TOGGLE_EDITOR_KEY)?;
+        }
+        tap(t, SET_KEY)?;
+        tap(t, CELL_SHAPE_KEY)?;
+        let editor = t.editor().clone();
+        if !(editor.open && editor.op == BrushOp::Set && editor.shape == BrushShape::Cell) {
+            return Err(BotError::EditorKeys {
+                op: editor.op,
+                shape: editor.shape,
+                open: editor.open,
+            });
+        }
+        let material = editor
+            .brush_material(replica(t).materials())
+            .ok_or(BotError::NoBrushMaterial)?;
+
+        let cells = platform.cells();
+        for &cell in &cells {
+            place(t, cell, material)?;
+        }
+        tap(t, TOGGLE_EDITOR_KEY)?;
+
+        aim(t, heading, 0.0)?;
+        let middle = platform.middle();
+        let sign = platform.sign as f32;
+        let along = platform.along;
+        let reached = |t: &TestApp| (t.player().pos[along] - middle) * sign >= 0.0;
+        if !reached(t) {
+            t.press(KeyCode::KeyW);
+            let result = walk_until(t, reached);
+            t.release(KeyCode::KeyW);
+            result?;
+        }
+        step(t)?;
+
+        Ok(BuildReport {
+            cells,
+            material,
+            frames: t.frame() - frame0,
+            start,
+        })
+    }
+
+    /// The platform for the heading `quarter` quarter turns from -Z.
+    fn lay_out(&self, t: &TestApp, quarter: i32) -> Result<Platform, BotError> {
+        let forward =
+            [IVec3::NEG_Z, IVec3::NEG_X, IVec3::Z, IVec3::X][quarter.rem_euclid(4) as usize];
+        let along = if forward.x != 0 { 0 } else { 2 };
+        let sign = forward[along];
+        let feet = t.player().pos;
+        let side_m = self.side as f32 * CELL_SIZE_M;
+        let front = feet[along] + sign as f32 * PLAYER_WIDTH_M / 2.0;
+        let front_layer = (front / CELL_SIZE_M).floor() as i32;
+        let platform = Platform {
+            along,
+            sign,
+            across: 2 - along,
+            first_column: ((feet[2 - along] - side_m / 2.0) / CELL_SIZE_M).round() as i32,
+            // Grounded feet rest SKIN_M above the floor; allow as much below.
+            row: ((feet.y + SKIN_M) / CELL_SIZE_M).floor() as i32,
+            near_layer: front_layer + sign * (1 + BUILD_GAP_CELLS),
+            side: self.side,
+        };
+        let world = replica(t);
+        if let Some(cell) = platform.cells().into_iter().find(|&c| {
+            world.get_cell(c) != Some(MaterialId::AIR) || !world.is_solid(CellPos(c.0 - IVec3::Y))
+        }) {
+            return Err(BotError::NoRoom { cell });
+        }
+        Ok(platform)
+    }
+}
+
+/// Places `cell` with one brush click (Set, Cell) at the middle of the top
+/// face of the cell under it, after checking that the brush targets it,
+/// then steps until the replica shows it.
+fn place(t: &mut TestApp, cell: CellPos, material: MaterialId) -> Result<(), BotError> {
+    let below = CellPos(cell.0 - IVec3::Y);
+    look_at(t, below.center_m() + Vec3::Y * (CELL_SIZE_M / 2.0))?;
+    let p = t.player();
+    let dir = Quat::from_euler(EulerRot::YXZ, p.yaw, p.pitch, 0.0) * Vec3::NEG_Z;
+    let target = raycast(replica(t), p.eye, dir, BRUSH_REACH_M)
+        .and_then(|hit| brush_target(BrushOp::Set, hit));
+    if target != Some(cell) {
+        return Err(BotError::BrushMisaimed { cell, target });
+    }
+    t.mouse_down(BRUSH_BUTTON);
+    let pressed = step(t);
+    t.mouse_up(BRUSH_BUTTON);
+    pressed?;
+    for _ in 0..PLACE_SLACK_FRAMES {
+        step(t)?;
+        if replica(t).get_cell(cell) == Some(material) {
+            return Ok(());
+        }
+    }
+    Err(BotError::Unplaced {
+        cell,
+        frames: PLACE_SLACK_FRAMES,
+    })
+}
+
 /// Walks forward until the front of the box is at least `depth` meters
 /// along the heading. The key is released for the next step.
 fn walk_to(t: &mut TestApp, tunnel: &Tunnel, depth: f32) -> Result<(), BotError> {
@@ -587,6 +820,66 @@ mod tests {
         assert!(
             front >= 63.0 * CELL_SIZE_M - STANDOFF_M,
             "walked up: {front}"
+        );
+    }
+
+    /// From the floor 8.5 m out from the wall, facing it, the bot places a
+    /// 3 × 3 platform of the brush's default material with the editor
+    /// keys and clicks, then stands on it, through the real host.
+    #[test]
+    fn builder_bot_places_and_climbs() {
+        let (mut t, _) = course();
+        t.spawn_player(Vec3::new(17.5, FLOOR_M, 27.0));
+        t.steps(20);
+        assert!(t.player().grounded);
+
+        let report = BuilderBot::new(3).run(&mut t).expect("the bot builds");
+        let table = t.host_world().materials().clone();
+        assert_eq!(
+            Some(report.material),
+            rmc_client::editor::default_material(&table)
+        );
+        // Three cells ahead of the box's front layer (z = 53) is a one-cell
+        // gap (z = 52); the columns center on x = 17.5 m.
+        let mut want: Vec<CellPos> = (34..=36)
+            .flat_map(|x| (49..=51).map(move |z| CellPos::new(x, 101, z)))
+            .collect();
+        let mut placed = report.cells.clone();
+        want.sort_by_key(|c| c.0.to_array());
+        placed.sort_by_key(|c| c.0.to_array());
+        assert_eq!(placed, want);
+        // Far row first, outer columns before the middle.
+        assert_eq!(report.cells[0], CellPos::new(34, 101, 49));
+        assert_eq!(report.cells[2], CellPos::new(35, 101, 49));
+        assert_eq!(report.cells[8], CellPos::new(35, 101, 51));
+        for &c in &want {
+            assert_eq!(t.host_world().get_cell(c), Some(report.material));
+            assert_eq!(replica(&t).get_cell(c), Some(report.material));
+        }
+        assert!(!t.editor().open, "closed again");
+
+        // On top, just past the middle (z = 25.25 m), facing -Z.
+        t.steps(5);
+        let p = t.player();
+        assert!(
+            p.grounded && (p.pos.y - 102.0 * CELL_SIZE_M).abs() < 0.01,
+            "{p:?}"
+        );
+        assert!(p.pos.z <= 25.25 && p.pos.z > 25.25 - 0.1, "{p:?}");
+        assert!((p.pos.x - 17.5).abs() < 1e-3, "{p:?}");
+        assert!(t.player_penetration().is_empty());
+        t.step();
+        assert_eq!(replica(&t).hash(), t.host_world().hash());
+
+        // Facing the wall from close up, the platform would go into it.
+        let mut t = course().0;
+        t.spawn_player(Vec3::new(17.5, FLOOR_M, 19.5));
+        t.steps(20);
+        assert_eq!(
+            BuilderBot::new(3).run(&mut t).map(|r| r.cells),
+            Err(BotError::NoRoom {
+                cell: CellPos::new(34, 101, 34)
+            })
         );
     }
 }
