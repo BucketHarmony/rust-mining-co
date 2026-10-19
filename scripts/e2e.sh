@@ -21,4 +21,12 @@ fi
 
 filter="${1:-}"
 # One scenario at a time: each creates its own render device.
-cargo test -q -p rmc_e2e --test '*' -- --test-threads=1 --include-ignored ${filter:+--exact "$filter"}
+log="$(mktemp)"
+cargo test -q -p rmc_e2e --test '*' -- --test-threads=1 --include-ignored ${filter:+--exact "$filter"} 2>&1 | tee "$log"
+rc=${PIPESTATUS[0]}
+# A filter that matches no scenario runs 0 tests and exits 0; that must not count as a pass.
+ran="$(grep -oE '[0-9]+ passed; [0-9]+ failed' "$log" | awk '{s += $1 + $3} END {print s + 0}')"
+rm -f "$log"
+[ "$rc" -ne 0 ] && exit "$rc"
+[ "$ran" -eq 0 ] && { echo "E2E FAILED: no scenario ran${filter:+ (no test named $filter)}"; exit 1; }
+exit 0

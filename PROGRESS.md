@@ -872,3 +872,31 @@ Decisions:
   - Add it after the main plugin tuple; adding EditorPlugin twice panics.
 Next: F073 (gizmos: chunk bounds, targeted cell, mesh-queue state; SAD §11.6), driven by `EditorState::gizmos`.
 Blockers: none.
+
+## 2026-10-18 23:59 — owner: M7 polish backlog from the M6 playtest — passed
+Done:
+- features-p1c.json (F086–F092, milestone M7) merged with `merge-features.sh --before F080`:
+  - F086 player-overlap safety
+  - F087 lantern falloff
+  - F088 fog, sky, horizon
+  - F089 per-face shading
+  - F090 hit feedback
+  - F091 cursor grab
+  - F092 glow in cave, plus failure screenshots
+- `move-feature.sh F077 --before F086`: the windowed game comes right after F073–F076, then the polish features, then M8.
+- Scripts:
+  - e2e.sh fails when no scenario ran, so soak.sh is no longer green with 0 tests.
+  - screens.sh drops stale shots first, and in single-scenario mode copies only that scenario's shots.
+  - merge-features.sh gains `--before <id>`.
+  - New move-feature.sh, which refuses to move passed features.
+Decisions:
+- Playtest items left out on purpose (minor or already decided):
+  - bunny-hop with no coyote time or jump buffer
+  - grounded depends on dt
+  - the controller proptest has no negative coordinates
+  - a redundant screenshot GPU wait
+  - the damage bar shows only the player's own hits
+  - host reach validation is a no-op (SAD Phase 1)
+  - regenerate has no protocol message (F072 decision)
+Next: F073.
+Blockers: none.

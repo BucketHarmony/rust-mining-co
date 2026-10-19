@@ -949,6 +949,139 @@
       "passes": false
     },
     {
+      "id": "F077",
+      "milestone": "M7",
+      "title": "rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run",
+      "sad": "§4, §10, §11, §16.6",
+      "tests": [
+        "cargo:rmc_app:app::tests::game_app_builds_headless",
+        "cargo:rmc_app:app::tests::headless_game_joins_and_receives_chunks"
+      ],
+      "blockedBy": [
+        "F075"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false,
+      "notes": "Phase 1 gap found 2026-10-18: no feature wired rmc_app's main, which was still the kit stub, so `cargo run -p rmc_app` opened nothing. main parses the F075 CLI (--seed, --save), loads assets, generates or loads the world, starts the host on its own thread (F035) over ChannelTransport, and runs the client App with DefaultPlugins, a primary window and every rmc_client plugin that exists (net, replica, meshing, render, controller, fly camera, pickaxe, HUD, editor, save). Put the App construction in `app::build_game_app(cfg, windowed: bool)`; main calls it with true. Tests call it with false (no window, rule 12), step a few hundred frames and check that the player joins and the replica receives chunks. Do not run the binary in a session (rule 13). After this feature the 'How to play' command in docs/REPORT.md must work."
+    },
+    {
+      "id": "F086",
+      "milestone": "M7",
+      "title": "Player-overlap safety: host skips Set cells inside a player's box; controller pushes an embedded player out",
+      "sad": "§8.2, §11.4",
+      "tests": [
+        "cargo:rmc_host:host::tests::set_skips_cells_inside_a_player_box",
+        "cargo:rmc_client:controller::tests::embedded_player_is_pushed_out"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": false,
+      "review": true,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Owner decision, extending SAD §8.2: the host keeps each joined player's last PlayerState (it ignores PlayerState today) and skips, cell by cell like the other §8.2 skips, any Set cell that overlaps that player's 0.6 x 1.7 m box (PLAYER_WIDTH_M / PLAYER_HEIGHT_M). The rest of the command applies. A player that has sent no PlayerState is not protected. Controller: if the box overlaps a solid cell at the start of a fixed step (a spawn in rock, a Set from another source, a load), move the feet to the nearest free spot, preferring up, reusing editor::free_feet_near; keep the no-penetration proptest green. The playtest reproduced a Set over the player's head leaving the camera inside the block (white screen)."
+    },
+    {
+      "id": "F087",
+      "milestone": "M7",
+      "title": "Lantern falloff: close rock is not blown out; dark materials stay dark at every distance",
+      "sad": "§11.3",
+      "tests": [
+        "cargo:rmc_client:render::tests::lantern_is_soft_at_close_range",
+        "e2e:lantern_close_wall"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. LANTERN_LUMENS is 400,000 with inverse-square falloff plus HDR bloom. Basalt (base color 62,62,70) renders pale lavender at 1.4 m and near-white at 0.2-0.3 m, and the label and crosshair become unreadable; facing a rock wall is the main view of this game. Fix with some combination of lower intensity, a larger light radius, and an exposure or bloom setting; the SAD fixes only that there is a lantern and bloom, and caves must stay readable. lantern_close_wall: face a basalt wall at 0.3 m and at 1.5 m and a light (topsoil) wall at 1.5 m. Assert that the mean luminance of the center block at 0.3 m is at most 1.25 times that at 1.5 m, that basalt stays darker than topsoil at the same distance, and that the 0.3 m frame is not near-white (center mean below a ceiling that the session derives and records). Re-shoot dig_tunnel's tunnel view."
+    },
+    {
+      "id": "F088",
+      "milestone": "M7",
+      "title": "Readable horizon: distance fog, a sky with a sun direction, a world shell that does not read as a black void",
+      "sad": "§11.3",
+      "tests": [
+        "cargo:rmc_client:render::tests::camera_has_distance_fog_matching_sky",
+        "e2e:horizon_readable"
+      ],
+      "blockedBy": [
+        "F087"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Today the horizon at eye level is a near-black (RGB about 25) slab from the bedrock shell, the sky shows only when looking up, and the sky is a flat color with nothing showing the sun's direction. Add DistanceFog on the GameCamera whose color matches the sky so distant terrain and the shell fade into it, and a sky gradient or a visible sun disc that agrees with the Sun's direction (Bevy's atmosphere or a simple skybox; keep it cheap on WARP). horizon_readable: at the default spawn, look level in four directions; the upper third of each frame must not be near-black, and terrain far away must be closer to the fog color than terrain near by. Re-shoot boot_renders, walk_and_jump and fly_camera."
+    },
+    {
+      "id": "F089",
+      "milestone": "M7",
+      "title": "Terrain depth cues: per-face directional shading baked into vertex colors",
+      "sad": "§11.2",
+      "tests": [
+        "cargo:rmc_client:mesher::tests::face_shade_differs_by_normal",
+        "cargo:rmc_client:mesher::tests::face_shade_keeps_greedy_merging"
+      ],
+      "blockedBy": [
+        "F088"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Topsoil is one green with only a slight face shade, so step height and distance are hard to judge. Multiply vertex color by a fixed factor per face normal (for example top 1.0, sides 0.8 and 0.7, bottom 0.55) on top of AO. The factor depends only on the normal, which is already in the merge key, so greedy merging is unchanged (the second test checks the quad count of a flat slab does not change). Do not add per-cell color noise: it would break merging and the 2 ms mesh_chunk target."
+    },
+    {
+      "id": "F090",
+      "milestone": "M7",
+      "title": "Hit feedback: every swing and every break gives visible feedback, mirrored in HudState",
+      "sad": "§11.5",
+      "tests": [
+        "cargo:rmc_client:pickaxe::tests::swing_and_break_trigger_feedback"
+      ],
+      "blockedBy": [
+        "F086"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. One-swing materials (topsoil) vanish with no swing animation, flash, particles or sound, so digging feels weightless. Add a short crosshair or outline pulse on every swing and a brief break effect at the cell when a delta removes the targeted cell (a few cheap chip cubes or a flash; no new crates unless one is confirmed for the pinned Bevy minor). HudState gains fields mirroring the feedback (for example swing_pulse and last_break) so the test asserts them without pixels."
+    },
+    {
+      "id": "F091",
+      "milestone": "M7",
+      "title": "Cursor grab: locked and hidden while playing, Escape releases, click re-grabs, editor open releases",
+      "sad": "§11.4, §11.6",
+      "tests": [
+        "cargo:rmc_client:cursor::tests::grab_follows_escape_click_and_editor"
+      ],
+      "blockedBy": [
+        "F086"
+      ],
+      "e2e": false,
+      "review": false,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Nothing in rmc_client sets CursorGrabMode or handles Escape, so mouse look in the windowed game (F077) would spin with a free cursor. New rmc_client::cursor plugin, added by rmc_app's windowed build: the primary window's cursor is Locked (or Confined where Locked is unsupported) and hidden while playing; Escape releases it; a left click in the window grabs it again without swinging; opening the editor (F1) releases it, closing grabs it. Mouse look applies only while grabbed. The test spawns a Window component entity under MinimalPlugins (no OS window, rule 12) and drives keys and EditorState."
+    },
+    {
+      "id": "F092",
+      "milestone": "M7",
+      "title": "Glow shown where it matters: crystal in a dark cave, and failure screenshots for the older scenarios",
+      "sad": "§11.2, §12.4, §12.5",
+      "tests": [
+        "e2e:glow_in_cave"
+      ],
+      "blockedBy": [
+        "F087"
+      ],
+      "e2e": true,
+      "review": false,
+      "passes": false,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. emissive_glow's two screenshots are single flat colors with no geometry, so they show a color change, not glow. glow_in_cave: place glowcrystal on a stone wall inside a closed dark room (or use a generated cave), screenshot with emissive on and off, and assert that the crystal's pixels are brighter than the surrounding stone by a margin with emissive on, and that the margin is larger than with emissive off. Also move boot_renders, fly_camera and emissive_glow onto run_scenario so they save a screenshot on failure (a reviewer note from F063), and fix stale frame numbers in docs/screens names by re-shooting."
+    },
+    {
       "id": "F080",
       "milestone": "M8",
       "title": "ChaosBot and soak_chaos E2E",
@@ -1042,23 +1175,6 @@
       "e2e": false,
       "review": false,
       "passes": false
-    },
-    {
-      "id": "F077",
-      "milestone": "M7",
-      "title": "rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run",
-      "sad": "§4, §10, §11, §16.6",
-      "tests": [
-        "cargo:rmc_app:app::tests::game_app_builds_headless",
-        "cargo:rmc_app:app::tests::headless_game_joins_and_receives_chunks"
-      ],
-      "blockedBy": [
-        "F075"
-      ],
-      "e2e": false,
-      "review": true,
-      "passes": false,
-      "notes": "Phase 1 gap found 2026-10-18: no feature wired rmc_app's main, which was still the kit stub, so `cargo run -p rmc_app` opened nothing. main parses the F075 CLI (--seed, --save), loads assets, generates or loads the world, starts the host on its own thread (F035) over ChannelTransport, and runs the client App with DefaultPlugins, a primary window and every rmc_client plugin that exists (net, replica, meshing, render, controller, fly camera, pickaxe, HUD, editor, save). Put the App construction in `app::build_game_app(cfg, windowed: bool)`; main calls it with true. Tests call it with false (no window, rule 12), step a few hundred frames and check that the player joins and the replica receives chunks. Do not run the binary in a session (rule 13). After this feature the 'How to play' command in docs/REPORT.md must work."
     },
     {
       "id": "F100",
