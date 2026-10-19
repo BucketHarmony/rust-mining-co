@@ -1436,3 +1436,37 @@ Decisions:
 - The earlier "revisit in F082" notes (palette linear scan, hash allocation, iter_chunks_sorted) were left alone: host_tick_100 is 61 µs against 2 ms and gen_world 241 ms against 3 s.
 Next: F083 (CI).
 Blockers: none.
+
+## 2026-10-19 18:30 — F083 CI: Linux tests+E2E on lavapipe, Windows build+E2E on WARP, windows-release artifact — passed
+Done:
+- .github/workflows/ci.yml reworked until green. Green runs: 39320912759 (E2E subset) and 39331584563 (final: every job green in about 24 min with a warm cache). The `windows-release` artifact is about 34 MB.
+- Why the earlier runs failed:
+  - Linux ran out of disk (72 GB root, full debuginfo on about 30 Bevy test binaries).
+  - Windows hit its 75-minute timeout during a cold debug build: about 57 min of dependency compiles on 2 cores, then link.exe. The cache had never been saved, because no run had succeeded.
+- Five jobs now, run in parallel:
+  - `linux`: fmt, clippy, no-bevy check, `cargo test --workspace`.
+  - `linux-features`: `verify-features.sh --quick`.
+  - `linux-e2e`: `scripts/e2e.sh`, all 17 scenarios on lavapipe, about 17 min of scenario time.
+  - `windows`: builds the rmc_e2e scenarios and runs `e2e.sh boot_renders` on WARP (about 13 min).
+  - `windows-release`: release build of rmc_app, packaged as rust-mining-co.exe + assets + CONTROLS.md, uploaded as `windows-release`.
+- Settings common to every job:
+  - `CARGO_PROFILE_DEV_DEBUG=line-tables-only` (0 in linux-features).
+  - `rust-cache` with `cache-on-failure: true`.
+  - A "free disk space" step on Linux.
+  - rust-lld as the Windows MSVC linker.
+  - `ubuntu-24.04` pinned (the ubuntu-latest label moves to 26 starting today).
+  - Concurrency: a newer push to the same ref cancels the older run.
+  - `RMC_SOAK_FRAMES=300`.
+Tests added: none (feature test is the existing coords::tests::smoke_compiles; the proof is the green CI run).
+Decisions:
+- Splitting the jobs: `cargo test -p <pkg>` resolves features for that package alone. `cargo tree` diffs show rmc_client, rmc_testkit/rmc_e2e and rmc_app each get smaller feature sets than the workspace build for image, arrayvec, profiling, regex-*, rand and getrandom. So verify-features.sh rebuilt Bevy three times (about 20 min each on CI), and e2e.sh rebuilt it once more. That costs too much time and disk for one job.
+  - `resolver.feature-unification = "workspace"` would fix this, but it is still nightly-only in cargo 1.99.1.
+  - A workspace-hack crate would pull Bevy-graph crates into the Bevy-free crates (rule 1).
+  - So each per-package step got its own job.
+- Windows runs only boot_renders. WARP on the 2-vCPU private-repo runner is about 10× slower than lavapipe: boot_renders took 796 s on WARP and 65 s on lavapipe. The whole suite on WARP would take hours.
+  - The Windows build is the scenario build plus the release build of the game. `cargo build --workspace --all-targets` was dropped there: Linux covers the workspace build, and the local commit gate runs the full workspace on Windows.
+- CI soak is 300 frames (the scenario checks the SAD invariants; the full-length assertions only apply at ≥3600). `scripts/soak.sh` remains the full 3,600-frame soak. SAD §12.4 says the p95 is recorded, not asserted, on CI.
+- Measured locally on WARP (i9), all 17 scenarios pass and take 2,280 s in total. The slowest are playtest_20261019 (539 s), dig_tunnel (352 s) and playtest_20261018 (280 s).
+- `gh` here is logged into the work account by default. CI was read with `GH_TOKEN=$(gh auth token --user BucketHarmony)`.
+Next: F084 (playtester report and screenshot gallery).
+Blockers: none.
