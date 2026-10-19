@@ -76,6 +76,18 @@ impl DamageProgress {
     }
 }
 
+/// The effect shown where a cell broke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BreakEffect {
+    /// The cell that broke.
+    pub cell: CellPos,
+    /// The material the cell held before it broke.
+    pub material: MaterialId,
+    /// 1.0 when the cell breaks, falling linearly to 0.0 at the end of the
+    /// effect.
+    pub fade: f32,
+}
+
 /// One inventory line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HudItem {
@@ -98,6 +110,10 @@ pub struct HudState {
     pub damage: Option<DamageProgress>,
     /// Held materials with a nonzero count, ascending by material id.
     pub inventory: Vec<HudItem>,
+    /// Swing feedback: 1.0 on the frame of a swing, falling linearly to 0.0.
+    pub swing_pulse: f32,
+    /// The break effect being shown, if any.
+    pub last_break: Option<BreakEffect>,
 }
 
 /// The player's inventory as of the host's last `Inventory` message.
@@ -694,6 +710,8 @@ mod tests {
                 material: Some("stone".into()),
                 damage: None,
                 inventory: vec![],
+                swing_pulse: 0.0,
+                last_break: None,
             }
         );
 

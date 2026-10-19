@@ -32,8 +32,8 @@ pub use gizmo::{
     EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
 };
 pub use hud::{
-    ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot, HudState,
-    HudSystems,
+    BreakEffect, ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot,
+    HudState, HudSystems,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
