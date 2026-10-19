@@ -48,6 +48,18 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
     - When a feature's notes or tests ask for a pixel threshold, assert the semantic equivalent instead. Save the screenshot with `scripts/screens.sh <scenario>`, commit it, and record the substitution in `PROGRESS.md` under `## Decisions`.
     - Pixel tests that already exist stay (rule 6). If one blocks a feature, fix it under the `test-fix:` procedure; don't tune the look to satisfy it.
 
+## External systems
+
+22. Work you push and then wait on (GitHub Actions CI, anything remote) is capped per session.
+    - At most two push-and-wait cycles and 60 minutes of waiting in total. Poll at most every 2 minutes.
+    - Before pushing, reproduce what you can locally (the same commands CI runs) so each push carries a real fix.
+    - When the cap is reached and it is still red:
+      - keep the fixes that helped, and keep the local gate green;
+      - record each failing job and its last error under `Blockers` in `PROGRESS.md`;
+      - if the feature's listed tests pass, run `scripts/pass-feature.sh`, title the block's status `passed (CI red, see Blockers)`, and stop.
+    - Later features must not wait on that CI. A follow-up fix is owner work.
+    - Narrowing what CI runs (dropping a job or an E2E scenario, raising a timeout) is allowed only with a reason under `## Decisions`.
+
 ## Conventions
 
 - Rust 2024 edition, `#![deny(unsafe_code)]` in every crate except where wgpu readback needs it (document the reason).
