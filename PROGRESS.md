@@ -1288,3 +1288,37 @@ Decisions:
 - Environment: the first commit attempt timed out in the commit gate (900 s). A `rustc` for the rmc_testkit lib test hung idle for over 20 minutes; a later run died with exit 1 and no diagnostic. After killing it and `cargo clean -p rmc_testkit`, the build and the gate ran normally. No code change was needed.
 Next: F091 (cursor grab) and F092 (glow) are unblocked.
 Blockers: none.
+
+## 2026-10-19 09:48 — F091 Cursor grab: locked and hidden while playing, Escape releases, click re-grabs, editor open releases — passed
+Done:
+- New rmc_client::cursor:
+  - `CursorGrab` resource (grabbed by default) and `CursorPlugin`, which rmc_app adds only to the windowed build.
+  - Two chained systems in `PreUpdate` after `InputSystems`. `update_grab` changes the state from input; `show_grab` writes the primary window's `CursorOptions`: `Locked` and hidden while grabbed, `None` and visible while released. It writes only when they differ.
+  - Rules:
+    - Escape (`RELEASE_KEY`) releases the cursor, and so does the window losing focus.
+    - A just-pressed left click (`GRAB_BUTTON`) grabs it again while it is released, the editor is closed and the window has focus.
+    - A change of `EditorState::open` releases the cursor when the editor opens and grabs it when it closes. This covers F1 and the panel alike.
+  - The press that grabs (or a press held while the editor closes) is swallowed until the button is let go. `CursorGrab::swing_allowed` is false meanwhile.
+- `look_allowed` / `swing_allowed` helpers return true when there is no `CursorGrab`. The test kit, the headless game and the existing unit tests therefore behave exactly as before.
+- controller::look_players and flycam::fly_camera skip mouse motion unless look is allowed (fly keys still move). pickaxe::swing also requires `swing_allowed`.
+- docs/CONTROLS.md gains a Cursor section. Module docs of controller, pickaxe and flycam note the gate.
+Tests added:
+- cursor::tests::grab_follows_escape_click_and_editor. It first failed with "grab mode while grabbed: left None, right Locked". The rig is MinimalPlugins with FlyCam, Controller, Pickaxe, Editor and Cursor plugins, plus a `Window` + `PrimaryWindow` entity (no OS window, rule 12). It checks:
+  - grabbed from frame 1, with look and swing working;
+  - Escape releases and look stops;
+  - a click grabs on its own frame and never swings while held for 60 frames; a later press swings;
+  - F1 open releases, clicks with the editor open do not grab and there is no look; F1 close grabs;
+  - the same through `EditorState.open`;
+  - a press held through closing the editor does not swing;
+  - focus loss releases, and regaining focus does not grab until a click;
+  - the fly camera turns only while grabbed.
+  Each state check also asserts the window's `CursorOptions`.
+- Workspace tests, clippy, fmt and check-no-bevy are green. The feature has e2e false, so no E2E run.
+Decisions:
+- Locked is always requested. bevy_winit 0.20 (`winit_windows.rs`) already falls back to Confined when Locked fails, as it does on Windows, so the plugin does not pick per platform.
+- The fly camera's mouse look is gated too: the free-cursor spin is the same problem there. As a result, with the editor open the view does not turn. The brush aims at the view center, so the user aims with F1 closed and then opens the editor; WASD fly still works with it open.
+- Focus loss releases the cursor. This is not in the feature note, but it is the conservative reading: alt-tab must not leave a hidden, locked cursor or a view that turns.
+- The cursor systems run in PreUpdate rather than Update, so a frame's FixedUpdate swing and Update look see the grab that frame's input made. A change of `EditorState` (made in Update) reaches the cursor one frame later. This is harmless: the pickaxe already checks `editor.open` itself.
+- docs/SAD.md is not edited (settings deny it, as noted for F090). This note records the extension: §11.4's mouse look and §11.5's swing are gated by the windowed game's cursor grab, and §11.6's editor releases it.
+Next: F092 (glow) is unblocked and is the last M7 feature; after it, run the M7 playtester.
+Blockers: none.
