@@ -40,6 +40,14 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 19. Every numeric rate, threshold, shift and constant used by a pass lives in `assets/eco.ron` under the name SAD-P2 §7 gives it (`heat_shift`, `flow_cap`, `seep_num`, `stress_death`, ...). Pass code contains no numeric literals other than 0, 1, array sizes, type limits (`u8::MAX`, `i16::MIN`, ...) and the fixed divisors written inside SAD-P2 formulas (`/ 2`, `/ 256`), which go in named `const`s.
 20. Cross-chunk fluxes are pure functions of the ordered pair's state, computed identically from both sides. The two-chunk-equals-one-chunk tests enforce this.
 
+## Look and feel
+
+21. Look-and-feel features (lighting, sky, fog, shading, glow, effects, HUD styling) ship with a semantic assertion and a screenshot. The playtester judges the look.
+    - The test asserts what the code set up: components and resources present, light, fog, material and camera parameters, vertex attributes, `HudState` fields. A capture check is at most coarse: the frame is not blank, or two frames differ.
+    - Do not write luminance or color thresholds, and do not iterate on pixel numbers. That means no tuning constants, re-deriving ceilings or re-shooting to make a pixel check pass.
+    - When a feature's notes or tests ask for a pixel threshold, assert the semantic equivalent instead. Save the screenshot with `scripts/screens.sh <scenario>`, commit it, and record the substitution in `PROGRESS.md` under `## Decisions`.
+    - Pixel tests that already exist stay (rule 6). If one blocks a feature, fix it under the `test-fix:` procedure; don't tune the look to satisfy it.
+
 ## Conventions
 
 - Rust 2024 edition, `#![deny(unsafe_code)]` in every crate except where wgpu readback needs it (document the reason).
