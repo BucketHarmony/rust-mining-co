@@ -8,8 +8,15 @@
 //! A move along an axis stops [`SKIN_M`] short of the first blocking cell
 //! layer it would enter, so a box that starts free never comes to overlap a
 //! blocking cell, and a blocked axis does not stop the others: walking
-//! diagonally into a wall slides along it. A box that already overlaps one
-//! (a cell set inside the player) is not pushed out; it can move away.
+//! diagonally into a wall slides along it.
+//!
+//! A box that overlaps a `Solid` cell at the start of a step (a spawn in
+//! rock, a cell set inside the player by another source, a load) is first
+//! pushed out: the feet move to the nearest spot where the box is free,
+//! preferring up ([`free_feet_near`]), and the velocity is dropped. With no
+//! free spot in reach, or overlapping only cells that block without being
+//! solid (an unloaded chunk), it stays and can move away. The host already
+//! keeps its own `Set` cells out of the box it was last told about (SAD §8.2).
 //!
 //! Which cells block is [`blocks`]: `Solid` phase cells, every cell outside
 //! the world bounds below or beside the world, and cells in chunks the
@@ -42,16 +49,16 @@ use rmc_protocol::ClientMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::world::World;
 
+use crate::editor::free_feet_near;
 use crate::flycam::{FlyCam, MAX_PITCH_DEG};
 use crate::interp::InterpolatedEye;
 use crate::net::ToHost;
 use crate::render::GameCamera;
 use crate::replica::Replica;
 
-/// Width and depth of the player's box, in meters.
-pub const PLAYER_WIDTH_M: f32 = 0.6;
-/// Height of the player's box, in meters.
-pub const PLAYER_HEIGHT_M: f32 = 1.7;
+/// The player's box, shared with the host, which keeps `Set` cells out of
+/// it (SAD §8.2).
+pub use rmc_protocol::{PLAYER_HEIGHT_M, PLAYER_WIDTH_M};
 /// Eye height above the feet, in meters.
 pub const EYE_HEIGHT_M: f32 = 1.55;
 /// Gap left between the box and a blocking cell after a blocked move. Far
@@ -207,8 +214,12 @@ pub fn blocks(world: &World, cell: CellPos) -> bool {
     world.get_cell(cell).is_none() || world.is_solid(cell)
 }
 
-/// One fixed step of `dt` seconds: jump, gravity, walk input, then the swept
-/// move.
+/// One fixed step of `dt` seconds: push-out, jump, gravity, walk input, then
+/// the swept move.
+///
+/// A box overlapping a `Solid` cell is first moved to [`free_feet_near`]'s
+/// spot, if there is one, standing still and not grounded (see
+/// [`push_out`]).
 ///
 /// The horizontal velocity is the walk input along the yaw at walk or
 /// sprint speed (no acceleration). A grounded player holding jump starts
@@ -226,6 +237,7 @@ pub fn step(
     config: &ControllerConfig,
     dt: f32,
 ) {
+    push_out(world, player);
     let yaw = Quat::from_rotation_y(player.yaw);
     let wish = (yaw * Vec3::NEG_Z * input.forward + yaw * Vec3::X * input.right)
         .with_y(0.0)
@@ -270,6 +282,38 @@ pub fn step(
             None => player.feet[axis] += d,
         }
     }
+}
+
+/// Moves a player whose box overlaps a `Solid` cell to the nearest spot
+/// where it is free ([`free_feet_near`]: nearest first, then higher), drops
+/// its velocity and any step-up smoothing, and returns whether it moved. A
+/// box overlapping no solid cell, or with no free spot in reach, stays.
+pub fn push_out(world: &World, player: &mut Player) -> bool {
+    if !overlaps_solid(world, player.aabb()) {
+        return false;
+    }
+    let Some(feet) = free_feet_near(world, player.feet) else {
+        return false;
+    };
+    player.feet = feet;
+    player.velocity = Vec3::ZERO;
+    player.grounded = false;
+    player.step_offset_m = 0.0;
+    true
+}
+
+/// Whether `aabb` shares volume with a `Solid` cell of `world`.
+fn overlaps_solid(world: &World, aabb: Aabb) -> bool {
+    let lo = (aabb.min / CELL_SIZE_M).floor().as_ivec3();
+    let hi = (aabb.max / CELL_SIZE_M).floor().as_ivec3();
+    (lo.y..=hi.y).any(|y| {
+        (lo.z..=hi.z).any(|z| {
+            (lo.x..=hi.x).any(|x| {
+                let cell = CellPos::new(x, y, z);
+                aabb.overlaps_cell(cell) && world.is_solid(cell)
+            })
+        })
+    })
 }
 
 /// Tries to climb onto what stopped a grounded horizontal move of `d`
@@ -1136,6 +1180,100 @@ mod tests {
         assert!(!blocks(&world, CellPos::new(32, 64, 32)));
         run(&world, &mut player, MoveInput::default(), 240);
         assert!(player.grounded && (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M);
+    }
+
+    #[test]
+    fn embedded_player_is_pushed_out() {
+        let config = ControllerConfig::default();
+        let still = MoveInput::default();
+
+        // A Set over the head of a standing player (the M6 playtest's white
+        // screen). The box spans cells x and z 31..=32, y 4..=7; stone goes
+        // into rows 6..=7, around the eye.
+        let mut world = floor_world();
+        let id = stone(&world);
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 16.0));
+        run(&world, &mut player, still, 5);
+        assert!(player.grounded);
+        fill(&mut world, (31, 6, 31), (32, 7, 32), id);
+        assert!(!penetrated(&world, &player).is_empty());
+        let expected = free_feet_near(&world, player.feet).expect("a free spot nearby");
+        step(&world, &mut player, still, &config, DT);
+        assert!(
+            penetrated(&world, &player).is_empty(),
+            "pushed out to {:?}",
+            player.feet
+        );
+        assert_eq!(player.feet.xz(), expected.xz(), "the nearest free spot");
+        assert!((player.feet.y - expected.y).abs() <= 2.0 * SKIN_M);
+        assert!((player.feet.y - 2.0).abs() <= 2.0 * SKIN_M, "on the floor");
+        assert!(player.grounded);
+        // It walks on from there as usual.
+        run(&world, &mut player, FORWARD, 30);
+
+        // Sunk into the floor (a Set under the feet, or a spawn too low):
+        // up is preferred over sideways at the same distance, so it ends
+        // standing on the floor above the same cell.
+        let world = floor_world();
+        let mut player = Player::at(Vec3::new(16.25, 1.8, 16.25));
+        player.velocity = Vec3::new(0.0, -10.0, 0.0);
+        assert!(!penetrated(&world, &player).is_empty());
+        step(&world, &mut player, still, &config, DT);
+        assert!(penetrated(&world, &player).is_empty());
+        assert_eq!(player.feet.xz(), Vec2::new(16.25, 16.25));
+        assert!(
+            (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M,
+            "{:?}",
+            player.feet
+        );
+        assert!(player.grounded);
+        assert_eq!(player.velocity, Vec3::ZERO, "the fall does not carry over");
+        run(&world, &mut player, still, 10);
+
+        // Only solid cells count: a box reaching into a chunk the replica
+        // does not hold yet is not moved sideways or up to somewhere else.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 63, 63));
+        let mut world = World::new(materials(), bounds);
+        for pos in bounds.chunks().filter(|p| p.0.y == 1) {
+            world
+                .insert_chunk(pos, Chunk::uniform(MaterialId::AIR))
+                .unwrap();
+        }
+        let mut player = Player::at(Vec3::new(8.0, 15.9, 8.0));
+        assert!(!penetrated(&world, &player).is_empty());
+        step(&world, &mut player, still, &config, DT);
+        assert_eq!(player.feet.xz(), Vec2::new(8.0, 8.0));
+        assert!(player.feet.y <= 15.9, "{:?}", player.feet);
+
+        // Nowhere free in reach (solid rock all around): it stays put.
+        let mut world = air_world(32);
+        let id = stone(&world);
+        fill(&mut world, (0, 0, 0), (31, 31, 31), id);
+        let mut player = Player::at(Vec3::new(8.0, 8.0, 8.0));
+        assert_eq!(free_feet_near(&world, player.feet), None);
+        step(&world, &mut player, still, &config, DT);
+        assert_eq!(player.feet.xz(), Vec2::new(8.0, 8.0));
+        assert!(
+            (player.feet.y - 8.0).abs() <= 2.0 * SKIN_M,
+            "{:?}",
+            player.feet
+        );
+
+        // Through the plugin: a player spawned in rock is out once fixed
+        // steps run (the first frame advances no time).
+        let mut world = floor_world();
+        let id = stone(&world);
+        fill(&mut world, (28, 4, 28), (35, 7, 35), id);
+        let (mut app, p, _) = controller_app(world, Player::at(Vec3::new(16.0, 2.0, 16.0)));
+        app.update();
+        app.update();
+        let moved = app.world().get::<Player>(p).unwrap().clone();
+        let world = app.world().resource::<Replica>().world();
+        assert!(
+            penetrated(world, &moved).is_empty(),
+            "still in rock at {:?}",
+            moved.feet
+        );
     }
 
     /// Inclusive cell box (min, max).

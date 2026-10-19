@@ -180,6 +180,18 @@ impl World {
     /// no cell and produces no delta. `Set`, `Paint` and `Remove` clear the
     /// damage on every cell they apply to.
     pub fn apply(&mut self, cmd: &EditCommand) -> EditResult {
+        self.apply_keeping_clear(cmd, &[])
+    }
+
+    /// [`World::apply`], except that a `Set` also skips every cell inside
+    /// one of the `keep_clear` boxes (the host's player boxes), cell by cell
+    /// like the other skips: the rest of the command applies, and a skipped
+    /// cell keeps its material and damage. The other ops ignore the boxes.
+    pub fn apply_keeping_clear(
+        &mut self,
+        cmd: &EditCommand,
+        keep_clear: &[CellAabb],
+    ) -> EditResult {
         if let Err(reason) = self.validate(cmd) {
             tracing::debug!(command = ?cmd.id, %reason, "edit rejected");
             return EditResult::rejected(cmd.id, reason);
@@ -209,6 +221,9 @@ impl World {
                 }
                 MaterialId::AIR
             } else {
+                if matches!(cmd.op, EditOp::Set(_)) && keep_clear.iter().any(|b| b.contains(cell)) {
+                    continue;
+                }
                 let Some(new) = cmd.op.target(def) else {
                     continue;
                 };
@@ -1300,5 +1315,92 @@ mod tests {
         assert!(rejected >= 3, "{rejected} rejected");
         assert!(breaks >= 1, "{breaks} commands broke cells");
         eprintln!("{cells} Cells, {fulls} Full, {rejected} rejected, {breaks} breaking");
+    }
+
+    #[test]
+    fn apply_keeping_clear_skips_set_cells_only() {
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let granite = id(&table, "granite");
+        let clay = id(&table, "clay");
+        let mut w = World::new(table.clone(), small_bounds());
+        for pos in small_bounds().chunks() {
+            w.insert_chunk(pos, Chunk::uniform(stone)).unwrap();
+        }
+        // Two boxes, one across the chunk border at x = 0.
+        let keep = [
+            CellAabb::new(CellPos::new(-1, 0, 0), CellPos::new(0, 3, 1)),
+            CellAabb::new(CellPos::new(10, 5, 10), CellPos::new(10, 5, 10)),
+        ];
+        let inside = |c: CellPos| keep.iter().any(|b| b.contains(c));
+
+        // No boxes is plain apply.
+        let mut plain = w.clone();
+        let cmd = edit(0, EditOp::Set(granite), boxed((-3, -1, -1), (2, 4, 2)));
+        assert_eq!(w.clone().apply_keeping_clear(&cmd, &[]), plain.apply(&cmd));
+
+        // Damage below the hardness on a cell inside a box.
+        let hurt = CellPos::new(0, 0, 0);
+        assert!(table.get(stone).unwrap().hardness > 1);
+        w.apply_keeping_clear(&edit(1, EditOp::Damage(1), Shape::Cell(hurt)), &keep);
+        assert_eq!(w.damage().get(hurt), 1);
+
+        // Set skips the box cells: they keep their material and damage.
+        let result = w.apply_keeping_clear(&cmd, &keep);
+        assert_eq!(result.status, EditStatus::Applied);
+        let mut set = 0;
+        for c in cmd.shape.cells() {
+            let want = if inside(c) { stone } else { granite };
+            assert_eq!(w.get_cell(c), Some(want), "{c:?}");
+            set += usize::from(!inside(c));
+        }
+        assert_eq!(set, 6 * 6 * 4 - 16);
+        let changed: usize = result
+            .deltas
+            .iter()
+            .map(|d| match d {
+                ChunkDelta::Cells { changes, .. } => changes.len(),
+                ChunkDelta::Full { .. } => unreachable!("small edit"),
+            })
+            .sum();
+        assert_eq!(changed, set);
+        assert_eq!(w.damage().get(hurt), 1, "a skipped cell keeps its damage");
+
+        // A Set wholly inside a box is Applied and changes nothing.
+        let before = w.clone();
+        let result = w.apply_keeping_clear(
+            &edit(
+                2,
+                EditOp::Set(granite),
+                Shape::Cell(CellPos::new(10, 5, 10)),
+            ),
+            &keep,
+        );
+        assert_eq!(result.status, EditStatus::Applied);
+        assert!(result.deltas.is_empty());
+        assert_unchanged(&w, &before, "Set inside a box");
+
+        // Paint, Remove and Damage ignore the boxes.
+        w.apply_keeping_clear(
+            &edit(3, EditOp::Paint(clay), boxed((-1, 0, 0), (0, 1, 1))),
+            &keep,
+        );
+        assert!(
+            boxed((-1, 0, 0), (0, 1, 1))
+                .cells()
+                .all(|c| w.get_cell(c) == Some(clay))
+        );
+        w.apply_keeping_clear(
+            &edit(4, EditOp::Remove, boxed((-1, 2, 0), (0, 2, 1))),
+            &keep,
+        );
+        assert!(
+            boxed((-1, 2, 0), (0, 2, 1))
+                .cells()
+                .all(|c| w.get_cell(c) == Some(MaterialId::AIR))
+        );
+        let far = CellPos::new(-1, 3, 1);
+        w.apply_keeping_clear(&edit(5, EditOp::Damage(u16::MAX), Shape::Cell(far)), &keep);
+        assert_eq!(w.get_cell(far), Some(MaterialId::AIR));
     }
 }

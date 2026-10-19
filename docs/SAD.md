@@ -231,7 +231,7 @@ Shape iteration order is fixed (y, then z, then x, ascending).
 
 ### 8.2 Validation (host)
 
-Reject the whole command, applying none of it, if the shape exceeds `MAX_EDIT_CELLS` (32,768) or lies entirely outside bounds. Inside a valid shape, cells are skipped individually when out of bounds, or when `diggable == false` for `Damage`/`Remove`. `Set` on a non-air cell is allowed (overwrite). Reach validation is a hook returning `Ok` in Phase 1.
+Reject the whole command, applying none of it, if the shape exceeds `MAX_EDIT_CELLS` (32,768) or lies entirely outside bounds. Inside a valid shape, cells are skipped individually when out of bounds, or when `diggable == false` for `Damage`/`Remove`. `Set` on a non-air cell is allowed (overwrite). `Set` also skips, cell by cell, every cell that a joined player's box (0.6 × 1.7 m, §11.4) overlaps at that player's last `PlayerState`; a player that has sent none is not protected (owner extension, F086). Reach validation is a hook returning `Ok` in Phase 1.
 
 ### 8.3 Results
 

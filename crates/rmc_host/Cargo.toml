@@ -10,9 +10,8 @@ publish.workspace = true
 rmc_world.workspace = true
 rmc_worldgen.workspace = true
 rmc_protocol.workspace = true
+glam.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-glam.workspace = true

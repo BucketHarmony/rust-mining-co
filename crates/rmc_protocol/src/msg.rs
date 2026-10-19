@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 /// Sent in `Hello`; the host rejects a client whose version differs.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Width and depth of a player's box, in meters (SAD §11.4). The box's
+/// bottom face is centered on `PlayerState::pos`, the feet.
+pub const PLAYER_WIDTH_M: f32 = 0.6;
+/// Height of a player's box, in meters (SAD §11.4).
+pub const PLAYER_HEIGHT_M: f32 = 1.7;
+
 /// Client → host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
@@ -19,6 +25,7 @@ pub enum ClientMsg {
         material_hash: u64,
     },
     Edit(EditCommand),
+    /// Where the player is: `pos` is the feet (see [`PLAYER_WIDTH_M`]).
     PlayerState {
         pos: Vec3,
         yaw: f32,

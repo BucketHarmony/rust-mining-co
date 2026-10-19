@@ -984,8 +984,9 @@
       ],
       "e2e": false,
       "review": true,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Owner decision, extending SAD §8.2: the host keeps each joined player's last PlayerState (it ignores PlayerState today) and skips, cell by cell like the other §8.2 skips, any Set cell that overlaps that player's 0.6 x 1.7 m box (PLAYER_WIDTH_M / PLAYER_HEIGHT_M). The rest of the command applies. A player that has sent no PlayerState is not protected. Controller: if the box overlaps a solid cell at the start of a fixed step (a spawn in rock, a Set from another source, a load), move the feet to the nearest free spot, preferring up, reusing editor::free_feet_near; keep the no-penetration proptest green. The playtest reproduced a Set over the player's head leaving the camera inside the block (white screen)."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Owner decision, extending SAD §8.2: the host keeps each joined player's last PlayerState (it ignores PlayerState today) and skips, cell by cell like the other §8.2 skips, any Set cell that overlaps that player's 0.6 x 1.7 m box (PLAYER_WIDTH_M / PLAYER_HEIGHT_M). The rest of the command applies. A player that has sent no PlayerState is not protected. Controller: if the box overlaps a solid cell at the start of a fixed step (a spawn in rock, a Set from another source, a load), move the feet to the nearest free spot, preferring up, reusing editor::free_feet_near; keep the no-penetration proptest green. The playtest reproduced a Set over the player's head leaving the camera inside the block (white screen).",
+      "passedAt": "2026-10-19T05:52:34Z"
     },
     {
       "id": "F087",

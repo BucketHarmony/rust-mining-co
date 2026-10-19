@@ -415,11 +415,9 @@ mod tests {
         // floor). The spawn column is free, but the box also reaches into
         // the neighbouring columns, and where those hold rock the controller
         // pushes the player out to the nearest free spot (F086), which is
-        // free_feet_near's.
-        let rest = [
-            feet,
-            rmc_client::free_feet_near(&generated, feet).expect("a free spot near the spawn"),
-        ];
+        // free_feet_near's (the spawn itself when the box is free).
+        let rest =
+            rmc_client::free_feet_near(&generated, feet).expect("a free spot near the spawn");
         step_until(&mut app, "grounded", |app| {
             player(app).is_some_and(|p| p.grounded)
         });
@@ -430,7 +428,7 @@ mod tests {
         let p = player(&mut app).unwrap();
         assert!(p.grounded);
         assert!(
-            rest.iter().any(|r| (p.feet - *r).length() <= 2.0 * SKIN_M),
+            (p.feet - rest).length() <= 2.0 * SKIN_M,
             "{:?} vs {rest:?}",
             p.feet
         );

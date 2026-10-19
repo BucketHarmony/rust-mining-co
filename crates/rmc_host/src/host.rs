@@ -23,6 +23,12 @@
 //! before it, and the requester alone gets `Saved { ok, path }`. A host
 //! without a save directory answers `Saved { ok: false, path: "" }`.
 //!
+//! Each joined player's last `PlayerState` is kept as the cells its box
+//! ([`PLAYER_WIDTH_M`] × [`PLAYER_HEIGHT_M`] over the feet) overlaps; a
+//! `Set` from anyone skips those cells, one by one like the other SAD §8.2
+//! skips, so a placed cell never ends up inside a player. A player that has
+//! sent no `PlayerState` is not protected.
+//!
 //! [`Host::replace_world`] swaps in another world (a loaded save) and sends
 //! every joined player `Welcome`, the snapshots and its inventory again.
 
@@ -30,8 +36,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crossbeam_channel::Receiver;
-use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
-use rmc_world::coords::ChunkPos;
+use rmc_protocol::{ClientMsg, PLAYER_HEIGHT_M, PLAYER_WIDTH_M, PROTOCOL_VERSION, ServerMsg};
+use rmc_world::coords::{CELL_SIZE_M, CellAabb, CellPos, ChunkPos};
 use rmc_world::edit::{EditCommand, EditStatus, PlayerId};
 use rmc_world::inventory::Inventory;
 use rmc_world::save::{self, SaveError, SaveHeader};
@@ -79,6 +85,9 @@ pub struct Host {
     inventories: BTreeMap<PlayerId, Inventory>,
     /// Where `SaveRequest` writes; `None` refuses every save.
     save: Option<SaveConfig>,
+    /// The cells each joined player's box overlapped at its last
+    /// `PlayerState`.
+    player_cells: BTreeMap<PlayerId, CellAabb>,
 }
 
 impl Host {
@@ -90,6 +99,7 @@ impl Host {
             joined: BTreeSet::new(),
             inventories: BTreeMap::new(),
             save: None,
+            player_cells: BTreeMap::new(),
         }
     }
 
@@ -173,6 +183,12 @@ impl Host {
         self.joined.contains(&player)
     }
 
+    /// The cells a `Set` leaves alone for `player`'s sake: those its box
+    /// overlaps at its last `PlayerState`. `None` if it has sent none.
+    pub fn protected_cells(&self, player: PlayerId) -> Option<CellAabb> {
+        self.player_cells.get(&player).copied()
+    }
+
     /// The materials `player` has collected, if it has joined.
     pub fn inventory(&self, player: PlayerId) -> Option<&Inventory> {
         self.inventories.get(&player)
@@ -188,8 +204,9 @@ impl Host {
                 debug!(player = player.0, "message before join ignored");
             }
             ClientMsg::Edit(cmd) => self.edit(player, cmd),
-            // Single player: there is nobody to relay positions to.
-            ClientMsg::PlayerState { .. } => {}
+            // Single player: there is nobody to relay positions to, but
+            // the box keeps Set cells out (§8.2).
+            ClientMsg::PlayerState { pos, .. } => self.player_state(player, pos),
             ClientMsg::RequestChunk(pos) => self.request_chunk(player, pos),
             ClientMsg::SaveRequest => self.save_request(player),
         }
@@ -263,7 +280,8 @@ impl Host {
     fn edit(&mut self, player: PlayerId, mut cmd: EditCommand) {
         cmd.issuer = player;
         cmd.id.issuer = player;
-        let result = self.world.apply(&cmd);
+        let keep_clear: Vec<CellAabb> = self.player_cells.values().copied().collect();
+        let result = self.world.apply_keeping_clear(&cmd, &keep_clear);
         if let EditStatus::Rejected(_) = result.status {
             self.transport
                 .send(Recipient::One(player), ServerMsg::Applied(result));
@@ -282,6 +300,17 @@ impl Host {
             let items = inventory.items();
             self.transport
                 .send(Recipient::One(player), ServerMsg::Inventory { items });
+        }
+    }
+
+    /// Keeps the cells `player`'s box overlaps with its feet at `feet`. A
+    /// non-finite position is ignored, and the last box stays.
+    fn player_state(&mut self, player: PlayerId, feet: glam::Vec3) {
+        match player_cells(feet) {
+            Some(cells) => {
+                self.player_cells.insert(player, cells);
+            }
+            None => debug!(player = player.0, ?feet, "non-finite PlayerState ignored"),
         }
     }
 
@@ -334,6 +363,25 @@ impl Host {
     }
 }
 
+/// The cells a player's box with its feet at `feet` shares volume with
+/// (touching faces do not count), or `None` if `feet` is not finite.
+fn player_cells(feet: glam::Vec3) -> Option<CellAabb> {
+    if !feet.is_finite() {
+        return None;
+    }
+    let half = PLAYER_WIDTH_M / 2.0;
+    let min = feet - glam::Vec3::new(half, 0.0, half);
+    let max = feet + glam::Vec3::new(half, PLAYER_HEIGHT_M, half);
+    // A cell overlaps when its min is below the box's max and its max above
+    // the box's min. Far-off positions saturate at the i32 limits.
+    let lo = (min / CELL_SIZE_M).floor().as_ivec3();
+    let hi = (max / CELL_SIZE_M)
+        .ceil()
+        .as_ivec3()
+        .saturating_sub(glam::IVec3::ONE);
+    Some(CellAabb::new(CellPos(lo), CellPos(hi.max(lo))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,7 +389,7 @@ mod tests {
 
     use rmc_world::chunk::{Chunk, ChunkStorage};
     use rmc_world::coords::{CellAabb, CellPos, ChunkPos};
-    use rmc_world::edit::{ChunkDelta, CommandId, EditOp, RejectReason};
+    use rmc_world::edit::{ChunkDelta, CommandId, EditOp, EditResult, RejectReason};
     use rmc_world::materials::{MaterialId, MaterialTable};
     use rmc_world::shape::Shape;
 
@@ -1575,5 +1623,241 @@ mod tests {
             vec![saved(false, std::path::Path::new(""))]
         );
         assert!(matches!(host.save(), Err(HostSaveError::NoSaveDir)));
+    }
+
+    /// Every cell of the inclusive box `min..=max`, in shape order.
+    fn cells_of(min: (i32, i32, i32), max: (i32, i32, i32)) -> Vec<CellPos> {
+        Shape::Box {
+            min: CellPos::new(min.0, min.1, min.2),
+            max: CellPos::new(max.0, max.1, max.2),
+        }
+        .cells()
+        .collect()
+    }
+
+    fn state(feet: glam::Vec3) -> ClientMsg {
+        ClientMsg::PlayerState {
+            pos: feet,
+            yaw: 0.5,
+            pitch: -0.25,
+        }
+    }
+
+    /// The one `Applied` result in `msgs`.
+    fn only_result(msgs: &[ServerMsg]) -> &EditResult {
+        let [ServerMsg::Applied(result)] = msgs else {
+            panic!("expected one Applied, got {msgs:?}");
+        };
+        result
+    }
+
+    #[test]
+    fn set_skips_cells_inside_a_player_box() {
+        let (mut host, eps) = host_with(test_world(), 3);
+        let (a, b, c) = (&eps[0], &eps[1], &eps[2]);
+        a.send(hello(host.world())).unwrap();
+        b.send(hello(host.world())).unwrap();
+        host.tick();
+        let mut replica_a = assert_join(&host, a.player(), &a.drain());
+        let mut replica_b = assert_join(&host, b.player(), &b.drain());
+        let granite = mat(host.world(), "granite");
+        let basalt = mat(host.world(), "basalt");
+        let air = |host: &Host, cells: &[CellPos]| {
+            cells
+                .iter()
+                .all(|&c| host.world().get_cell(c) == Some(MaterialId::AIR))
+        };
+        let set_box = |seq: u32, id: MaterialId, min: (i32, i32, i32), max: (i32, i32, i32)| {
+            edit(
+                0,
+                seq,
+                EditOp::Set(id),
+                Shape::Box {
+                    min: CellPos::new(min.0, min.1, min.2),
+                    max: CellPos::new(max.0, max.1, max.2),
+                },
+            )
+        };
+        // Chunk (1, 1, 0) is air over the stone chunk (1, 0, 0), whose top
+        // cell row is y = 31 (top face at 16.0 m). Feet on that floor at
+        // (20.0, 16.0, 5.0) m: the 0.6 × 1.7 m box spans x 19.7..20.3,
+        // y 16.0..17.7, z 4.7..5.3 m, which is cells x 39..=40, y 32..=35,
+        // z 9..=10. The floor row only touches it.
+        let box_a = cells_of((39, 32, 9), (40, 35, 10));
+        assert_eq!(box_a.len(), 16);
+        assert!(air(&host, &box_a));
+
+        // A player that has sent no PlayerState is not protected.
+        let inside = CellPos::new(40, 33, 10);
+        b.send(edit(2, 1, EditOp::Set(granite), Shape::Cell(inside)))
+            .unwrap();
+        host.tick();
+        assert_eq!(host.world().get_cell(inside), Some(granite));
+        b.send(edit(2, 2, EditOp::Remove, Shape::Cell(inside)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 2);
+        assert_eq!(b.drain(), to_a);
+        replay(&mut replica_a, &to_a);
+        replay(&mut replica_b, &to_a);
+        assert!(air(&host, &box_a));
+
+        // a reports where it stands. Nobody is sent anything for that.
+        a.send(state(glam::Vec3::new(20.0, 16.0, 5.0))).unwrap();
+        host.tick();
+        assert!(eps.iter().all(|ep| ep.drain().is_empty()));
+        assert_eq!(
+            host.protected_cells(a.player()),
+            Some(CellAabb::new(
+                CellPos::new(39, 32, 9),
+                CellPos::new(40, 35, 10)
+            ))
+        );
+        assert_eq!(host.protected_cells(b.player()), None);
+
+        // b fills a box around a, floor row included. Every cell of it is
+        // set except the 16 the box of a overlaps, and the command is
+        // Applied.
+        let (min, max) = ((37, 31, 7), (42, 37, 12));
+        b.send(set_box(3, granite, min, max)).unwrap();
+        host.tick();
+        for cell in cells_of(min, max) {
+            let want = if box_a.contains(&cell) {
+                MaterialId::AIR
+            } else {
+                granite
+            };
+            assert_eq!(host.world().get_cell(cell), Some(want), "{cell:?}");
+        }
+        let to_a = a.drain();
+        assert_eq!(b.drain(), to_a);
+        let result = only_result(&to_a);
+        assert_eq!(result.status, EditStatus::Applied);
+        let changed: usize = result
+            .deltas
+            .iter()
+            .map(|d| match d {
+                ChunkDelta::Cells { changes, .. } => changes.len(),
+                ChunkDelta::Full { .. } => panic!("small edit sent as Full"),
+            })
+            .sum();
+        assert_eq!(changed, 6 * 7 * 6 - box_a.len());
+        replay(&mut replica_a, &to_a);
+        replay(&mut replica_b, &to_a);
+        assert_eq!(replica_a.hash(), host.world().hash());
+        assert_eq!(replica_b.hash(), host.world().hash());
+
+        // The player's own Set is skipped the same way, and a Set wholly
+        // inside the box is Applied with no delta.
+        a.send(edit(
+            1,
+            4,
+            EditOp::Set(basalt),
+            Shape::Cell(CellPos::new(39, 35, 9)),
+        ))
+        .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        let result = only_result(&to_a);
+        assert_eq!(result.status, EditStatus::Applied);
+        assert!(result.deltas.is_empty());
+        assert_eq!(b.drain(), to_a);
+        assert!(air(&host, &box_a));
+
+        // Other ops are not affected: Paint reaches the granite around the
+        // box as usual (the box itself is air, which Paint skips anyway).
+        b.send(edit(
+            2,
+            5,
+            EditOp::Paint(basalt),
+            Shape::Box {
+                min: CellPos::new(38, 32, 8),
+                max: CellPos::new(41, 36, 11),
+            },
+        ))
+        .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(b.drain(), to_a);
+        replay(&mut replica_a, &to_a);
+        replay(&mut replica_b, &to_a);
+        for cell in cells_of((38, 32, 8), (41, 36, 11)) {
+            let want = if box_a.contains(&cell) {
+                MaterialId::AIR
+            } else {
+                basalt
+            };
+            assert_eq!(host.world().get_cell(cell), Some(want), "{cell:?}");
+        }
+
+        // b digs a hollow in the stone chunk (0, 0, 0) and reports standing
+        // in it, at feet (2.5, 10.0, 2.5) m: x and z 2.2..2.8 m are cells
+        // 4..=5, y 10.0..11.7 m is cells 20..=23.
+        b.send(edit(
+            2,
+            6,
+            EditOp::Remove,
+            Shape::Box {
+                min: CellPos::new(4, 20, 4),
+                max: CellPos::new(6, 26, 6),
+            },
+        ))
+        .unwrap();
+        b.send(state(glam::Vec3::new(2.5, 10.0, 2.5))).unwrap();
+        // a walks 3 m along +x, past the granite: cells x 45..=46 now.
+        a.send(state(glam::Vec3::new(23.0, 16.0, 5.0))).unwrap();
+        // A non-finite state is ignored; a keeps its last box.
+        a.send(state(glam::Vec3::new(f32::NAN, 16.0, 5.0))).unwrap();
+        a.send(state(glam::Vec3::new(23.0, f32::INFINITY, 5.0)))
+            .unwrap();
+        // So is the state of a player that has not joined.
+        c.send(state(glam::Vec3::new(1.0, 1.0, 1.0))).unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(b.drain(), to_a);
+        replay(&mut replica_a, &to_a);
+        replay(&mut replica_b, &to_a);
+        assert_eq!(
+            host.protected_cells(a.player()),
+            Some(CellAabb::new(
+                CellPos::new(45, 32, 9),
+                CellPos::new(46, 35, 10)
+            ))
+        );
+        assert_eq!(
+            host.protected_cells(b.player()),
+            Some(CellAabb::new(
+                CellPos::new(4, 20, 4),
+                CellPos::new(5, 23, 5)
+            ))
+        );
+        assert_eq!(host.protected_cells(c.player()), None);
+
+        // One Set over both boxes skips both, and the cells a has left are
+        // no longer protected.
+        let box_a = cells_of((45, 32, 9), (46, 35, 10));
+        assert!(air(&host, &box_a));
+        let box_b = cells_of((4, 20, 4), (5, 23, 5));
+        assert!(air(&host, &box_b));
+        let (min, max) = ((0, 16, 0), (47, 40, 15));
+        a.send(set_box(7, granite, min, max)).unwrap();
+        host.tick();
+        for cell in cells_of(min, max) {
+            let got = host.world().get_cell(cell);
+            if box_a.contains(&cell) || box_b.contains(&cell) {
+                assert_eq!(got, Some(MaterialId::AIR), "{cell:?} protected");
+            } else {
+                assert_eq!(got, Some(granite), "{cell:?}");
+            }
+        }
+        let to_a = a.drain();
+        assert_eq!(b.drain(), to_a);
+        assert_eq!(only_result(&to_a).status, EditStatus::Applied);
+        replay(&mut replica_a, &to_a);
+        replay(&mut replica_b, &to_a);
+        assert_eq!(replica_a.hash(), host.world().hash());
+        assert_eq!(replica_b.hash(), host.world().hash());
+        assert!(c.drain().is_empty());
     }
 }

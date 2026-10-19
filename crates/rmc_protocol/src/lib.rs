@@ -5,4 +5,4 @@ pub mod codec;
 pub mod msg;
 
 pub use codec::{CodecError, decode_client, decode_server, encode_client, encode_server};
-pub use msg::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
+pub use msg::{ClientMsg, PLAYER_HEIGHT_M, PLAYER_WIDTH_M, PROTOCOL_VERSION, ServerMsg};
