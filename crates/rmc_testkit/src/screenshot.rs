@@ -135,9 +135,16 @@ mod tests {
 
     /// Points the test camera straight up from above the world, so it sees
     /// nothing of the world but the clear color, and spawns a red cube 4 m
-    /// in front of it, filling the middle of the view.
+    /// in front of it, filling the middle of the view. The game's skybox,
+    /// if the camera has one, would draw over the clear color, so it is
+    /// removed: this scene checks the capture, not the sky.
     fn spawn_cube(t: &mut TestApp) {
         let world = t.app_mut().world_mut();
+        let entity = world
+            .query_filtered::<Entity, With<TestCamera>>()
+            .single(world)
+            .expect("test camera");
+        world.entity_mut(entity).remove::<bevy::light::Skybox>();
         let mut camera = world
             .query_filtered::<&mut Transform, With<TestCamera>>()
             .single_mut(world)
