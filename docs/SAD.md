@@ -342,7 +342,7 @@ pub struct MeshData { pub positions: Vec<[f32;3]>, pub normals: Vec<[f32;3]>, pu
 
 ### 11.3 Lighting
 
-Directional sun with shadows (surface), high ambient, a point light on the player (lantern), bloom on the camera (`Bloom::NATURAL`, `Hdr`). Caves stay comfortable to read.
+Directional sun with shadows (surface), high ambient, a point light on the player (lantern), bloom on the camera (`Bloom::NATURAL`, `Hdr`). Caves stay comfortable to read. The camera has linear distance fog in the sky's horizon color, and a skybox with a gradient from that horizon color to a deeper zenith and a sun disc where the directional sun shines from, so distant terrain and the world's bedrock shell fade into the sky (owner's extension, F088).
 
 ### 11.4 Character controller
 

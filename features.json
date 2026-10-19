@@ -1020,8 +1020,9 @@
       ],
       "e2e": true,
       "review": true,
-      "passes": false,
-      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Today the horizon at eye level is a near-black (RGB about 25) slab from the bedrock shell, the sky shows only when looking up, and the sky is a flat color with nothing showing the sun's direction. Add DistanceFog on the GameCamera whose color matches the sky so distant terrain and the shell fade into it, and a sky gradient or a visible sun disc that agrees with the Sun's direction (Bevy's atmosphere or a simple skybox; keep it cheap on WARP). horizon_readable: at the default spawn, look level in four directions; the upper third of each frame must not be near-black, and terrain far away must be closer to the fog color than terrain near by. Re-shoot boot_renders, walk_and_jump and fly_camera."
+      "passes": true,
+      "notes": "From the M6 playtest (docs/PLAYTEST.md, 2026-10-18) and reviewer notes in PROGRESS.md; added by the owner. Today the horizon at eye level is a near-black (RGB about 25) slab from the bedrock shell, the sky shows only when looking up, and the sky is a flat color with nothing showing the sun's direction. Add DistanceFog on the GameCamera whose color matches the sky so distant terrain and the shell fade into it, and a sky gradient or a visible sun disc that agrees with the Sun's direction (Bevy's atmosphere or a simple skybox; keep it cheap on WARP). horizon_readable: at the default spawn, look level in four directions; the upper third of each frame must not be near-black, and terrain far away must be closer to the fog color than terrain near by. Re-shoot boot_renders, walk_and_jump and fly_camera.",
+      "passedAt": "2026-10-19T10:45:16Z"
     },
     {
       "id": "F089",

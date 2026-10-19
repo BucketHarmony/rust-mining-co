@@ -16,24 +16,76 @@
 //! - Lighting: a [`Sun`] (directional, with shadows), a high
 //!   `GlobalAmbientLight` so caves stay readable, and a [`Lantern`] point
 //!   light that moves with the camera, carried behind the eye so a wall
-//!   right in front is not blown out, and a sky-blue `ClearColor`.
+//!   right in front is not blown out.
+//! - The horizon (F088): the camera has a linear [`DistanceFog`] whose color
+//!   is [`HORIZON_COLOR`], so distant terrain and the bedrock shell fade into
+//!   the sky instead of reading as a black wall, and a [`Skybox`] built by
+//!   [`sky_cubemap`]: [`HORIZON_COLOR`] at and below the horizon (exactly the
+//!   fog color, so fogged terrain meets the sky without a seam), a gradient
+//!   up to [`ZENITH_COLOR`], and a sun disc with a glow where the [`Sun`]
+//!   shines from. `ClearColor` is the horizon color too; it shows only where
+//!   there is no skybox.
 //!
 //! Without `Assets<StandardMaterial>` (a logic-only app) there is no
-//! material; the camera and lights are spawned all the same, so systems that
-//! follow the camera work in both modes.
+//! material, and without `Assets<Image>` no skybox; the camera (with its
+//! fog) and lights are spawned all the same, so systems that follow the
+//! camera work in both modes.
 
-use bevy::camera::{Hdr, ShadowLodOrigin};
-use bevy::light::CascadeShadowConfigBuilder;
-use bevy::pbr::PbrPlugin;
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::{Exposure, Hdr, ShadowLodOrigin};
+use bevy::light::{CascadeShadowConfigBuilder, Skybox};
+use bevy::pbr::{DistanceFog, FogFalloff, PbrPlugin};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
+};
 use rmc_world::coords::{CELL_SIZE_M, CellAabb};
 
 use crate::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveMaterialPlugin};
 use crate::meshpipe::{ChunkMesh, MeshSystems};
 
-/// The sky: what the camera clears to.
-pub const SKY_COLOR: Color = Color::srgb(0.53, 0.72, 0.92);
+/// The sky at and below the horizon, and the fog's color: terrain fades
+/// into it with distance.
+pub const HORIZON_COLOR: Color = Color::srgb(0.72, 0.81, 0.90);
+
+/// The sky straight up: deeper and bluer than the horizon.
+pub const ZENITH_COLOR: Color = Color::srgb(0.33, 0.55, 0.88);
+
+/// What the camera clears to, seen only where there is no skybox: the
+/// horizon color.
+pub const SKY_COLOR: Color = HORIZON_COLOR;
+
+/// The sky's gradient: at elevation `e` (the sine of the angle above the
+/// horizon) the sky is `e^SKY_GRADIENT_POWER` of the way from the horizon
+/// color to the zenith color. Under 1, the pale band hugs the horizon.
+pub const SKY_GRADIENT_POWER: f32 = 0.5;
+
+/// The sun disc: its angular radius, in degrees, and its linear HDR color
+/// (bright enough to bloom). Its edge blends into the sky over
+/// `SUN_DISC_EDGE_DEG` on each side of the radius, about three cubemap
+/// texels across, so the disc is round rather than a jagged cluster of
+/// texels.
+pub const SUN_DISC_RADIUS_DEG: f32 = 1.5;
+pub const SUN_DISC_EDGE_DEG: f32 = 0.5;
+pub const SUN_DISC_COLOR: LinearRgba = LinearRgba::rgb(12.0, 11.0, 8.5);
+
+/// The glow around the sun: `SUN_GLOW_COLOR × cos(angle)^SUN_GLOW_EXPONENT`
+/// is added to the sky, linear. The exponent keeps it within about 10° of
+/// the sun, so it never reaches the horizon (the sun is 55° up).
+pub const SUN_GLOW_COLOR: LinearRgba = LinearRgba::rgb(0.55, 0.45, 0.28);
+pub const SUN_GLOW_EXPONENT: i32 = 256;
+
+/// Texels along each side of a [`sky_cubemap`] face: about 0.35° each, so
+/// the sun disc is about 8 texels across.
+pub const SKY_FACE_PX: u32 = 256;
+
+/// The fog: none up to `FOG_START_M` from the eye (a wall the player faces,
+/// a tunnel, a room are untouched), rising linearly to all fog at
+/// `FOG_END_M`. In the default 128 m world the shell is 64 m from the
+/// spawn, more than half fog; its far corners are nearly all fog.
+pub const FOG_START_M: f32 = 24.0;
+pub const FOG_END_M: f32 = 96.0;
 
 /// Ambient light, in cd/m². Bevy's default is 80; this is high on purpose so
 /// unlit caves read clearly (SAD §11.3).
@@ -154,8 +206,12 @@ pub(crate) fn chunk_material() -> StandardMaterial {
     }
 }
 
-fn spawn_camera(mut commands: Commands, start: Res<CameraStart>) {
-    commands.spawn((
+fn spawn_camera(
+    mut commands: Commands,
+    start: Res<CameraStart>,
+    images: Option<ResMut<Assets<Image>>>,
+) {
+    let mut camera = commands.spawn((
         GameCamera,
         Camera3d::default(),
         Camera {
@@ -178,6 +234,14 @@ fn spawn_camera(mut commands: Commands, start: Res<CameraStart>) {
             Transform::from_translation(LANTERN_OFFSET_M),
         )],
     ));
+    camera.insert(distance_fog());
+    if let Some(mut images) = images {
+        camera.insert(Skybox {
+            image: Some(images.add(sky_cubemap())),
+            brightness: sky_brightness(),
+            rotation: Quat::IDENTITY,
+        });
+    }
 }
 
 fn spawn_sun(mut commands: Commands) {
@@ -194,14 +258,127 @@ fn spawn_sun(mut commands: Commands) {
             ..default()
         }
         .build(),
-        // High in the sky, from the south-west.
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            35f32.to_radians(),
-            -55f32.to_radians(),
-            0.0,
-        )),
+        sun_transform(),
     ));
+}
+
+/// The sun's transform: high in the sky (55° up), from the south-west. It
+/// shines along its forward axis.
+pub fn sun_transform() -> Transform {
+    Transform::from_rotation(Quat::from_euler(
+        EulerRot::YXZ,
+        35f32.to_radians(),
+        -55f32.to_radians(),
+        0.0,
+    ))
+}
+
+/// The unit vector from the ground toward the sun.
+pub fn sun_direction() -> Vec3 {
+    sun_transform().back().as_vec3()
+}
+
+/// The fog on the game camera: [`HORIZON_COLOR`], linear from
+/// [`FOG_START_M`] to [`FOG_END_M`]. The sun does not tint it, so it
+/// matches the sky at the horizon in every direction.
+pub fn distance_fog() -> DistanceFog {
+    DistanceFog {
+        color: HORIZON_COLOR,
+        directional_light_color: Color::NONE,
+        directional_light_exponent: 0.0,
+        falloff: FogFalloff::Linear {
+            start: FOG_START_M,
+            end: FOG_END_M,
+        },
+    }
+}
+
+/// How much fog a surface `distance_m` from the eye is under: 0 (none) to
+/// 1 (all fog), as Bevy's linear fog computes it.
+pub fn fog_amount(distance_m: f32) -> f32 {
+    ((distance_m - FOG_START_M) / (FOG_END_M - FOG_START_M)).clamp(0.0, 1.0)
+}
+
+/// The sky seen along `dir` (any length), linear, as it reaches the screen
+/// before tonemapping: [`HORIZON_COLOR`] at and below the horizon, rising
+/// to [`ZENITH_COLOR`] overhead, with the sun's glow and disc around
+/// [`sun_direction`].
+pub fn sky_radiance(dir: Vec3) -> LinearRgba {
+    let dir = dir.normalize_or_zero();
+    let horizon = LinearRgba::from(HORIZON_COLOR);
+    let zenith = LinearRgba::from(ZENITH_COLOR);
+    let t = dir.y.max(0.0).powf(SKY_GRADIENT_POWER);
+    let mut sky = horizon * (1.0 - t) + zenith * t;
+    let to_sun = dir.dot(sun_direction());
+    if to_sun > 0.0 {
+        sky += SUN_GLOW_COLOR * to_sun.powi(SUN_GLOW_EXPONENT);
+    }
+    // 1 inside the disc, 0 outside it, smooth across its edge.
+    let angle = to_sun.clamp(-1.0, 1.0).acos().to_degrees();
+    let edge = ((SUN_DISC_RADIUS_DEG + SUN_DISC_EDGE_DEG - angle) / (2.0 * SUN_DISC_EDGE_DEG))
+        .clamp(0.0, 1.0);
+    let disc = edge * edge * (3.0 - 2.0 * edge);
+    let sky = sky * (1.0 - disc) + SUN_DISC_COLOR * disc;
+    LinearRgba { alpha: 1.0, ..sky }
+}
+
+/// The world direction that texel `(x, y)` of cube face `face` (in wgpu's
+/// order +X, -X, +Y, -Y, +Z, -Z) of a `size`-texel cubemap shows through
+/// Bevy's skybox, which samples world direction `d` at cube coordinate
+/// `(d.x, d.y, -d.z)`.
+pub fn cube_texel_direction(face: u32, x: u32, y: u32, size: u32) -> Vec3 {
+    let s = (x as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+    let t = (y as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+    let cube = match face {
+        0 => Vec3::new(1.0, -t, -s),
+        1 => Vec3::new(-1.0, -t, s),
+        2 => Vec3::new(s, 1.0, t),
+        3 => Vec3::new(s, -1.0, -t),
+        4 => Vec3::new(s, -t, 1.0),
+        _ => Vec3::new(-s, -t, -1.0),
+    };
+    Vec3::new(cube.x, cube.y, -cube.z).normalize()
+}
+
+/// The sky as a cubemap of [`SKY_FACE_PX`]² faces: [`sky_radiance`] at each
+/// texel's direction, in `Rgba16Float` so the sun disc can be brighter than
+/// white. Shown with [`sky_brightness`], it reaches the screen as
+/// [`sky_radiance`].
+pub fn sky_cubemap() -> Image {
+    let size = SKY_FACE_PX;
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        &[0; 8],
+        TextureFormat::Rgba16Float,
+        RenderAssetUsages::default(),
+    );
+    for face in 0..6 {
+        for y in 0..size {
+            for x in 0..size {
+                let color = sky_radiance(cube_texel_direction(face, x, y, size));
+                image
+                    .set_color_at_3d(x, y, face, color.into())
+                    .expect("an Rgba16Float texel inside the cubemap");
+            }
+        }
+    }
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+    image
+}
+
+/// The skybox brightness, in cd/m², that undoes the camera's default
+/// exposure, so a texel reaches the screen with its own linear value (as
+/// the fog color and the clear color do).
+pub fn sky_brightness() -> f32 {
+    1.0 / Exposure::default().exposure()
 }
 
 /// The illuminance, in lux, that `light` at `light_pos` lights a surface at
@@ -474,5 +651,177 @@ mod tests {
         assert!((lux(Vec3::X, Vec3::NEG_X) - 1.0).abs() < 1e-3);
         assert!((lux(Vec3::X * 2.0, Vec3::NEG_X) - 0.25).abs() < 1e-3);
         assert_eq!(lux(Vec3::X, Vec3::X), 0.0);
+    }
+    #[test]
+    fn camera_has_distance_fog_matching_sky() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Assets::<Image>::default())
+            .add_plugins(GameRenderPlugin);
+        app.update();
+        let world = app.world_mut();
+        let (fog, skybox, exposure) = world
+            .query_filtered::<(&DistanceFog, Option<&Skybox>, Option<&Exposure>), With<GameCamera>>(
+            )
+            .single(world)
+            .map(|(f, s, e)| (f.clone(), s.cloned(), e.copied()))
+            .expect("the game camera has distance fog");
+        let sun = world
+            .query_filtered::<&Transform, With<Sun>>()
+            .single(world)
+            .copied()
+            .expect("one sun");
+        let to_sun = sun.back().as_vec3();
+
+        // The fog is the horizon color, untinted by the sun, and it is the
+        // clear color too.
+        assert_eq!(fog.color, HORIZON_COLOR);
+        assert_eq!(fog.directional_light_color.alpha(), 0.0, "no sun tint");
+        assert_eq!(world.resource::<ClearColor>().0, HORIZON_COLOR);
+        let FogFalloff::Linear { start, end } = fog.falloff else {
+            panic!("linear fog, got {:?}", fog.falloff);
+        };
+        assert_eq!((start, end), (FOG_START_M, FOG_END_M));
+        // Nothing near the player is fogged: a wall, a tunnel, a room.
+        assert!(start >= 16.0, "fog starts at {start} m");
+        assert_eq!(fog_amount(start), 0.0);
+        assert_eq!(fog_amount(end), 1.0);
+        // In the default world the shell is 64 m from the spawn in the
+        // middle: at least half fog there, but still a shape.
+        let bounds = CellAabb::PHASE1_DEFAULT;
+        let half_width_m = (bounds.max.0.x - bounds.min.0.x + 1) as f32 * CELL_SIZE_M / 2.0;
+        let shell = fog_amount(half_width_m);
+        assert!(
+            (0.5..1.0).contains(&shell),
+            "the shell {half_width_m} m away is {shell} fog"
+        );
+
+        // The sky meets the fog at the horizon in every direction, below
+        // it too, and is bluer and deeper overhead.
+        let fog_linear = LinearRgba::from(fog.color);
+        let close = |a: LinearRgba, b: LinearRgba, eps: f32| {
+            (a.red - b.red).abs() <= eps
+                && (a.green - b.green).abs() <= eps
+                && (a.blue - b.blue).abs() <= eps
+        };
+        for deg in 0..360 {
+            let a = (deg as f32).to_radians();
+            for y in [0.0, -0.3, -1.0] {
+                let dir = Vec3::new(a.cos(), y, a.sin());
+                assert!(
+                    close(sky_radiance(dir), fog_linear, 1e-6),
+                    "the sky at azimuth {deg}°, y {y} is {:?}, the fog {fog_linear:?}",
+                    sky_radiance(dir)
+                );
+            }
+        }
+        let zenith = sky_radiance(Vec3::Y);
+        assert!(zenith.luminance() < fog_linear.luminance() * 0.8);
+        assert!(zenith.blue / zenith.red > fog_linear.blue / fog_linear.red * 1.5);
+        // The gradient rises steadily from the horizon up.
+        let away = Vec3::new(-to_sun.x, 0.0, -to_sun.z).normalize();
+        let mut last = fog_linear.luminance();
+        for step in 1..=9 {
+            let e = (step as f32 * 10.0).to_radians();
+            let lum = sky_radiance(away * e.cos() + Vec3::Y * e.sin()).luminance();
+            assert!(
+                lum < last,
+                "the sky darkens toward the zenith at {}°",
+                step * 10
+            );
+            last = lum;
+        }
+
+        // The sun's disc is where the Sun shines from, and far brighter
+        // than white, so it blooms.
+        assert!((to_sun - sun_direction()).length() < 1e-6);
+        assert!(to_sun.y > 0.5, "the sun is high: {to_sun:?}");
+        let disc = sky_radiance(to_sun);
+        assert!(
+            disc.red > 4.0 && disc.green > 4.0 && disc.blue > 4.0,
+            "{disc:?}"
+        );
+        let glow = sky_radiance((to_sun + Vec3::Y * 0.06).normalize());
+        let plain = sky_radiance(Vec3::new(-to_sun.x, to_sun.y + 0.06, -to_sun.z).normalize());
+        assert!(
+            glow.luminance() > plain.luminance() * 1.2,
+            "a glow around the sun"
+        );
+
+        // The skybox is that sky: a cubemap whose texels hold
+        // sky_radiance for their direction, shown at a brightness that
+        // undoes the camera's exposure.
+        let skybox = skybox.expect("a skybox when the app has images");
+        let exposure = exposure.unwrap_or_default().exposure();
+        assert!(
+            (skybox.brightness * exposure - 1.0).abs() < 1e-4,
+            "{} cd/m² at exposure {exposure}",
+            skybox.brightness
+        );
+        let images = world.resource::<Assets<Image>>();
+        let image = images
+            .get(skybox.image.as_ref().expect("a skybox image"))
+            .expect("the skybox image asset");
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 6);
+        assert_eq!(
+            image
+                .texture_view_descriptor
+                .as_ref()
+                .and_then(|v| v.dimension),
+            Some(TextureViewDimension::Cube)
+        );
+        let size = image.texture_descriptor.size.width;
+        assert_eq!(size, SKY_FACE_PX);
+        let mut brightest = (0.0f32, Vec3::ZERO);
+        for face in 0..6 {
+            for y in 0..size {
+                for x in 0..size {
+                    let dir = cube_texel_direction(face, x, y, size);
+                    let texel = LinearRgba::from(image.get_color_at_3d(x, y, face).unwrap());
+                    // f16 keeps about 3 decimal digits.
+                    let want = sky_radiance(dir);
+                    assert!(
+                        close(texel, want, want.red.max(want.blue) * 2e-3),
+                        "texel {face}/{x}/{y} {texel:?}, sky {want:?}"
+                    );
+                    if dir.y <= 0.0 {
+                        assert!(close(texel, fog_linear, 2e-3), "below the horizon");
+                    }
+                    if texel.luminance() > brightest.0 {
+                        brightest = (texel.luminance(), dir);
+                    }
+                }
+            }
+        }
+        assert!(
+            brightest.1.angle_between(to_sun).to_degrees()
+                <= SUN_DISC_RADIUS_DEG - SUN_DISC_EDGE_DEG,
+            "the brightest texel looks along {:?}, the sun is along {to_sun:?}",
+            brightest.1
+        );
+        // Each face's texels look the way that face points.
+        let axes = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::NEG_Z,
+            Vec3::Z,
+        ];
+        for (face, axis) in (0..6).zip(axes) {
+            let mid = cube_texel_direction(face, size / 2, size / 2, size);
+            assert!(mid.dot(axis) > 0.99, "face {face} looks along {mid:?}");
+        }
+
+        // A logic-only app (no images): fog, but no skybox, and no failure.
+        let mut logic = render_app(false);
+        let world = logic.world_mut();
+        let (fog, skybox) = world
+            .query_filtered::<(&DistanceFog, Option<&Skybox>), With<GameCamera>>()
+            .single(world)
+            .map(|(f, s)| (f.color, s.is_some()))
+            .expect("fog without images");
+        assert_eq!(fog, HORIZON_COLOR);
+        assert!(!skybox);
     }
 }
