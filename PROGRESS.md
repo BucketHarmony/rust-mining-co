@@ -1024,3 +1024,40 @@ Decisions:
 - Regenerate (F8) is still unconsumed. It fits the same path: a job that generates from `EditorState::seed` and calls `replace_world`. Left for F077, to keep this feature to save/load.
 Next: F076 (E2E save_load_roundtrip: TestApp::save(path) / TestApp::load(path), §12.2; `rmc_app::session` cannot be used from rmc_testkit, but rmc_world::save::load and Host::save are enough). Then F077 wires main with Cli, start_world, spawn_host_thread, GameHost + SessionPlugin + SavePlugin and EndpointLink.
 Blockers: none.
+
+## 2026-10-19 07:10 — F076 E2E: save_load_roundtrip — passed
+Done:
+- rmc_host: `Host::set_save(Option<SaveConfig>)` points `SaveRequest` (and `Host::save`) at a directory, or refuses with `None`.
+- rmc_testkit (SAD §12.2):
+  - `TestApp::save(dir) -> SaveOutcome`: sets the host's save dir to `dir`, raises the editor's Save flag (what F5 and the panel button do), and steps until `SaveStatus` has the host's `Saved` answer (at most `MAX_SAVE_STEPS` = 10). Edits sent before the call are in the save.
+  - `TestApp::load(dir, config) -> TestApp` (panics) and `try_load(dir, config) -> Result<TestApp, SaveError>`. The expected header is built from `config.seed`, `config.world_bounds`, the material hash, the worldgen params hash (bounds replaced, as `new` does) and `NOISE_CRATE_VERSION`. The world comes from `rmc_world::save::load` (generate, then overwrite). Later saves go back to `dir`.
+  - `TestApp::new` now shares a private `with_world` with `load`.
+  - `e2e::rms(a, b)`: image-compare's RGB RMS, normalized 0..=1 (1 − score), alpha ignored.
+- tests/e2e/tests/save_load_roundtrip.rs, on the place_and_climb course (2 × 4 × 2 chunks, seed 1):
+  - DigBot breaks floor cell (31,100,47) beside the path; the inventory grows. The player turns back to −Z, and BuilderBot(3) places the brass platform and climbs it.
+  - From the platform, the player looks at the hole. Screenshot with the HUD, then a "world" shot.
+  - `t.save(dir)` gives ok, with the dir as path, and header.ron and chunks.bin exist. The host hash equals the replica hash.
+  - `TestApp::load(dir, config)`: the host hash equals the saved hash, then the replica hash does too after settling. The hole is Air and the 9 platform cells are brass on both the host and the replica.
+  - The player is spawned at the saved feet and turned to the saved yaw/pitch with mouse motion. The same pose is asserted.
+  - The world shot's RMS against the pre-save shot is 0.00000 (threshold `SAME_VIEW_RMS` 0.01).
+  - Control: refilling the hole with the floor material gives RMS 0.0228 > 0.01, so the threshold does detect a one-cell world change.
+- Screens: docs/screens/save_load_roundtrip-{124,world-126,loaded-world-19,control-25,loaded-27}.png.
+Tests added:
+- e2e:save_load_roundtrip. It failed first to compile (no TestApp::save/load, no e2e::rms).
+  - First runs: BuilderBot laid its platform toward −X, because DigBot had left the view facing the hole. Fixed in the scenario by looking down the course first.
+  - Then RMS was 0.027, from the HUD's inventory line ("topsoil 1"). The loaded app has no inventory, since a save holds none (SAD §10).
+- app::tests::save_and_load_round_trip (logic-only). It checks:
+  - the edit is in the save; one request is sent; the load gives the same host and replica hash;
+  - the loaded app's F5 saves back to the same dir;
+  - another seed gives a HeaderMismatch(Seed), other bounds give HeaderMismatch(Bounds), and a missing dir gives an Io error;
+  - a plain `new` host refuses an editor save.
+- e2e::tests::rms_measures_difference: identical, alpha ignored, a 10 % region gives √0.1, and a uniform offset of 51 gives 0.2.
+- host::tests::set_save_redirects_save_requests. It was written after `set_save`, so it never ran red: refused, then first dir, then second dir (and Host::save follows), then refused again.
+Decisions:
+- `TestApp::load` takes `(dir, TestConfig)`, not just a path as in the §12.2 sketch. The header has to be matched against an expected seed and bounds, and render/size are not in the save. A mismatch fails loudly (§10).
+- `TestApp::save` goes through the game's SaveRequest path rather than calling `rmc_world::save` directly, so the scenario covers the client → host save.
+- The compared screenshots hide the HUD root and the default gizmo group (the target outline). The HUD lists the inventory, which saves do not hold. The outline follows whatever the pickaxe targets. The reviewer noted the outline in the control shot; hiding it took the control RMS from 0.026 to 0.0228, which is the world change alone.
+- The loaded inventory is not asserted empty: §10 does not specify it either way.
+- Reviewer: PASS, no SAD violations. Its one test weakness (the outline in the control) is fixed as above.
+Next: F077 (rmc_app main: windowed game; `app::build_game_app(cfg, windowed)`, tests game_app_builds_headless and headless_game_joins_and_receives_chunks). F077 completes M7 once F086–F092 also pass.
+Blockers: none.
