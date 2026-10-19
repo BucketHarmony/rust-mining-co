@@ -35,6 +35,13 @@ pub const MESH_INPUT_VOLUME: usize = MESH_INPUT_EDGE * MESH_INPUT_EDGE * MESH_IN
 /// with both side cells solid.
 pub const AO_FACTORS: [f32; 4] = [0.4, 0.6, 0.8, 1.0];
 
+/// Color factor for a face with outward normal `normal` (an axis unit
+/// vector). It multiplies the vertex color on top of AO.
+pub fn face_shade(normal: IVec3) -> f32 {
+    let _ = normal;
+    1.0
+}
+
 /// Builds a mesh from one chunk's cells.
 pub trait ChunkMesher: Send + Sync {
     fn mesh(&self, input: &MeshInput) -> MeshData;
@@ -276,12 +283,17 @@ fn push_quad(
     positive: bool,
 ) {
     let first = out.positions.len() as u32;
+    let shade = face_shade(normal);
     for (c, level) in corners.iter().zip(ao) {
         out.positions.push((c.as_vec3() * CELL_SIZE_M).to_array());
         out.normals.push(normal.as_vec3().to_array());
         let f = AO_FACTORS[usize::from(level)];
-        out.colors
-            .push([base[0] * f, base[1] * f, base[2] * f, base[3]]);
+        out.colors.push([
+            base[0] * shade * f,
+            base[1] * shade * f,
+            base[2] * shade * f,
+            base[3],
+        ]);
     }
     // Split along the diagonal whose ends are brighter in sum, so a single
     // dark corner stays in one triangle (0fps anisotropy fix).
@@ -331,6 +343,13 @@ mod tests {
         GreedyMesher.mesh(input)
     }
 
+    /// `base` with its face shade for `normal`: the color of an unoccluded
+    /// corner of a face facing `normal`.
+    fn shaded(base: [f32; 4], normal: IVec3) -> [f32; 4] {
+        let f = face_shade(normal);
+        [base[0] * f, base[1] * f, base[2] * f, base[3]]
+    }
+
     /// One decoded quad, in cells (positions divided by the cell size).
     #[derive(Clone, Debug)]
     struct Quad {
@@ -368,8 +387,10 @@ mod tests {
         }
 
         /// AO level of corner `i`: its color relative to the unoccluded
-        /// `base` color, matched against [`AO_FACTORS`].
+        /// `base` color shaded for this quad's normal, matched against
+        /// [`AO_FACTORS`].
         fn level(&self, i: usize, base: [f32; 4]) -> usize {
+            let base = shaded(base, self.normal);
             let c = self.colors[i];
             assert_eq!(c[3], base[3], "alpha is the emissive strength");
             let fs: Vec<f32> = (0..3)
@@ -524,7 +545,11 @@ mod tests {
                 assert_eq!(q.min(), lo, "cell {cell} face {dir} lower corner");
                 assert_eq!(q.max(), hi, "cell {cell} face {dir} upper corner");
                 for (i, color) in q.colors.iter().enumerate() {
-                    assert_eq!(*color, base, "unoccluded corner {i}: material color, AO 1");
+                    assert_eq!(
+                        *color,
+                        shaded(base, dir),
+                        "unoccluded corner {i}: material color with its face shade, AO 1"
+                    );
                 }
             }
         }
@@ -600,7 +625,10 @@ mod tests {
         assert_eq!(top.min(), Vec3::new(4.0, 4.0, 8.0));
         assert_eq!(top.max(), Vec3::new(6.0, 4.0, 10.0));
         let base = vertex_base_color(&t, stone);
-        assert!(qs.iter().all(|q| q.colors.iter().all(|c| *c == base)));
+        assert!(
+            qs.iter()
+                .all(|q| q.colors.iter().all(|c| *c == shaded(base, q.normal)))
+        );
 
         // A 3×2 rectangle: width and height merge independently.
         let mut input = origin_input(&t);
