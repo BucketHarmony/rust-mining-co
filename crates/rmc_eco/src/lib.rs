@@ -2,12 +2,14 @@
 //! tables, active sets and invariant checker.
 #![deny(unsafe_code)]
 
+pub mod activity;
 pub mod invariants;
 pub mod ledger;
 pub mod reference;
 pub mod runner;
 pub mod tables;
 
+pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
 pub use ledger::SeasonLedger;
 pub use runner::{
