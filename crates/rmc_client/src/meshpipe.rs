@@ -788,13 +788,11 @@ mod tests {
                 bounds: bounds(),
                 gen_params_hash: 2,
             }];
-            msgs.extend(self.host.iter_chunks_sorted().map(|(pos, chunk)| {
-                ServerMsg::ChunkSnapshot {
-                    pos,
-                    revision: chunk.revision,
-                    storage: chunk.storage.clone(),
-                }
-            }));
+            msgs.extend(
+                self.host
+                    .iter_chunks_sorted()
+                    .map(|(pos, chunk)| ServerMsg::chunk_snapshot(pos, chunk)),
+            );
             self.deliver(msgs);
         }
 
@@ -1136,11 +1134,7 @@ mod tests {
         let snapshots: Vec<ServerMsg> = f
             .host
             .iter_chunks_sorted()
-            .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
-                pos,
-                revision: chunk.revision,
-                storage: chunk.storage.clone(),
-            })
+            .map(|(pos, chunk)| ServerMsg::chunk_snapshot(pos, chunk))
             .collect();
         assert_eq!(snapshots.len(), 27);
         let welcome = ServerMsg::Welcome {
@@ -1210,11 +1204,7 @@ mod tests {
         rejoin.extend(
             f.host
                 .iter_chunks_sorted()
-                .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
-                    pos,
-                    revision: chunk.revision,
-                    storage: chunk.storage.clone(),
-                }),
+                .map(|(pos, chunk)| ServerMsg::chunk_snapshot(pos, chunk)),
         );
         f.deliver(rejoin);
         assert!(!f.stats().initial_load_done);

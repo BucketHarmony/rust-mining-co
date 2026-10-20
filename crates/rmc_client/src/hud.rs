@@ -331,13 +331,19 @@ fn track_host(
                             }
                         }
                         ChunkDelta::Full { pos, .. } => estimate.clear_chunk(*pos),
+                        ChunkDelta::Layers { .. } => {}
                     }
                 }
                 if let Some((cell, material)) = broke {
                     feedback.broke = Some((cell, material, time.elapsed()));
                 }
             }
-            ServerMsg::Rejected { .. } | ServerMsg::PlayerStates(_) | ServerMsg::Saved { .. } => {}
+            ServerMsg::Rejected { .. }
+            | ServerMsg::PlayerStates(_)
+            | ServerMsg::Saved { .. }
+            | ServerMsg::LayerSnapshot { .. }
+            | ServerMsg::SeasonStarted { .. }
+            | ServerMsg::SeasonDone { .. } => {}
         }
     }
 }

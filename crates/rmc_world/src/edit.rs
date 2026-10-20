@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::chunk::ChunkStorage;
 use crate::coords::ChunkPos;
+use crate::displace::layer_value_fits;
+use crate::layers::{LayerId, PlantState};
+use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialDef, MaterialId, MaterialTable};
 use crate::shape::Shape;
 
@@ -44,6 +47,9 @@ pub enum EditOp {
     Damage(u16),
     /// Every `Solid` cell becomes this material; other cells are untouched.
     Paint(MaterialId),
+    /// Every cell's `layer` becomes `value` (SAD-P2 §9). Materials do not
+    /// change. Gas layers are written on air cells only.
+    SetLayer { layer: LayerId, value: i32 },
 }
 
 impl EditOp {
@@ -53,7 +59,16 @@ impl EditOp {
             EditOp::Set(id) | EditOp::Paint(id) if materials.get(id).is_none() => {
                 Err(RejectReason::UnknownMaterial(id))
             }
-            EditOp::Set(_) | EditOp::Paint(_) | EditOp::Remove | EditOp::Damage(_) => Ok(()),
+            EditOp::SetLayer { layer, value }
+                if !layer.is_valid() || !layer_value_fits(layer, value) =>
+            {
+                Err(RejectReason::InvalidLayerValue { layer, value })
+            }
+            EditOp::Set(_)
+            | EditOp::Paint(_)
+            | EditOp::Remove
+            | EditOp::Damage(_)
+            | EditOp::SetLayer { .. } => Ok(()),
         }
     }
 
@@ -61,13 +76,13 @@ impl EditOp {
     /// Only meaningful for ops that passed [`EditOp::validate`]. `Damage`
     /// returns `None`: whether it breaks a cell depends on the cell's
     /// accumulated damage, which [`World::apply`](crate::world::World::apply)
-    /// tracks.
+    /// tracks. `SetLayer` changes no material and returns `None`.
     pub(crate) fn target(self, old: Option<&MaterialDef>) -> Option<MaterialId> {
         match self {
             EditOp::Set(id) => Some(id),
             EditOp::Remove => old.is_some_and(|d| d.diggable).then_some(MaterialId::AIR),
             EditOp::Paint(id) => old.is_some_and(|d| d.is_solid()).then_some(id),
-            EditOp::Damage(_) => None,
+            EditOp::Damage(_) | EditOp::SetLayer { .. } => None,
         }
     }
 }
@@ -90,6 +105,8 @@ pub enum RejectReason {
     TooManyCells,
     #[error("shape lies entirely outside the world bounds")]
     OutsideBounds,
+    #[error("value {value} does not fit layer {layer:?}")]
+    InvalidLayerValue { layer: LayerId, value: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,18 +134,34 @@ pub enum ChunkDelta {
         revision: u64,
         storage: ChunkStorage,
     },
+    /// Layer and plant changes from `SetLayer` and from the displacement
+    /// rules of material edits (SAD-P2 §6, §7.0). `eco_revision` is the
+    /// chunk's eco revision after the change. `changes` are (local index,
+    /// layer, new value) ascending by (index, layer); `plants` are (local
+    /// index, new state or `None` when removed) ascending by index.
+    Layers {
+        pos: ChunkPos,
+        eco_revision: u64,
+        changes: Vec<(u16, LayerId, i32)>,
+        plants: Vec<(u16, Option<PlantState>)>,
+    },
 }
 
 impl ChunkDelta {
     pub fn pos(&self) -> ChunkPos {
         match self {
-            ChunkDelta::Cells { pos, .. } | ChunkDelta::Full { pos, .. } => *pos,
+            ChunkDelta::Cells { pos, .. }
+            | ChunkDelta::Full { pos, .. }
+            | ChunkDelta::Layers { pos, .. } => *pos,
         }
     }
 
+    /// The revision the delta brings its chunk to: `revision` for `Cells`
+    /// and `Full`, `eco_revision` for `Layers`.
     pub fn revision(&self) -> u64 {
         match self {
             ChunkDelta::Cells { revision, .. } | ChunkDelta::Full { revision, .. } => *revision,
+            ChunkDelta::Layers { eco_revision, .. } => *eco_revision,
         }
     }
 }
@@ -138,11 +171,17 @@ impl ChunkDelta {
 pub struct EditResult {
     pub command: CommandId,
     pub status: EditStatus,
-    /// One per changed chunk, ascending by [`ChunkPos`]. Empty when rejected
-    /// or when no cell changed.
+    /// Ascending by [`ChunkPos`]: per changed chunk its material delta
+    /// (`Cells` or `Full`) if cells changed, then its `Layers` delta if
+    /// layers or plants changed. Empty when rejected or when nothing changed.
     pub deltas: Vec<ChunkDelta>,
-    /// Materials produced by broken cells, as (material, count).
+    /// Materials produced by broken cells and harvested plants, as
+    /// (material, count).
     pub yields: Vec<(MaterialId, u32)>,
+    /// The edit's displacement and `SetLayer` terms (SAD-P2 §7.0), which the
+    /// host merges into its between-seasons ledger.
+    /// Boxed: a ledger is large and most results carry an empty one.
+    pub ledger: Box<SeasonLedger>,
 }
 
 impl EditResult {
@@ -152,6 +191,7 @@ impl EditResult {
             status: EditStatus::Rejected(reason),
             deltas: Vec::new(),
             yields: Vec::new(),
+            ledger: Box::default(),
         }
     }
 }
@@ -215,7 +255,7 @@ mod tests {
                 revision,
                 changes,
             } => (*pos, *revision, changes),
-            ChunkDelta::Full { pos, .. } => panic!("expected Cells delta for {pos:?}, got Full"),
+            other => panic!("expected Cells delta for {:?}, got {other:?}", other.pos()),
         }
     }
 
@@ -965,5 +1005,910 @@ mod tests {
             prop_assert_eq!(revisions(&replica), revisions(&a));
             prop_assert_eq!(a.damage(), b.damage());
         }
+    }
+
+    // Phase 2: `SetLayer`, `ChunkDelta::Layers` and the displacement rules
+    // (SAD-P2 §7.0, §7.0.1). Keys appear only in this fixture.
+
+    use crate::coords::CHUNK_VOLUME;
+    use crate::displace::EcoRules;
+    use crate::layers::{LayerId, N_GASES, N_SUBSTANCES, PlantState, SWEEP_GAS, SWEEP_WATER};
+    use crate::ledger::SeasonLedger;
+    use crate::world::DeltaError;
+
+    const ECO_TABLE: &str = r#"[
+        (id: 0, key: "air", phase: Air, tags: [], hardness: 0, diggable: false,
+         yield_count: 0, color: (0, 0, 0, 0), emissive: 0.0),
+        (id: 1, key: "stone", phase: Solid, tags: ["stone"], hardness: 30, diggable: true,
+         yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0),
+        (id: 2, key: "soil", phase: Solid, tags: ["soil", "porous"], hardness: 10,
+         diggable: true, yield_count: 1, color: (121, 85, 58, 255), emissive: 0.0,
+         permeability: 32, field_capacity: 48, anchor: true),
+        (id: 3, key: "water", phase: Liquid, tags: [], hardness: 0, diggable: true,
+         yield_count: 0, color: (40, 80, 200, 128), emissive: 0.0),
+        (id: 4, key: "ice", phase: Solid, tags: [], hardness: 5, diggable: true,
+         yield_count: 0, color: (200, 220, 255, 200), emissive: 0.0),
+        (id: 5, key: "magma", phase: Liquid, tags: [], hardness: 0, diggable: false,
+         yield_count: 0, color: (255, 90, 0, 255), emissive: 2.0,
+         viscosity: 3, conductivity: 64, heat_capacity: 32),
+        (id: 6, key: "basalt", phase: Solid, tags: ["stone"], hardness: 60, diggable: true,
+         yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0),
+        (id: 7, key: "moss", phase: Solid, tags: ["plant"], hardness: 1, diggable: true,
+         yield_count: 1, color: (60, 140, 60, 255), emissive: 0.0, passable: true),
+        (id: 8, key: "copper_dust", phase: Solid, tags: ["placeable"], hardness: 5,
+         diggable: true, yield_count: 1, color: (184, 115, 51, 255), emissive: 0.0),
+    ]"#;
+
+    const STEAM: u8 = 0;
+    const FIREDAMP: u8 = 1;
+    const CU: u8 = 0;
+    const ORGANIC: u8 = 9;
+    const MAGMA_INIT: i16 = 12000;
+    const LITTER: u8 = 8;
+    const HARVEST_SHIFT: u8 = 3;
+
+    fn eco_table() -> Arc<MaterialTable> {
+        Arc::new(MaterialTable::from_ron_str(ECO_TABLE).expect("eco test table loads"))
+    }
+
+    fn eco_rules(t: &MaterialTable) -> EcoRules {
+        let mut substance_yields = [None; N_SUBSTANCES];
+        substance_yields[usize::from(CU)] = Some(id(t, "copper_dust"));
+        EcoRules {
+            water: Some(id(t, "water")),
+            ice: Some(id(t, "ice")),
+            magma: Some(id(t, "magma")),
+            steam: Some(STEAM),
+            organic: Some(ORGANIC),
+            magma_init_temp: MAGMA_INIT,
+            plant_litter: vec![LITTER],
+            harvest_shift: HARVEST_SHIFT,
+            substance_yields,
+        }
+    }
+
+    /// Two resident air chunks (cells 0..=63 × 0..=31 × 0..=31) with the
+    /// fixture's eco rules.
+    fn eco_world() -> World {
+        let table = eco_table();
+        let rules = eco_rules(&table);
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 31));
+        let mut w = World::new(table, bounds);
+        for pos in bounds.chunks() {
+            w.insert_chunk(pos, Chunk::uniform(MaterialId::AIR))
+                .unwrap();
+        }
+        w.set_eco_rules(rules);
+        w
+    }
+
+    fn at(x: i32, y: i32, z: i32) -> CellPos {
+        CellPos::new(x, y, z)
+    }
+
+    fn mat(w: &World, key: &str) -> MaterialId {
+        id(w.materials(), key)
+    }
+
+    /// Conserved totals (SAD-P2 §7): water counts moisture on every cell plus
+    /// steam; substances count layers plus plant `held`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Totals {
+        water: i64,
+        subs: [i64; N_SUBSTANCES],
+        gases: [i64; N_GASES],
+        magma: i64,
+    }
+
+    fn totals(w: &World) -> Totals {
+        let magma = w.eco_rules().magma;
+        let mut t = Totals {
+            water: 0,
+            subs: [0; N_SUBSTANCES],
+            gases: [0; N_GASES],
+            magma: 0,
+        };
+        for (_, chunk) in w.iter_chunks_sorted() {
+            for i in 0..CHUNK_VOLUME {
+                let local = LocalPos::from_index(i as u16);
+                t.water += i64::from(chunk.layers.get_u8(LayerId::Moisture, local));
+                for (x, s) in t.subs.iter_mut().enumerate() {
+                    *s += i64::from(chunk.layers.get_u8(LayerId::Substance(x as u8), local));
+                }
+                for (g, s) in t.gases.iter_mut().enumerate() {
+                    *s += i64::from(chunk.layers.get_u8(LayerId::Gas(g as u8), local));
+                }
+                if Some(chunk.storage.get(local)) == magma {
+                    t.magma += 1;
+                }
+            }
+            for plant in chunk.plants.values() {
+                for (x, s) in t.subs.iter_mut().enumerate() {
+                    *s += i64::from(plant.held[x]);
+                }
+            }
+        }
+        t.water += t.gases[usize::from(STEAM)];
+        t
+    }
+
+    /// The SAD-P2 §7 invariants applied to `before` and a ledger, with the
+    /// two terms the ledger adds (`water_saturation_loss`, `gas_edit_in`).
+    fn expected(before: Totals, l: &SeasonLedger) -> Totals {
+        let mut t = before;
+        t.water += l.rain_in + l.water_edit_in
+            - l.water_edit_out
+            - l.steam_vent_out
+            - l.water_saturation_loss;
+        for x in 0..N_SUBSTANCES {
+            t.subs[x] += l.weather_in[x] + l.litter_in[x] + l.edit_in[x]
+                - l.edit_out[x]
+                - l.uptake_sink[x]
+                - l.harvest_out[x]
+                + l.react_delta[x]
+                - l.saturation_loss[x];
+        }
+        for g in 0..N_GASES {
+            let (emit, vent, react_out) = if g == usize::from(STEAM) {
+                (
+                    l.evap_to_steam + l.boil_to_steam,
+                    l.steam_vent_out,
+                    l.react_out[g] + l.condense_from_steam,
+                )
+            } else {
+                (l.emit_in[g], l.vent_out[g], l.react_out[g])
+            };
+            t.gases[g] += emit + l.react_in[g] + l.gas_edit_in[g]
+                - vent
+                - react_out
+                - l.gas_edit_out[g]
+                - l.gas_saturation_loss[g];
+        }
+        t.magma += l.magma_melt_in + l.magma_edit - l.magma_set;
+        t
+    }
+
+    /// Replays every delta of an edit onto a copy of `before`, as a replica.
+    fn replay_all(before: &World, deltas: &[ChunkDelta]) -> World {
+        let mut w = before.clone();
+        for d in deltas {
+            w.apply_delta(d)
+                .unwrap_or_else(|e| panic!("delta {d:?}: {e}"));
+        }
+        w
+    }
+
+    /// Applies `c`, which must be applied, and checks the invariants and
+    /// that its deltas reproduce it on a replica.
+    fn edit_checked(w: &mut World, c: EditCommand) -> EditResult {
+        let before = w.clone();
+        let t0 = totals(w);
+        let r = w.apply(&c);
+        assert_eq!(r.status, EditStatus::Applied, "{:?}", c.op);
+        assert_eq!(
+            totals(w),
+            expected(t0, &r.ledger),
+            "invariants after {:?}",
+            c.op
+        );
+        assert_eq!(
+            replay_all(&before, &r.deltas).hash(),
+            w.hash(),
+            "replica after {:?}",
+            c.op
+        );
+        r
+    }
+
+    /// `eco_set` with the invariants checked; returns the pass ledger.
+    fn eco_checked(w: &mut World, cell: CellPos, to: MaterialId) -> SeasonLedger {
+        let t0 = totals(w);
+        let mut ledger = SeasonLedger::default();
+        w.eco_set(cell, to, &mut ledger);
+        assert_eq!(totals(w), expected(t0, &ledger), "invariants after eco_set");
+        ledger
+    }
+
+    fn cell_shape(c: CellPos) -> Shape {
+        Shape::Cell(c)
+    }
+
+    fn set_at(w: &mut World, seq: u32, key: &str, cells: &[CellPos]) {
+        let m = mat(w, key);
+        for &c in cells {
+            let r = w.apply(&cmd(seq, EditOp::Set(m), cell_shape(c)));
+            assert_eq!(r.status, EditStatus::Applied);
+        }
+    }
+
+    fn layer_at(w: &mut World, seq: u32, c: CellPos, layer: LayerId, value: i32) {
+        let r = w.apply(&cmd(seq, EditOp::SetLayer { layer, value }, cell_shape(c)));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert_eq!(w.layer(c, layer), value, "{layer:?} at {c:?}");
+    }
+
+    fn put_plant(w: &mut World, c: CellPos, plant: PlantState) {
+        let (pos, local) = c.split();
+        w.chunks
+            .get_mut(&pos)
+            .unwrap()
+            .plants
+            .insert(local.index(), plant);
+    }
+
+    fn held(x: u8, amount: u8) -> PlantState {
+        let mut p = PlantState::default();
+        p.held[usize::from(x)] = amount;
+        p
+    }
+
+    fn chunk_revs(w: &World, pos: ChunkPos) -> (u64, u64, bool) {
+        let c = w.chunk(pos).unwrap();
+        (c.revision, c.eco_revision, c.modified)
+    }
+
+    fn active(w: &World, c: CellPos, sweep: usize) -> bool {
+        let (pos, local) = c.split();
+        w.chunk(pos).unwrap().active[sweep].contains(local)
+    }
+
+    /// The five stone cells around `c` other than the one at `open`.
+    fn enclose_except(w: &mut World, seq: u32, c: CellPos, open: Option<CellPos>) {
+        let p = c.0;
+        let around = [
+            at(p.x, p.y - 1, p.z),
+            at(p.x, p.y, p.z - 1),
+            at(p.x - 1, p.y, p.z),
+            at(p.x + 1, p.y, p.z),
+            at(p.x, p.y, p.z + 1),
+            at(p.x, p.y + 1, p.z),
+        ];
+        let walls: Vec<CellPos> = around.into_iter().filter(|&n| Some(n) != open).collect();
+        set_at(w, seq, "stone", &walls);
+    }
+
+    #[test]
+    fn set_layer_emits_layers_delta_and_bumps_eco_revision() {
+        let mut w = eco_world();
+        let stone = mat(&w, "stone");
+        let (c0, c1) = (ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0));
+        // A stone floor at y = 0..=1, x = 30..=33, z = 0.
+        w.apply(&cmd(1, EditOp::Set(stone), boxed((30, 0, 0), (33, 1, 0))));
+        let (rev0, rev1) = (chunk_revs(&w, c0).0, chunk_revs(&w, c1).0);
+        assert_eq!(chunk_revs(&w, c0).1, 0);
+
+        // Moisture 40 on a 4 × 2 × 1 box straddling x = 31 | 32: stone at
+        // y = 1, air at y = 2.
+        let moisture = |value| EditOp::SetLayer {
+            layer: LayerId::Moisture,
+            value,
+        };
+        let r = edit_checked(&mut w, cmd(2, moisture(40), boxed((30, 1, 0), (33, 2, 0))));
+        assert!(r.yields.is_empty());
+        assert_eq!(r.deltas.len(), 2, "{:?}", r.deltas);
+        for (d, (pos, xs)) in r.deltas.iter().zip([(c0, [30u32, 31]), (c1, [0, 1])]) {
+            let ChunkDelta::Layers {
+                pos: p,
+                eco_revision,
+                changes,
+                plants,
+            } = d
+            else {
+                panic!("expected a Layers delta, got {d:?}");
+            };
+            assert_eq!((*p, *eco_revision), (pos, 1));
+            assert!(plants.is_empty());
+            let mut want = Vec::new();
+            for y in 1..=2 {
+                for x in xs {
+                    want.push((LocalPos::new(x, y, 0).index(), LayerId::Moisture, 40));
+                }
+            }
+            assert_eq!(changes, &want);
+        }
+        let mut ledger = SeasonLedger {
+            water_edit_in: 8 * 40,
+            ..SeasonLedger::default()
+        };
+        assert_eq!(*r.ledger, ledger);
+        // Materials and revisions are untouched; the eco revision bumped.
+        assert_eq!(chunk_revs(&w, c0), (rev0, 1, true));
+        assert_eq!(chunk_revs(&w, c1), (rev1, 1, true));
+        assert_eq!(w.get_cell(at(30, 1, 0)), Some(stone));
+        assert_eq!(w.layer(at(33, 2, 0), LayerId::Moisture), 40);
+
+        // The same value again changes nothing and emits nothing.
+        let r = edit_checked(&mut w, cmd(3, moisture(40), boxed((30, 1, 0), (33, 2, 0))));
+        assert!(r.deltas.is_empty());
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert_eq!(chunk_revs(&w, c0).1, 1);
+
+        // Lowering it is an edit sink.
+        let r = edit_checked(&mut w, cmd(4, moisture(10), boxed((30, 1, 0), (31, 1, 0))));
+        assert_eq!(r.deltas.len(), 1);
+        assert_eq!(r.deltas[0].revision(), 2);
+        ledger = SeasonLedger {
+            water_edit_out: 2 * 30,
+            ..SeasonLedger::default()
+        };
+        assert_eq!(*r.ledger, ledger);
+
+        // Gas goes on air cells only: of x = 30..=33, y = 0..=2 only y = 2
+        // is air.
+        let r = edit_checked(
+            &mut w,
+            cmd(
+                5,
+                EditOp::SetLayer {
+                    layer: LayerId::Gas(FIREDAMP),
+                    value: 50,
+                },
+                boxed((30, 0, 0), (33, 2, 0)),
+            ),
+        );
+        let mut gas_in = [0; N_GASES];
+        gas_in[usize::from(FIREDAMP)] = 4 * 50;
+        assert_eq!(r.ledger.gas_edit_in, gas_in);
+        assert_eq!(w.layer(at(30, 1, 0), LayerId::Gas(FIREDAMP)), 0);
+        assert_eq!(w.layer(at(30, 2, 0), LayerId::Gas(FIREDAMP)), 50);
+        assert!(active(&w, at(30, 2, 0), SWEEP_GAS + usize::from(FIREDAMP)));
+
+        // Steam is water too.
+        let r = edit_checked(
+            &mut w,
+            cmd(
+                6,
+                EditOp::SetLayer {
+                    layer: LayerId::Gas(STEAM),
+                    value: 7,
+                },
+                cell_shape(at(5, 5, 5)),
+            ),
+        );
+        assert_eq!(r.ledger.gas_edit_in[usize::from(STEAM)], 7);
+        assert_eq!(r.ledger.water_edit_in, 7);
+
+        // Temperature is an i16 layer and no ledger term.
+        let r = edit_checked(
+            &mut w,
+            cmd(
+                7,
+                EditOp::SetLayer {
+                    layer: LayerId::Temperature,
+                    value: -300,
+                },
+                cell_shape(at(31, 0, 0)),
+            ),
+        );
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert_eq!(w.layer(at(31, 0, 0), LayerId::Temperature), -300);
+        let ChunkDelta::Layers { changes, .. } = &r.deltas[0] else {
+            panic!("expected Layers");
+        };
+        assert_eq!(
+            changes,
+            &[(LocalPos::new(31, 0, 0).index(), LayerId::Temperature, -300)]
+        );
+
+        // Values that do not fit, and ids out of range, reject the command.
+        let hash = w.hash();
+        for (layer, value) in [
+            (LayerId::Moisture, 256),
+            (LayerId::Moisture, -1),
+            (LayerId::Temperature, 40_000),
+            (LayerId::Substance(N_SUBSTANCES as u8), 1),
+            (LayerId::Gas(N_GASES as u8), 1),
+        ] {
+            let r = w.apply(&cmd(
+                8,
+                EditOp::SetLayer { layer, value },
+                cell_shape(at(1, 1, 1)),
+            ));
+            assert_eq!(
+                r.status,
+                EditStatus::Rejected(RejectReason::InvalidLayerValue { layer, value })
+            );
+            assert!(r.deltas.is_empty());
+        }
+        assert_eq!(w.hash(), hash);
+
+        // A replica refuses a Layers delta that skips an eco revision or
+        // carries a value outside its layer's type, and changes nothing.
+        let mut replica = w.clone();
+        let eco = chunk_revs(&w, c0).1;
+        let gap = ChunkDelta::Layers {
+            pos: c0,
+            eco_revision: eco + 2,
+            changes: vec![(0, LayerId::Moisture, 1)],
+            plants: Vec::new(),
+        };
+        assert_eq!(
+            replica.apply_delta(&gap),
+            Err(DeltaError::RevisionGap {
+                pos: c0,
+                local: eco,
+                got: eco + 2
+            })
+        );
+        let bad = ChunkDelta::Layers {
+            pos: c0,
+            eco_revision: eco + 1,
+            changes: vec![(0, LayerId::Moisture, 1), (1, LayerId::Moisture, 300)],
+            plants: Vec::new(),
+        };
+        assert_eq!(
+            replica.apply_delta(&bad),
+            Err(DeltaError::BadLayerChange {
+                pos: c0,
+                index: 1,
+                layer: LayerId::Moisture,
+                value: 300
+            })
+        );
+        let bad_plant = ChunkDelta::Layers {
+            pos: c0,
+            eco_revision: eco + 1,
+            changes: Vec::new(),
+            plants: vec![(CHUNK_VOLUME as u16, None)],
+        };
+        assert_eq!(
+            replica.apply_delta(&bad_plant),
+            Err(DeltaError::BadIndex {
+                pos: c0,
+                index: CHUNK_VOLUME as u16
+            })
+        );
+        assert_eq!(replica.hash(), w.hash());
+        assert_eq!(chunk_revs(&replica, c0).1, eco);
+    }
+
+    #[test]
+    fn displacement_rules_every_case_ledgered() {
+        let mut w = eco_world();
+        let (stone, water, magma, basalt, moss) = (
+            mat(&w, "stone"),
+            mat(&w, "water"),
+            mat(&w, "magma"),
+            mat(&w, "basalt"),
+            mat(&w, "moss"),
+        );
+        let copper_dust = mat(&w, "copper_dust");
+        let (c0, c1) = (ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0));
+        let cu = LayerId::Substance(CU);
+        let organic = LayerId::Substance(ORGANIC);
+        let (steam, firedamp) = (LayerId::Gas(STEAM), LayerId::Gas(FIREDAMP));
+
+        // Solid → air (brush Remove): moisture and substances stay on the
+        // cell; regolith and growth zero.
+        let a = at(10, 10, 10);
+        set_at(&mut w, 1, "stone", &[a]);
+        for (layer, v) in [
+            (LayerId::Moisture, 30),
+            (cu, 20),
+            (LayerId::Regolith, 100),
+            (LayerId::Growth, 5),
+        ] {
+            layer_at(&mut w, 2, a, layer, v);
+        }
+        let r = edit_checked(&mut w, cmd(3, EditOp::Remove, cell_shape(a)));
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert_eq!(w.get_cell(a), Some(MaterialId::AIR));
+        assert_eq!(
+            [LayerId::Moisture, cu, LayerId::Regolith, LayerId::Growth].map(|l| w.layer(a, l)),
+            [30, 20, 0, 0]
+        );
+        // The material delta comes first, then the layer delta.
+        assert!(matches!(
+            &r.deltas[..],
+            [ChunkDelta::Cells { .. }, ChunkDelta::Layers { pos, .. }] if *pos == c0
+        ));
+
+        // Water → air by the pickaxe: the fill stays (a puddle).
+        let b = at(12, 10, 10);
+        set_at(&mut w, 4, "water", &[b]);
+        layer_at(&mut w, 5, b, LayerId::Moisture, 90);
+        let r = edit_checked(&mut w, cmd(6, EditOp::Damage(u16::MAX), cell_shape(b)));
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert_eq!(w.get_cell(b), Some(MaterialId::AIR));
+        assert_eq!(w.layer(b, LayerId::Moisture), 90);
+
+        // Air → solid: moisture goes to the first air or water neighbor in
+        // sorted order with room (here the one below, room 55); substances
+        // follow proportionally (50 · 55 / 100 = 27); gases fill the air
+        // neighbors (only the one below); the rest is an edit sink, and
+        // lost steam is lost water.
+        let c = at(20, 10, 10);
+        let below = at(20, 9, 10);
+        enclose_except(&mut w, 7, c, Some(below));
+        for (cell, layer, v) in [
+            (c, LayerId::Moisture, 100),
+            (c, cu, 50),
+            (c, firedamp, 200),
+            (c, steam, 20),
+            (below, LayerId::Moisture, 200),
+            (below, firedamp, 250),
+            (below, steam, 250),
+        ] {
+            layer_at(&mut w, 8, cell, layer, v);
+        }
+        let r = edit_checked(&mut w, cmd(9, EditOp::Set(stone), cell_shape(c)));
+        let mut want = SeasonLedger {
+            water_edit_out: 45 + 15,
+            ..SeasonLedger::default()
+        };
+        want.gas_edit_out[usize::from(FIREDAMP)] = 195;
+        want.gas_edit_out[usize::from(STEAM)] = 15;
+        assert_eq!(*r.ledger, want);
+        assert_eq!(
+            [LayerId::Moisture, cu, firedamp, steam].map(|l| w.layer(c, l)),
+            [0, 23, 0, 0]
+        );
+        assert_eq!(
+            [LayerId::Moisture, cu, firedamp, steam].map(|l| w.layer(below, l)),
+            [255, 27, 255, 255]
+        );
+        assert!(active(&w, below, SWEEP_WATER));
+
+        // The push crosses a chunk border: the receiver's chunk gets its own
+        // Layers delta, after the source chunk's deltas.
+        let d = at(31, 20, 20);
+        let east = at(32, 20, 20);
+        enclose_except(&mut w, 10, d, Some(east));
+        layer_at(&mut w, 11, d, LayerId::Moisture, 60);
+        let eco1 = chunk_revs(&w, c1).1;
+        let r = edit_checked(&mut w, cmd(12, EditOp::Set(stone), cell_shape(d)));
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert!(matches!(
+            &r.deltas[..],
+            [
+                ChunkDelta::Cells { pos: p0, .. },
+                ChunkDelta::Layers { pos: p1, .. },
+                ChunkDelta::Layers { pos: p2, .. },
+            ] if *p0 == c0 && *p1 == c0 && *p2 == c1
+        ));
+        assert_eq!(w.layer(east, LayerId::Moisture), 60);
+        assert_eq!(chunk_revs(&w, c1).1, eco1 + 1);
+        assert!(active(&w, east, SWEEP_WATER));
+
+        // Air → water by the brush: gases are pushed (to the air below), and
+        // the fill becomes 255.
+        let e = at(40, 10, 10);
+        layer_at(&mut w, 13, e, firedamp, 100);
+        layer_at(&mut w, 14, e, LayerId::Moisture, 30);
+        let r = edit_checked(&mut w, cmd(15, EditOp::Set(water), cell_shape(e)));
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                water_edit_in: 225,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(e, LayerId::Moisture), 255);
+        assert_eq!(w.layer(e, firedamp), 0);
+        assert_eq!(w.layer(at(40, 9, 10), firedamp), 100);
+        assert!(active(&w, e, SWEEP_WATER));
+
+        // Stone → magma by the brush: magma_edit, temperature set; magma →
+        // basalt: magma_edit back, temperature unchanged.
+        let f = at(14, 10, 10);
+        set_at(&mut w, 16, "stone", &[f]);
+        let r = edit_checked(&mut w, cmd(17, EditOp::Set(magma), cell_shape(f)));
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                magma_edit: 1,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(f, LayerId::Temperature), i32::from(MAGMA_INIT));
+        layer_at(&mut w, 18, f, LayerId::Temperature, 9500);
+        let r = edit_checked(&mut w, cmd(19, EditOp::Set(basalt), cell_shape(f)));
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                magma_edit: -1,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(f, LayerId::Temperature), 9500);
+
+        // Digging a plant harvests it: held substances leave as
+        // harvest_out, the yield material comes out as max(1, held >> 3),
+        // and a tall plant's upper cell goes with it.
+        let (anchor, plant, top) = (at(50, 10, 10), at(50, 11, 10), at(50, 12, 10));
+        set_at(&mut w, 20, "soil", &[anchor]);
+        set_at(&mut w, 21, "moss", &[plant, top]);
+        put_plant(&mut w, plant, held(CU, 40));
+        let r = edit_checked(&mut w, cmd(22, EditOp::Damage(u16::MAX), cell_shape(plant)));
+        let mut want = SeasonLedger::default();
+        want.harvest_out[usize::from(CU)] = 40;
+        assert_eq!(*r.ledger, want);
+        assert_eq!(
+            r.yields,
+            vec![(moss, 1), (copper_dust, 40 >> HARVEST_SHIFT)]
+        );
+        assert_eq!(w.get_cell(plant), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(top), Some(MaterialId::AIR));
+        assert!(w.plant(plant).is_none());
+        let removed = r.deltas.iter().any(|d| {
+            matches!(d, ChunkDelta::Layers { plants, .. }
+                if plants == &[(plant.local().index(), None)])
+        });
+        assert!(
+            removed,
+            "plant removal travels in the Layers delta: {:?}",
+            r.deltas
+        );
+
+        // Removing a plant without harvest returns `held` to the anchor below
+        // by room; the rest is an edit sink.
+        let (anchor, plant) = (at(52, 10, 10), at(52, 11, 10));
+        set_at(&mut w, 23, "soil", &[anchor]);
+        set_at(&mut w, 24, "moss", &[plant]);
+        layer_at(&mut w, 25, anchor, cu, 250);
+        put_plant(&mut w, plant, held(CU, 40));
+        let r = edit_checked(&mut w, cmd(26, EditOp::Remove, cell_shape(plant)));
+        let mut want = SeasonLedger::default();
+        want.edit_out[usize::from(CU)] = 35;
+        assert_eq!(*r.ledger, want);
+        assert!(r.yields.is_empty());
+        assert_eq!(w.layer(anchor, cu), 255);
+
+        // Over a non-anchor, everything held is lost.
+        let (base, plant) = (at(56, 10, 10), at(56, 11, 10));
+        set_at(&mut w, 27, "stone", &[base]);
+        set_at(&mut w, 28, "moss", &[plant]);
+        put_plant(&mut w, plant, held(CU, 12));
+        let r = edit_checked(&mut w, cmd(29, EditOp::Set(stone), cell_shape(plant)));
+        let mut want = SeasonLedger::default();
+        want.edit_out[usize::from(CU)] = 12;
+        assert_eq!(*r.ledger, want);
+
+        // Digging the anchor kills the plant on top by the death rule:
+        // litter and held go into the cell below the plant, the plant cell
+        // becomes air, and plants_died counts it.
+        let (anchor, plant) = (at(54, 10, 10), at(54, 11, 10));
+        set_at(&mut w, 30, "soil", &[anchor]);
+        set_at(&mut w, 31, "moss", &[plant]);
+        put_plant(&mut w, plant, held(CU, 10));
+        let r = edit_checked(&mut w, cmd(32, EditOp::Remove, cell_shape(anchor)));
+        let mut want = SeasonLedger {
+            plants_died: 1,
+            ..SeasonLedger::default()
+        };
+        want.litter_in[usize::from(ORGANIC)] = i64::from(LITTER);
+        assert_eq!(*r.ledger, want);
+        assert_eq!(w.get_cell(anchor), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(plant), Some(MaterialId::AIR));
+        assert!(w.plant(plant).is_none());
+        assert_eq!(w.layer(anchor, organic), i32::from(LITTER));
+        assert_eq!(w.layer(anchor, cu), 10);
+        let ChunkDelta::Cells { changes, .. } = &r.deltas[0] else {
+            panic!("expected Cells first: {:?}", r.deltas);
+        };
+        assert_eq!(
+            changes,
+            &[
+                (anchor.local().index(), MaterialId::AIR),
+                (plant.local().index(), MaterialId::AIR),
+            ]
+        );
+        assert_eq!(w.get_cell(at(54, 9, 10)), Some(MaterialId::AIR));
+    }
+
+    #[test]
+    fn brush_set_water_fill_255_set_magma_init_temp() {
+        let mut w = eco_world();
+        let (water, ice, magma) = (mat(&w, "water"), mat(&w, "ice"), mat(&w, "magma"));
+
+        // Set(water) over air: every cell is full, and the ledger records
+        // what was added on top of the moisture already there.
+        layer_at(&mut w, 1, at(5, 5, 5), LayerId::Moisture, 40);
+        let r = edit_checked(
+            &mut w,
+            cmd(2, EditOp::Set(water), boxed((5, 5, 5), (6, 5, 6))),
+        );
+        assert_eq!(r.ledger.water_edit_in, 4 * 255 - 40);
+        for c in boxed((5, 5, 5), (6, 5, 6)).cells() {
+            assert_eq!(w.get_cell(c), Some(water));
+            assert_eq!(w.layer(c, LayerId::Moisture), 255, "{c:?}");
+            assert!(active(&w, c, SWEEP_WATER));
+        }
+
+        // Set(ice) over a damp soil cell: full too.
+        let s = at(10, 5, 5);
+        set_at(&mut w, 3, "soil", &[s]);
+        layer_at(&mut w, 4, s, LayerId::Moisture, 30);
+        let r = edit_checked(&mut w, cmd(5, EditOp::Set(ice), cell_shape(s)));
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                water_edit_in: 225,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(s, LayerId::Moisture), 255);
+
+        // A cell already holding water is skipped, as every Set skips a
+        // cell that holds its target.
+        let p = at(5, 5, 5);
+        layer_at(&mut w, 6, p, LayerId::Moisture, 100);
+        let r = edit_checked(&mut w, cmd(7, EditOp::Set(water), cell_shape(p)));
+        assert!(r.deltas.is_empty());
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        assert_eq!(w.layer(p, LayerId::Moisture), 100);
+
+        // Set(magma) over stone: temperature eco.magma_init_temp, one
+        // magma_edit per cell.
+        set_at(
+            &mut w,
+            8,
+            "stone",
+            &[at(20, 5, 5), at(21, 5, 5), at(22, 5, 5)],
+        );
+        let r = edit_checked(
+            &mut w,
+            cmd(9, EditOp::Set(magma), boxed((20, 5, 5), (22, 5, 5))),
+        );
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                magma_edit: 3,
+                ..SeasonLedger::default()
+            }
+        );
+        for x in 20..=22 {
+            let c = at(x, 5, 5);
+            assert_eq!(w.get_cell(c), Some(magma));
+            assert_eq!(w.layer(c, LayerId::Temperature), i32::from(MAGMA_INIT));
+            assert!(active(&w, c, SWEEP_WATER));
+        }
+
+        // Set(magma) over water: magma holds no moisture, so the fill goes
+        // to the air below.
+        let q = at(6, 5, 6);
+        let r = edit_checked(&mut w, cmd(10, EditOp::Set(magma), cell_shape(q)));
+        assert_eq!(
+            *r.ledger,
+            SeasonLedger {
+                magma_edit: 1,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(q, LayerId::Moisture), 0);
+        assert_eq!(w.layer(at(6, 4, 6), LayerId::Moisture), 255);
+        assert_eq!(w.layer(q, LayerId::Temperature), i32::from(MAGMA_INIT));
+    }
+
+    #[test]
+    fn eco_set_displaces_bumps_revision_no_delta() {
+        let mut w = eco_world();
+        let (stone, water, ice, magma, basalt) = (
+            mat(&w, "stone"),
+            mat(&w, "water"),
+            mat(&w, "ice"),
+            mat(&w, "magma"),
+            mat(&w, "basalt"),
+        );
+        let (c0, c1) = (ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0));
+        let cu = LayerId::Substance(CU);
+        let (steam, firedamp) = (LayerId::Gas(STEAM), LayerId::Gas(FIREDAMP));
+
+        // Boiling: water → air turns the fill into steam on the cell.
+        let a = at(10, 10, 10);
+        set_at(&mut w, 1, "water", &[a]);
+        layer_at(&mut w, 2, a, LayerId::Moisture, 200);
+        assert_eq!(w.surface_y(10, 10), 10);
+        let (rev, eco, _) = chunk_revs(&w, c0);
+        let l = eco_checked(&mut w, a, MaterialId::AIR);
+        assert_eq!(
+            l,
+            SeasonLedger {
+                boil_to_steam: 200,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.get_cell(a), Some(MaterialId::AIR));
+        assert_eq!(w.layer(a, LayerId::Moisture), 0);
+        assert_eq!(w.layer(a, steam), 200);
+        assert_eq!(chunk_revs(&w, c0), (rev + 1, eco + 1, true));
+        assert_eq!(w.surface_y(10, 10), crate::columns::NO_SURFACE);
+        assert!(active(&w, a, SWEEP_GAS + usize::from(STEAM)));
+
+        // Air → solid with nowhere to go: pass remainders are saturation
+        // losses, substances stay adsorbed.
+        let b = at(20, 10, 10);
+        enclose_except(&mut w, 3, b, None);
+        for (layer, v) in [(LayerId::Moisture, 70), (firedamp, 30), (steam, 5), (cu, 9)] {
+            layer_at(&mut w, 4, b, layer, v);
+        }
+        let l = eco_checked(&mut w, b, stone);
+        let mut want = SeasonLedger {
+            water_saturation_loss: 70 + 5,
+            ..SeasonLedger::default()
+        };
+        want.gas_saturation_loss[usize::from(FIREDAMP)] = 30;
+        want.gas_saturation_loss[usize::from(STEAM)] = 5;
+        assert_eq!(l, want);
+        assert_eq!(w.layer(b, cu), 9);
+        assert_eq!(w.surface_y(20, 10), 11);
+
+        // Water ↔ ice keeps the moisture.
+        let c = at(30, 5, 5);
+        set_at(&mut w, 5, "water", &[c]);
+        layer_at(&mut w, 6, c, LayerId::Moisture, 120);
+        assert_eq!(eco_checked(&mut w, c, ice), SeasonLedger::default());
+        assert_eq!(w.layer(c, LayerId::Moisture), 120);
+        assert_eq!(eco_checked(&mut w, c, water), SeasonLedger::default());
+        assert_eq!(w.layer(c, LayerId::Moisture), 120);
+
+        // Stone → magma (melt) and magma → basalt (set): counted, and the
+        // temperature is the pass's business.
+        let d = at(12, 5, 5);
+        set_at(&mut w, 7, "stone", &[d]);
+        layer_at(&mut w, 8, d, LayerId::Temperature, 12600);
+        let l = eco_checked(&mut w, d, magma);
+        assert_eq!(
+            l,
+            SeasonLedger {
+                magma_melt_in: 1,
+                ..SeasonLedger::default()
+            }
+        );
+        assert_eq!(w.layer(d, LayerId::Temperature), 12600);
+        assert!(active(&w, d, SWEEP_WATER));
+        let l = eco_checked(&mut w, d, basalt);
+        assert_eq!(
+            l,
+            SeasonLedger {
+                magma_set: 1,
+                ..SeasonLedger::default()
+            }
+        );
+
+        // A push into the next chunk bumps that chunk's eco revision only.
+        let e = at(31, 20, 20);
+        let east = at(32, 20, 20);
+        enclose_except(&mut w, 9, e, Some(east));
+        layer_at(&mut w, 10, e, LayerId::Moisture, 60);
+        let (rev0, _, _) = chunk_revs(&w, c0);
+        let (rev1, eco1, _) = chunk_revs(&w, c1);
+        assert_eq!(eco_checked(&mut w, e, stone), SeasonLedger::default());
+        assert_eq!(w.layer(east, LayerId::Moisture), 60);
+        assert_eq!(chunk_revs(&w, c0).0, rev0 + 1);
+        assert_eq!(chunk_revs(&w, c1).0, rev1);
+        assert_eq!(chunk_revs(&w, c1).1, eco1 + 1);
+        assert!(active(&w, east, SWEEP_WATER));
+
+        // The cell's damage is cleared.
+        let f = at(60, 5, 5);
+        set_at(&mut w, 11, "stone", &[f]);
+        w.apply(&cmd(12, EditOp::Damage(1), cell_shape(f)));
+        assert_eq!(w.damage().get(f), 1);
+        eco_checked(&mut w, f, basalt);
+        assert_eq!(w.damage().get(f), 0);
+
+        // A plant removed by a pass returns `held` to its anchor; no harvest.
+        let (anchor, plant) = (at(40, 10, 10), at(40, 11, 10));
+        set_at(&mut w, 13, "soil", &[anchor]);
+        set_at(&mut w, 14, "moss", &[plant]);
+        put_plant(&mut w, plant, held(CU, 10));
+        assert_eq!(
+            eco_checked(&mut w, plant, MaterialId::AIR),
+            SeasonLedger::default()
+        );
+        assert_eq!(w.layer(anchor, cu), 10);
+        assert!(w.plant(plant).is_none());
+
+        // from == to and cells outside the bounds change nothing.
+        let hash = w.hash();
+        let revs: Vec<_> = [c0, c1].map(|p| chunk_revs(&w, p)).to_vec();
+        assert_eq!(eco_checked(&mut w, f, basalt), SeasonLedger::default());
+        let mut l = SeasonLedger::default();
+        w.eco_set(at(-1, 0, 0), stone, &mut l);
+        w.eco_set(at(64, 0, 0), stone, &mut l);
+        assert_eq!(l, SeasonLedger::default());
+        assert_eq!(w.hash(), hash);
+        assert_eq!([c0, c1].map(|p| chunk_revs(&w, p)).to_vec(), revs);
     }
 }

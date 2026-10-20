@@ -1268,8 +1268,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "SeasonLedger is defined in rmc_world::ledger (plain data); rmc_eco re-exports it in F104. EditResult gains a SeasonLedger with the edit's displacement terms. World::eco_set must run the full §7.0 set (boil exception, Air→Solid push), update surface_y, sweep active sets, revision and modified, and clear damage; no validation, no delta."
+      "passes": true,
+      "notes": "SeasonLedger is defined in rmc_world::ledger (plain data); rmc_eco re-exports it in F104. EditResult gains a SeasonLedger with the edit's displacement terms. World::eco_set must run the full §7.0 set (boil exception, Air→Solid push), update surface_y, sweep active sets, revision and modified, and clear damage; no validation, no delta.",
+      "passedAt": "2026-10-20T01:58:36Z"
     },
     {
       "id": "F104",

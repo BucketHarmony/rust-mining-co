@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use rmc_world::EcoRules;
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -694,6 +695,30 @@ impl EcoTables {
     pub fn role_substance(&self, role: &str) -> Option<u8> {
         self.substance_index(self.roles.substances.get(role)?)
     }
+
+    /// The roles and constants `World::apply` and `World::eco_set` read for
+    /// the displacement rules (SAD-P2 §7.0). Roles whose material the table
+    /// lacks yet resolve to `None`, which leaves their rule inert.
+    pub fn displacement_rules(&self) -> EcoRules {
+        let mut substance_yields = [None; N_SUBSTANCES];
+        for (slot, s) in substance_yields.iter_mut().zip(&self.substances) {
+            *slot = s
+                .yield_material
+                .as_deref()
+                .and_then(|key| self.materials.id(key));
+        }
+        EcoRules {
+            water: self.role_material("water"),
+            ice: self.role_material("ice"),
+            magma: self.role_material("magma"),
+            steam: self.role_gas("steam"),
+            organic: self.role_substance("organic"),
+            magma_init_temp: self.params.magma_init_temp,
+            plant_litter: self.plants.iter().map(|p| p.litter).collect(),
+            harvest_shift: self.params.harvest_shift,
+            substance_yields,
+        }
+    }
 }
 
 fn index_of<'a>(mut keys: impl Iterator<Item = &'a String>, key: &str) -> Option<u8> {
@@ -815,6 +840,35 @@ mod tests {
         let materials =
             Arc::new(MaterialTable::load(Path::new(ASSETS).join(MATERIALS_FILE)).unwrap());
         (materials, EcoSources::read(ASSETS).unwrap())
+    }
+
+    #[test]
+    fn displacement_rules_come_from_roles_and_params() {
+        let t = shipped();
+        let rules = t.displacement_rules();
+        assert_eq!(rules.water, t.role_material("water"));
+        assert_eq!(rules.ice, t.role_material("ice"));
+        assert_eq!(rules.magma, t.role_material("magma"));
+        assert_eq!(rules.steam, t.role_gas("steam"));
+        assert!(rules.steam.is_some(), "steam role resolves");
+        assert_eq!(rules.organic, t.role_substance("organic"));
+        assert!(rules.organic.is_some(), "organic role resolves");
+        assert_eq!(rules.magma_init_temp, t.params().magma_init_temp);
+        assert_eq!(rules.harvest_shift, t.params().harvest_shift);
+        let litter: Vec<u8> = t.plants().iter().map(|p| p.litter).collect();
+        assert_eq!(rules.plant_litter, litter);
+        for (i, s) in t.substances().iter().enumerate() {
+            let want = s
+                .yield_material
+                .as_deref()
+                .and_then(|k| t.materials().id(k));
+            assert_eq!(rules.substance_yields[i], want, "{}", s.key);
+        }
+        assert!(
+            rules.substance_yields[t.substances().len()..]
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     /// Applies `edit` to the shipped sources and loads the result.

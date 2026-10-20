@@ -213,6 +213,13 @@ impl Host {
             ClientMsg::PlayerState { pos, .. } => self.player_state(player, pos),
             ClientMsg::RequestChunk(pos) => self.request_chunk(player, pos),
             ClientMsg::SaveRequest => self.save_request(player),
+            // The season tick arrives with F107.
+            ClientMsg::AdvanceSeason => {
+                debug!(
+                    player = player.0,
+                    "AdvanceSeason ignored: no season tick yet"
+                );
+            }
         }
     }
 
@@ -267,14 +274,8 @@ impl Host {
             },
         );
         for (pos, chunk) in self.world.iter_chunks_sorted() {
-            self.transport.send(
-                to,
-                ServerMsg::ChunkSnapshot {
-                    pos,
-                    revision: chunk.revision,
-                    storage: chunk.storage.clone(),
-                },
-            );
+            self.transport
+                .send(to, ServerMsg::chunk_snapshot(pos, chunk));
         }
     }
 
@@ -358,11 +359,7 @@ impl Host {
             revision = chunk.revision,
             "chunk resent"
         );
-        let msg = ServerMsg::ChunkSnapshot {
-            pos,
-            revision: chunk.revision,
-            storage: chunk.storage.clone(),
-        };
+        let msg = ServerMsg::chunk_snapshot(pos, chunk);
         self.transport.send(Recipient::One(player), msg);
     }
 }
@@ -555,6 +552,7 @@ mod tests {
                 pos: got,
                 revision,
                 storage,
+                ..
             } = msg
             else {
                 panic!("expected ChunkSnapshot, got {msg:?}");
@@ -816,6 +814,7 @@ mod tests {
                 pos,
                 revision,
                 storage,
+                ..
             } = msg
             else {
                 panic!("expected ChunkSnapshot, got {msg:?}");
@@ -1552,11 +1551,7 @@ mod tests {
         expected.extend(
             second
                 .iter_chunks_sorted()
-                .map(|(pos, chunk)| ServerMsg::ChunkSnapshot {
-                    pos,
-                    revision: chunk.revision,
-                    storage: chunk.storage.clone(),
-                }),
+                .map(|(pos, chunk)| ServerMsg::chunk_snapshot(pos, chunk)),
         );
         let snapshots = expected.len() - 1;
         expected.push(ServerMsg::Inventory {
@@ -1747,6 +1742,7 @@ mod tests {
             .map(|d| match d {
                 ChunkDelta::Cells { changes, .. } => changes.len(),
                 ChunkDelta::Full { .. } => panic!("small edit sent as Full"),
+                ChunkDelta::Layers { .. } => panic!("Phase 1 edits change no layers"),
             })
             .sum();
         assert_eq!(changed, 6 * 7 * 6 - box_a.len());

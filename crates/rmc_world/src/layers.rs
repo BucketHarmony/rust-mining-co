@@ -19,6 +19,14 @@ pub const N_GASES: usize = 4;
 /// Sweep kinds with a per-chunk active set (SAD-P2 §6): water, one per gas,
 /// chemistry transport, plant spread.
 pub const N_SWEEPS: usize = 1 + N_GASES + 2;
+/// Index of the water (and magma) sweep in [`Chunk::active`](crate::chunk::Chunk::active).
+pub const SWEEP_WATER: usize = 0;
+/// Index of gas 0's sweep; gas `g` uses `SWEEP_GAS + g`.
+pub const SWEEP_GAS: usize = 1;
+/// Index of the chemistry transport sweep.
+pub const SWEEP_TRANSPORT: usize = SWEEP_GAS + N_GASES;
+/// Index of the plant spread sweep.
+pub const SWEEP_SPREAD: usize = SWEEP_TRANSPORT + 1;
 
 /// `u64` words in a one-bit-per-cell chunk bitset.
 const BITSET_WORDS: usize = CHUNK_VOLUME / 64;

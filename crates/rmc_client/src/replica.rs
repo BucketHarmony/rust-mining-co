@@ -29,7 +29,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::chunk::{Chunk, ChunkStorage};
-use rmc_world::coords::{CHUNK_MASK, CellAabb, ChunkPos, LocalPos};
+use rmc_world::coords::{CHUNK_MASK, CHUNK_VOLUME, CellAabb, ChunkPos, LocalPos};
 use rmc_world::edit::{ChunkDelta, PlayerId};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::{DeltaError, World};
@@ -52,6 +52,9 @@ pub enum ReplicaError {
     /// The result's other deltas were applied.
     #[error("{} delta(s) refused, first: {}", .0.len(), .0[0])]
     Deltas(Vec<DeltaError>),
+    /// A `LayerSnapshot` the world refused.
+    #[error("layer snapshot refused: {0}")]
+    LayerSnapshot(DeltaError),
 }
 
 /// The client-side world, changed only by [`ServerMsg`] handlers.
@@ -135,7 +138,11 @@ impl Replica {
     ///
     /// - `ChunkSnapshot` makes the chunk resident with the host's storage
     ///   and revision, replacing any copy, and ends a wait for it. Its
-    ///   storage must be well formed and use only known materials.
+    ///   storage must be well formed and use only known materials, and
+    ///   its layers and plants come with it.
+    /// - `LayerSnapshot` replaces a resident chunk's layers and plants,
+    ///   unless the replica is waiting for that chunk's full snapshot.
+    ///   Layers do not change meshes, so nothing is marked dirty.
     /// - `Applied` applies each delta in order. A delta for a chunk the
     ///   replica is waiting for is ignored. A delta more than one revision
     ///   ahead is a gap: `pos` goes into `requests` and the replica waits for
@@ -151,12 +158,17 @@ impl Replica {
             ServerMsg::ChunkSnapshot {
                 pos,
                 revision,
+                eco_revision,
                 storage,
+                layers,
+                plants,
             } => {
                 let pos = *pos;
                 // insert_chunk trusts its storage; a malformed one would
                 // panic later in get or compact.
-                if !storage.is_well_formed() {
+                if !storage.is_well_formed()
+                    || plants.keys().any(|&i| usize::from(i) >= CHUNK_VOLUME)
+                {
                     return Err(ReplicaError::MalformedSnapshot(pos));
                 }
                 let palette = match storage {
@@ -169,6 +181,9 @@ impl Replica {
                 }
                 let mut chunk = Chunk::new(storage.clone());
                 chunk.revision = *revision;
+                chunk.eco_revision = *eco_revision;
+                chunk.layers = layers.clone();
+                chunk.plants = plants.clone();
                 self.world
                     .insert_chunk(pos, chunk)
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
@@ -190,6 +205,7 @@ impl Replica {
                                 }
                             }
                             ChunkDelta::Full { .. } => self.mark_with_neighbours(pos),
+                            ChunkDelta::Layers { .. } => {}
                         },
                         Err(DeltaError::RevisionGap { local, got, .. }) if got > local => {
                             debug!(?pos, local, got, "revision gap, requesting chunk");
@@ -203,11 +219,26 @@ impl Replica {
                     return Err(ReplicaError::Deltas(refused));
                 }
             }
+            ServerMsg::LayerSnapshot {
+                pos,
+                eco_revision,
+                layers,
+                plants,
+            } => {
+                if self.awaiting.contains(pos) {
+                    return Ok(());
+                }
+                self.world
+                    .apply_eco_snapshot(*pos, *eco_revision, layers.clone(), plants.clone())
+                    .map_err(ReplicaError::LayerSnapshot)?;
+            }
             ServerMsg::Welcome { .. }
             | ServerMsg::Rejected { .. }
             | ServerMsg::Inventory { .. }
             | ServerMsg::PlayerStates(_)
-            | ServerMsg::Saved { .. } => {}
+            | ServerMsg::Saved { .. }
+            | ServerMsg::SeasonStarted { .. }
+            | ServerMsg::SeasonDone { .. } => {}
         }
         Ok(())
     }
@@ -425,11 +456,7 @@ mod tests {
                 .into_iter()
                 .map(|pos| {
                     let chunk = self.host.chunk(pos).expect("host chunk resident");
-                    ServerMsg::ChunkSnapshot {
-                        pos,
-                        revision: chunk.revision,
-                        storage: chunk.storage.clone(),
-                    }
+                    ServerMsg::chunk_snapshot(pos, chunk)
                 })
                 .collect()
         }
@@ -502,7 +529,10 @@ mod tests {
                 ServerMsg::ChunkSnapshot {
                     pos: c(0, 0, 0),
                     revision: 0,
+                    eco_revision: 0,
                     storage: ChunkStorage::Uniform(MaterialId::AIR),
+                    layers: Default::default(),
+                    plants: Default::default(),
                 },
             ]);
             app.update();

@@ -1,19 +1,21 @@
 //! The world (SAD §7): resident chunks inside fixed bounds, plus the material
 //! table that gives cells their meaning.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::chunk::{Chunk, ChunkStorage};
 use crate::columns::{Columns, NO_SURFACE};
 use crate::coords::{CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use crate::damage::DamageMap;
+use crate::displace::{Cause, EcoRules, Effects, layer_change_ok};
 use crate::edit::{
     ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
     RejectReason,
 };
-use crate::layers::{ChunkLayers, PlantState};
-use crate::materials::{MaterialId, MaterialTable};
+use crate::layers::{ChunkLayers, LayerId, PlantState};
+use crate::ledger::SeasonLedger;
+use crate::materials::{MaterialId, MaterialTable, Phase};
 
 /// Errors from world mutation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -37,16 +39,25 @@ pub enum DeltaError {
     UnknownMaterial { pos: ChunkPos, id: MaterialId },
     #[error("storage for chunk {0:?} is malformed")]
     MalformedStorage(ChunkPos),
+    #[error("layer change ({index}, {layer:?}, {value}) in chunk {pos:?} is invalid")]
+    BadLayerChange {
+        pos: ChunkPos,
+        index: u16,
+        layer: LayerId,
+        value: i32,
+    },
 }
 
 /// Chunks keyed by position, bounded by a [`CellAabb`].
 #[derive(Clone, Debug)]
 pub struct World {
-    chunks: HashMap<ChunkPos, Chunk>,
-    damage: DamageMap,
-    materials: Arc<MaterialTable>,
-    bounds: CellAabb,
-    columns: Columns,
+    pub(crate) chunks: HashMap<ChunkPos, Chunk>,
+    pub(crate) damage: DamageMap,
+    pub(crate) materials: Arc<MaterialTable>,
+    pub(crate) bounds: CellAabb,
+    pub(crate) columns: Columns,
+    /// Roles for the displacement rules (SAD-P2 §7.0).
+    pub(crate) rules: Arc<EcoRules>,
 }
 
 impl World {
@@ -67,6 +78,7 @@ impl World {
             materials,
             bounds,
             columns: Columns::default(),
+            rules: Arc::default(),
         }
     }
 
@@ -226,66 +238,79 @@ impl World {
             return EditResult::rejected(cmd.id, reason);
         }
 
-        let mut changed: BTreeMap<ChunkPos, Vec<(u16, MaterialId)>> = BTreeMap::new();
+        let mut ledger = SeasonLedger::default();
+        let mut fx = Effects::default();
         let mut yields: BTreeMap<MaterialId, u32> = BTreeMap::new();
+        let cause = Cause::Edit(cmd.op);
         for cell in cmd.shape.cells() {
             if !self.bounds.contains(cell) {
                 continue;
             }
             let (pos, local) = cell.split();
-            let Some(chunk) = self.chunks.get_mut(&pos) else {
+            let Some(chunk) = self.chunks.get(&pos) else {
                 continue;
             };
             let old = chunk.storage.get(local);
             let def = self.materials.get(old);
-            let new = if let EditOp::Damage(dmg) = cmd.op {
-                let Some(def) = def.filter(|d| d.diggable) else {
-                    continue;
-                };
-                if !self.damage.hit(cell, def.hardness, dmg) {
-                    continue;
-                }
-                if def.yield_count > 0 {
-                    *yields.entry(old).or_insert(0) += u32::from(def.yield_count);
-                }
-                MaterialId::AIR
-            } else {
-                if matches!(cmd.op, EditOp::Set(_)) && keep_clear.iter().any(|b| b.contains(cell)) {
+            let new = match cmd.op {
+                EditOp::SetLayer { layer, value } => {
+                    if matches!(layer, LayerId::Gas(_)) && def.is_none_or(|d| d.phase != Phase::Air)
+                    {
+                        continue;
+                    }
+                    self.set_layer_by_edit(cell, layer, value, &mut ledger, &mut fx);
                     continue;
                 }
-                let Some(new) = cmd.op.target(def) else {
-                    continue;
-                };
-                // Set, Paint and Remove clear damage on every cell they
-                // apply to, even one that already holds the target.
-                self.damage.clear(cell);
-                new
+                EditOp::Damage(dmg) => {
+                    let Some(def) = def.filter(|d| d.diggable) else {
+                        continue;
+                    };
+                    if !self.damage.hit(cell, def.hardness, dmg) {
+                        continue;
+                    }
+                    if def.yield_count > 0 {
+                        *yields.entry(old).or_insert(0) += u32::from(def.yield_count);
+                    }
+                    MaterialId::AIR
+                }
+                _ => {
+                    if matches!(cmd.op, EditOp::Set(_))
+                        && keep_clear.iter().any(|b| b.contains(cell))
+                    {
+                        continue;
+                    }
+                    let Some(new) = cmd.op.target(def) else {
+                        continue;
+                    };
+                    // Set, Paint and Remove clear damage on every cell they
+                    // apply to, even one that already holds the target.
+                    self.damage.clear(cell);
+                    new
+                }
             };
-            if new != old {
-                chunk.storage.set(local, new);
-                changed.entry(pos).or_default().push((local.index(), new));
-                self.columns.cell_changed(
-                    cell,
-                    old,
-                    new,
-                    &self.chunks,
-                    &self.materials,
-                    self.bounds,
-                );
-            }
+            self.change_material(cell, new, cause, &mut ledger, &mut fx);
+        }
+        self.finish_effects(&fx);
+        for (&m, &n) in &fx.yields {
+            *yields.entry(m).or_insert(0) += n;
         }
 
-        let deltas = changed
-            .into_iter()
-            .map(|(pos, mut changes)| {
-                let chunk = self
-                    .chunks
-                    .get_mut(&pos)
-                    .expect("changed chunk is resident");
-                chunk.revision += 1;
-                chunk.modified = true;
+        let chunks: BTreeSet<ChunkPos> = fx
+            .cells
+            .keys()
+            .chain(fx.layers.keys())
+            .chain(fx.plants.keys())
+            .copied()
+            .collect();
+        let mut deltas = Vec::new();
+        for pos in chunks {
+            let chunk = self
+                .chunks
+                .get_mut(&pos)
+                .expect("changed chunk is resident");
+            if let Some(changes) = fx.cells.get(&pos) {
                 let revision = chunk.revision;
-                if changes.len() > FULL_DELTA_THRESHOLD {
+                deltas.push(if changes.len() > FULL_DELTA_THRESHOLD {
                     chunk.storage.compact();
                     ChunkDelta::Full {
                         pos,
@@ -293,24 +318,76 @@ impl World {
                         storage: chunk.storage.clone(),
                     }
                 } else {
-                    // Shape order is (y, z, x) ascending, which within one
-                    // chunk is already ascending local index; sort anyway so
-                    // the delta does not depend on that.
-                    changes.sort_unstable_by_key(|&(i, _)| i);
                     ChunkDelta::Cells {
                         pos,
                         revision,
-                        changes,
+                        changes: changes.iter().map(|(&i, &m)| (i, m)).collect(),
                     }
-                }
-            })
-            .collect();
+                });
+            }
+            let layers = fx.layers.get(&pos);
+            let plants = fx.plants.get(&pos);
+            if layers.is_some() || plants.is_some() {
+                deltas.push(ChunkDelta::Layers {
+                    pos,
+                    eco_revision: chunk.eco_revision,
+                    changes: layers
+                        .into_iter()
+                        .flatten()
+                        .map(|(&(i, id), &v)| (i, id, v))
+                        .collect(),
+                    plants: plants
+                        .into_iter()
+                        .flatten()
+                        .map(|(&i, p)| (i, *p))
+                        .collect(),
+                });
+            }
+        }
 
         EditResult {
             command: cmd.id,
             status: EditStatus::Applied,
             deltas,
             yields: yields.into_iter().collect(),
+            ledger: Box::new(ledger),
+        }
+    }
+
+    /// `SetLayer` on one cell: writes the value and ledgers the change of a
+    /// conserved quantity as an edit source or sink.
+    fn set_layer_by_edit(
+        &mut self,
+        cell: CellPos,
+        layer: LayerId,
+        value: i32,
+        ledger: &mut SeasonLedger,
+        fx: &mut Effects,
+    ) {
+        let diff = i64::from(value - self.layer(cell, layer));
+        if diff == 0 {
+            return;
+        }
+        self.put_layer(cell, layer, value, fx);
+        let (gain, loss) = (diff.max(0), (-diff).max(0));
+        match layer {
+            LayerId::Moisture => {
+                ledger.water_edit_in += gain;
+                ledger.water_edit_out += loss;
+            }
+            LayerId::Substance(x) => {
+                ledger.edit_in[usize::from(x)] += gain;
+                ledger.edit_out[usize::from(x)] += loss;
+            }
+            LayerId::Gas(g) => {
+                ledger.gas_edit_in[usize::from(g)] += gain;
+                ledger.gas_edit_out[usize::from(g)] += loss;
+                if self.rules.steam == Some(g) {
+                    ledger.water_edit_in += gain;
+                    ledger.water_edit_out += loss;
+                }
+            }
+            LayerId::Temperature | LayerId::Regolith | LayerId::Light | LayerId::Growth => {}
         }
     }
 
@@ -333,6 +410,13 @@ impl World {
     /// Either way the chunk takes the delta's revision and is marked
     /// modified (as it is on the world that produced the delta), and damage
     /// on the overwritten cells is cleared.
+    ///
+    /// `Layers` needs a resident chunk whose `eco_revision` is exactly one
+    /// below the delta's (a gap is a [`DeltaError::RevisionGap`] on the eco
+    /// revision, repaired the same way). Every change must name a cell in
+    /// the chunk, a valid layer and a value of its type. Values and plant
+    /// states are written in order; cells, `revision`, `modified`, damage
+    /// and `surface_y` are untouched.
     pub fn apply_delta(&mut self, delta: &ChunkDelta) -> Result<(), DeltaError> {
         let pos = delta.pos();
         if !self.bounds.intersects_chunk(pos) {
@@ -408,6 +492,57 @@ impl World {
                 chunk.revision = *revision;
                 chunk.modified = true;
                 self.rebuild_columns(pos);
+            }
+            ChunkDelta::Layers {
+                eco_revision,
+                changes,
+                plants,
+                ..
+            } => {
+                let chunk = self.chunks.get(&pos).ok_or(DeltaError::NotResident(pos))?;
+                if chunk.eco_revision.checked_add(1) != Some(*eco_revision) {
+                    return Err(DeltaError::RevisionGap {
+                        pos,
+                        local: chunk.eco_revision,
+                        got: *eco_revision,
+                    });
+                }
+                if let Some(&(index, layer, value)) = changes
+                    .iter()
+                    .find(|&&(i, id, v)| !layer_change_ok(i, id, v))
+                {
+                    return Err(DeltaError::BadLayerChange {
+                        pos,
+                        index,
+                        layer,
+                        value,
+                    });
+                }
+                if let Some(&(index, _)) =
+                    plants.iter().find(|(i, _)| usize::from(*i) >= CHUNK_VOLUME)
+                {
+                    return Err(DeltaError::BadIndex { pos, index });
+                }
+                let chunk = self.chunks.get_mut(&pos).expect("checked resident");
+                for &(index, layer, value) in changes {
+                    let local = LocalPos::from_index(index);
+                    if layer.is_i16() {
+                        chunk
+                            .layers
+                            .set_i16(layer, local, i16::try_from(value).expect("checked"));
+                    } else {
+                        chunk
+                            .layers
+                            .set_u8(layer, local, u8::try_from(value).expect("checked"));
+                    }
+                }
+                for &(index, plant) in plants {
+                    match plant {
+                        Some(p) => chunk.plants.insert(index, p),
+                        None => chunk.plants.remove(&index),
+                    };
+                }
+                chunk.eco_revision = *eco_revision;
             }
         }
         tracing::debug!(?pos, revision = delta.revision(), "delta applied");
@@ -1385,6 +1520,7 @@ mod tests {
                         fulls += 1;
                         last_full = Some(*pos);
                     }
+                    ChunkDelta::Layers { .. } => panic!("Phase 1 edits change no layers"),
                 }
                 assert_eq!(replica.apply_delta(d), Ok(()), "command {n}: {d:?}");
             }
@@ -1486,6 +1622,7 @@ mod tests {
             .map(|d| match d {
                 ChunkDelta::Cells { changes, .. } => changes.len(),
                 ChunkDelta::Full { .. } => unreachable!("small edit"),
+                ChunkDelta::Layers { .. } => unreachable!("Phase 1 edits change no layers"),
             })
             .sum();
         assert_eq!(changed, set);

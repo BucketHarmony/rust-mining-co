@@ -4,9 +4,16 @@
 //! is strict: the buffer must hold exactly one message, with no trailing
 //! bytes. Decoded server messages also have every chunk storage checked with
 //! [`ChunkStorage::is_well_formed`](rmc_world::chunk::ChunkStorage::is_well_formed), so the client can hand a snapshot to
-//! `World::insert_chunk` without it panicking later.
+//! `World::insert_chunk` without it panicking later, and every snapshot's
+//! plant indices checked to lie inside the chunk. Layer data is checked by
+//! its decoder (`ChunkLayers`), and `ChunkDelta::Layers` values by
+//! `World::apply_delta`.
 
+use std::collections::BTreeMap;
+
+use rmc_world::coords::CHUNK_VOLUME;
 use rmc_world::edit::ChunkDelta;
+use rmc_world::layers::PlantState;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -21,7 +28,7 @@ pub enum CodecError {
     Decode(postcard::Error),
     #[error("{0} trailing bytes after the message")]
     TrailingBytes(usize),
-    #[error("message carries malformed chunk storage")]
+    #[error("message carries malformed chunk storage or plant indices")]
     MalformedStorage,
 }
 
@@ -38,20 +45,28 @@ pub fn encode_server(msg: &ServerMsg) -> Result<Vec<u8>, CodecError> {
 }
 
 /// Decodes one server message and rejects any chunk storage that is not
-/// well formed (`ChunkSnapshot` and `Full` deltas in `Applied`).
+/// well formed (`ChunkSnapshot` and `Full` deltas in `Applied`) and any
+/// snapshot plant index outside the chunk.
 pub fn decode_server(bytes: &[u8]) -> Result<ServerMsg, CodecError> {
     let msg: ServerMsg = decode(bytes)?;
+    let plants_ok =
+        |plants: &BTreeMap<u16, PlantState>| plants.keys().all(|&i| usize::from(i) < CHUNK_VOLUME);
     let well_formed = match &msg {
-        ServerMsg::ChunkSnapshot { storage, .. } => storage.is_well_formed(),
+        ServerMsg::ChunkSnapshot {
+            storage, plants, ..
+        } => storage.is_well_formed() && plants_ok(plants),
+        ServerMsg::LayerSnapshot { plants, .. } => plants_ok(plants),
         ServerMsg::Applied(result) => result.deltas.iter().all(|delta| match delta {
             ChunkDelta::Full { storage, .. } => storage.is_well_formed(),
-            ChunkDelta::Cells { .. } => true,
+            ChunkDelta::Cells { .. } | ChunkDelta::Layers { .. } => true,
         }),
         ServerMsg::Welcome { .. }
         | ServerMsg::Rejected { .. }
         | ServerMsg::Inventory { .. }
         | ServerMsg::PlayerStates(_)
-        | ServerMsg::Saved { .. } => true,
+        | ServerMsg::Saved { .. }
+        | ServerMsg::SeasonStarted { .. }
+        | ServerMsg::SeasonDone { .. } => true,
     };
     if well_formed {
         Ok(msg)
@@ -86,7 +101,12 @@ mod tests {
     use rmc_world::materials::MaterialId;
     use rmc_world::shape::Shape;
 
-    use crate::msg::PROTOCOL_VERSION;
+    use std::collections::BTreeMap;
+
+    use rmc_world::layers::{ChunkLayers, LayerId, N_GASES, N_SUBSTANCES, PlantState};
+    use rmc_world::ledger::SeasonLedger;
+
+    use crate::msg::{PROTOCOL_VERSION, SeasonReport};
 
     const EXTREME_CELLS: [CellPos; 5] = [
         CellPos::new(0, 0, 0),
@@ -118,9 +138,10 @@ mod tests {
             ClientMsg::PlayerState { .. } => 2,
             ClientMsg::RequestChunk(_) => 3,
             ClientMsg::SaveRequest => 4,
+            ClientMsg::AdvanceSeason => 5,
         }
     }
-    const CLIENT_VARIANTS: usize = 5;
+    const CLIENT_VARIANTS: usize = 6;
 
     fn server_variant(msg: &ServerMsg) -> usize {
         match msg {
@@ -131,9 +152,12 @@ mod tests {
             ServerMsg::Inventory { .. } => 4,
             ServerMsg::PlayerStates(_) => 5,
             ServerMsg::Saved { .. } => 6,
+            ServerMsg::LayerSnapshot { .. } => 7,
+            ServerMsg::SeasonStarted { .. } => 8,
+            ServerMsg::SeasonDone { .. } => 9,
         }
     }
-    const SERVER_VARIANTS: usize = 7;
+    const SERVER_VARIANTS: usize = 10;
 
     fn ops() -> Vec<EditOp> {
         vec![
@@ -184,6 +208,7 @@ mod tests {
                 material_hash: u64::MAX,
             },
             ClientMsg::SaveRequest,
+            ClientMsg::AdvanceSeason,
         ];
         let mut seq = 0u32;
         for op in ops() {
@@ -331,7 +356,10 @@ mod tests {
             msgs.push(ServerMsg::ChunkSnapshot {
                 pos: ChunkPos(c.0),
                 revision: [0, 1, 4097, u64::MAX, 1 << 40][i % 5],
+                eco_revision: 0,
                 storage,
+                layers: ChunkLayers::default(),
+                plants: BTreeMap::new(),
             });
         }
 
@@ -348,6 +376,7 @@ mod tests {
                 status: EditStatus::Rejected(reason),
                 deltas: Vec::new(),
                 yields: Vec::new(),
+                ledger: Box::default(),
             }));
         }
         msgs.push(ServerMsg::Applied(EditResult {
@@ -355,6 +384,7 @@ mod tests {
             status: EditStatus::Applied,
             deltas: Vec::new(),
             yields: Vec::new(),
+            ledger: Box::default(),
         }));
         msgs.push(ServerMsg::Applied(EditResult {
             command: command(11),
@@ -365,6 +395,7 @@ mod tests {
                 changes: Vec::new(),
             }],
             yields: Vec::new(),
+            ledger: Box::default(),
         }));
         let mut deltas = vec![
             ChunkDelta::Cells {
@@ -406,7 +437,237 @@ mod tests {
                 (MaterialId(5), 4096),
                 (MaterialId(u16::MAX), u32::MAX),
             ],
+            ledger: Box::default(),
         }));
+        msgs.extend(phase2_server_samples());
+        msgs
+    }
+
+    /// Layers with every id kind materialized and a few nonzero cells.
+    fn sample_layers(salt: u16) -> ChunkLayers {
+        let mut layers = ChunkLayers::default();
+        layers.materialize(LayerId::Temperature);
+        layers.materialize(LayerId::Light);
+        let u8_layers = [
+            LayerId::Moisture,
+            LayerId::Regolith,
+            LayerId::Substance(0),
+            LayerId::Substance(N_SUBSTANCES as u8 - 1),
+            LayerId::Gas(0),
+            LayerId::Gas(N_GASES as u8 - 1),
+            LayerId::Light,
+            LayerId::Growth,
+        ];
+        for (k, id) in u8_layers.into_iter().enumerate() {
+            let local = LocalPos::from_index((k as u16 * 4099 + salt) % 32_768);
+            layers.set_u8(id, local, (k as u8).wrapping_mul(37).wrapping_add(1));
+            layers.set_u8(id, LocalPos::from_index(32_767), u8::MAX);
+        }
+        for (i, t) in [i16::MIN, -1, 0, 1, i16::MAX].into_iter().enumerate() {
+            layers.set_i16(LayerId::Temperature, LocalPos::from_index(i as u16 * 7), t);
+        }
+        layers.set_i16(
+            LayerId::Temperature,
+            LocalPos::from_index(100),
+            salt as i16 * 13,
+        );
+        layers
+    }
+
+    fn sample_plants() -> BTreeMap<u16, PlantState> {
+        let mut held = [0u8; N_SUBSTANCES];
+        held[0] = 40;
+        held[N_SUBSTANCES - 1] = u8::MAX;
+        BTreeMap::from([
+            (0, PlantState::default()),
+            (
+                1234,
+                PlantState {
+                    species: 2,
+                    stress: 15,
+                    age_seasons: 3,
+                    held,
+                },
+            ),
+            (
+                32_767,
+                PlantState {
+                    species: u8::MAX,
+                    stress: u8::MAX,
+                    age_seasons: u8::MAX,
+                    held: [u8::MAX; N_SUBSTANCES],
+                },
+            ),
+        ])
+    }
+
+    /// A ledger with every field nonzero, negative and extreme values
+    /// included.
+    fn sample_ledger(k: i64) -> SeasonLedger {
+        fn arr<const N: usize>(base: i64, k: i64) -> [i64; N] {
+            std::array::from_fn(|i| base * (i as i64 + 1) - k)
+        }
+        SeasonLedger {
+            rain_in: 1 + k,
+            steam_vent_out: 2,
+            water_edit_in: 3,
+            water_edit_out: 4,
+            water_saturation_loss: 5,
+            evap_to_steam: 6,
+            boil_to_steam: 7,
+            condense_from_steam: 8,
+            weather_in: arr(1, k),
+            litter_in: arr(2, k),
+            uptake_sink: arr(3, k),
+            harvest_out: arr(4, k),
+            edit_in: arr(5, k),
+            edit_out: arr(6, k),
+            react_delta: arr(-7, k),
+            saturation_loss: arr(8, k),
+            emit_in: arr(9, k),
+            vent_out: arr(10, k),
+            react_out: arr(11, k),
+            react_in: arr(12, k),
+            gas_edit_in: arr(13, k),
+            gas_edit_out: arr(14, k),
+            gas_saturation_loss: arr(15, k),
+            magma_set: i64::MAX,
+            magma_melt_in: i64::MIN,
+            magma_edit: -1,
+            transitions: vec![
+                (MaterialId(1), MaterialId(2), 3),
+                (MaterialId(u16::MAX), MaterialId(0), u32::MAX),
+            ],
+            weathered_cells: 9,
+            plants_born: 10,
+            plants_died: 11,
+            ignitions: u32::MAX,
+        }
+    }
+
+    /// Every Phase 2 server message shape (SAD-P2 §9).
+    fn phase2_server_samples() -> Vec<ServerMsg> {
+        let mut msgs = Vec::new();
+        for (i, storage) in storages().into_iter().enumerate() {
+            let c = EXTREME_CELLS[i % EXTREME_CELLS.len()];
+            msgs.push(ServerMsg::ChunkSnapshot {
+                pos: ChunkPos(c.0),
+                revision: 5 + i as u64,
+                eco_revision: [1, 0, u64::MAX, 77, 1 << 50][i % 5],
+                storage,
+                layers: sample_layers(i as u16),
+                plants: if i % 2 == 0 {
+                    sample_plants()
+                } else {
+                    BTreeMap::new()
+                },
+            });
+        }
+        msgs.push(ServerMsg::LayerSnapshot {
+            pos: ChunkPos(IVec3::new(-3, 1, 2)),
+            eco_revision: 9,
+            layers: sample_layers(3),
+            plants: sample_plants(),
+        });
+        msgs.push(ServerMsg::LayerSnapshot {
+            pos: ChunkPos(IVec3::new(i32::MIN, 0, i32::MAX)),
+            eco_revision: u64::MAX,
+            layers: ChunkLayers::default(),
+            plants: BTreeMap::new(),
+        });
+        msgs.push(ServerMsg::SeasonStarted { season: 0 });
+        msgs.push(ServerMsg::SeasonStarted { season: u32::MAX });
+        msgs.push(ServerMsg::SeasonDone {
+            season: 1,
+            report: Box::default(),
+            changed_chunks: 0,
+        });
+        msgs.push(ServerMsg::SeasonDone {
+            season: u32::MAX,
+            report: Box::new(SeasonReport {
+                ledger: sample_ledger(1),
+                between_seasons: sample_ledger(-5),
+                substep_ms: vec![0, 12, u32::MAX],
+                active_cells_per_sweep: vec![1, 2, 3, 4, 5, 6, 7],
+                active_chunks_per_jacobi: vec![256; 5],
+            }),
+            changed_chunks: u32::MAX,
+        });
+        // Applied with Layers deltas, plant changes and a non-empty ledger.
+        msgs.push(ServerMsg::Applied(EditResult {
+            command: command(20),
+            status: EditStatus::Applied,
+            deltas: vec![
+                ChunkDelta::Cells {
+                    pos: ChunkPos(IVec3::ZERO),
+                    revision: 2,
+                    changes: vec![(5, MaterialId(3))],
+                },
+                ChunkDelta::Layers {
+                    pos: ChunkPos(IVec3::ZERO),
+                    eco_revision: 1,
+                    changes: vec![
+                        (5, LayerId::Temperature, i32::from(i16::MIN)),
+                        (5, LayerId::Moisture, 255),
+                        (6, LayerId::Substance(9), 0),
+                        (7, LayerId::Gas(3), 128),
+                        (32_767, LayerId::Growth, 1),
+                    ],
+                    plants: vec![(5, None), (6, Some(sample_plants()[&1234]))],
+                },
+                ChunkDelta::Layers {
+                    pos: ChunkPos(IVec3::X),
+                    eco_revision: u64::MAX,
+                    changes: Vec::new(),
+                    plants: Vec::new(),
+                },
+            ],
+            yields: vec![(MaterialId(8), 5)],
+            ledger: Box::new(sample_ledger(2)),
+        }));
+        msgs.push(ServerMsg::Applied(EditResult {
+            command: command(21),
+            status: EditStatus::Rejected(RejectReason::InvalidLayerValue {
+                layer: LayerId::Gas(9),
+                value: i32::MIN,
+            }),
+            deltas: Vec::new(),
+            yields: Vec::new(),
+            ledger: Box::default(),
+        }));
+        msgs
+    }
+
+    /// `AdvanceSeason` and `SetLayer` edits over every layer kind.
+    fn phase2_client_samples() -> Vec<ClientMsg> {
+        let layer_ops = [
+            (LayerId::Temperature, i32::from(i16::MIN)),
+            (LayerId::Temperature, i32::from(i16::MAX)),
+            (LayerId::Moisture, 255),
+            (LayerId::Regolith, 0),
+            (LayerId::Substance(0), 1),
+            (LayerId::Substance(9), 200),
+            (LayerId::Gas(0), 64),
+            (LayerId::Gas(3), 3),
+            (LayerId::Light, 255),
+            (LayerId::Growth, 7),
+            // Out of range: the wire carries it, the host rejects it.
+            (LayerId::Substance(u8::MAX), i32::MAX),
+        ];
+        let shapes = shapes();
+        let mut msgs = vec![ClientMsg::AdvanceSeason];
+        for (i, (layer, value)) in layer_ops.into_iter().enumerate() {
+            let issuer = PlayerId(i as u32);
+            msgs.push(ClientMsg::Edit(EditCommand {
+                id: CommandId {
+                    issuer,
+                    seq: i as u32,
+                },
+                issuer,
+                op: EditOp::SetLayer { layer, value },
+                shape: shapes[i % shapes.len()],
+            }));
+        }
         msgs
     }
 
@@ -522,7 +783,10 @@ mod tests {
             let msg = ServerMsg::ChunkSnapshot {
                 pos: ChunkPos(IVec3::new(2, 0, 3)),
                 revision: 9,
+                eco_revision: 0,
                 storage: storage.clone(),
+                layers: ChunkLayers::default(),
+                plants: BTreeMap::new(),
             };
             let ServerMsg::ChunkSnapshot { storage: back, .. } =
                 decode_server(&encode_server(&msg).unwrap()).unwrap()
@@ -569,7 +833,10 @@ mod tests {
             let snapshot = ServerMsg::ChunkSnapshot {
                 pos: ChunkPos(IVec3::ZERO),
                 revision: 1,
+                eco_revision: 0,
                 storage: storage.clone(),
+                layers: ChunkLayers::default(),
+                plants: BTreeMap::new(),
             };
             let bytes = encode_server(&snapshot).unwrap();
             assert!(matches!(
@@ -592,6 +859,7 @@ mod tests {
                     },
                 ],
                 yields: Vec::new(),
+                ledger: Box::default(),
             });
             let bytes = encode_server(&applied).unwrap();
             assert!(matches!(
@@ -608,5 +876,91 @@ mod tests {
         assert!(decode_server(&[0xff; 16]).is_err());
         // A huge declared length with no data is an error, not an allocation.
         assert!(decode_server(&[1, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
+    }
+
+    #[test]
+    fn roundtrip_phase2_variants() {
+        // Every Phase 2 shape round-trips bit-exactly.
+        for msg in phase2_client_samples() {
+            check_roundtrip(&msg, encode_client, decode_client, false);
+        }
+        let samples = phase2_server_samples();
+        for msg in &samples {
+            check_roundtrip(msg, encode_server, decode_server, false);
+        }
+        assert_eq!(PROTOCOL_VERSION, 2);
+        let kinds: Vec<usize> = samples.iter().map(server_variant).collect();
+        for want in [2, 3, 7, 8, 9] {
+            assert!(kinds.contains(&want), "variant {want} not sampled");
+        }
+        let advance = encode_client(&ClientMsg::AdvanceSeason).unwrap();
+        assert_eq!(
+            advance,
+            [CLIENT_VARIANTS as u8 - 1],
+            "AdvanceSeason is a lone tag"
+        );
+
+        // Layers keep their materialized ids and content hash; plants and
+        // ledgers come back equal.
+        for msg in &samples {
+            let back = decode_server(&encode_server(msg).unwrap()).unwrap();
+            match (msg, &back) {
+                (
+                    ServerMsg::ChunkSnapshot {
+                        layers: a,
+                        plants: pa,
+                        ..
+                    },
+                    ServerMsg::ChunkSnapshot {
+                        layers: b,
+                        plants: pb,
+                        ..
+                    },
+                )
+                | (
+                    ServerMsg::LayerSnapshot {
+                        layers: a,
+                        plants: pa,
+                        ..
+                    },
+                    ServerMsg::LayerSnapshot {
+                        layers: b,
+                        plants: pb,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(a.hash(), b.hash());
+                    assert_eq!(a.ids().collect::<Vec<_>>(), b.ids().collect::<Vec<_>>());
+                    assert_eq!(pa, pb);
+                }
+                _ => assert_eq!(&back, msg),
+            }
+        }
+
+        // A snapshot whose plant index lies outside the chunk is refused.
+        let mut plants = sample_plants();
+        plants.insert(CHUNK_VOLUME as u16, PlantState::default());
+        for msg in [
+            ServerMsg::ChunkSnapshot {
+                pos: ChunkPos(IVec3::ZERO),
+                revision: 1,
+                eco_revision: 1,
+                storage: ChunkStorage::Uniform(MaterialId::AIR),
+                layers: ChunkLayers::default(),
+                plants: plants.clone(),
+            },
+            ServerMsg::LayerSnapshot {
+                pos: ChunkPos(IVec3::ZERO),
+                eco_revision: 1,
+                layers: ChunkLayers::default(),
+                plants,
+            },
+        ] {
+            let bytes = encode_server(&msg).unwrap();
+            assert!(matches!(
+                decode_server(&bytes),
+                Err(CodecError::MalformedStorage)
+            ));
+        }
     }
 }

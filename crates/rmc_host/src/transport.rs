@@ -333,7 +333,10 @@ mod tests {
         let snapshot = ServerMsg::ChunkSnapshot {
             pos: ChunkPos(IVec3::new(3, -1, 0)),
             revision: 42,
+            eco_revision: 7,
             storage: ChunkStorage::Uniform(MaterialId(5)),
+            layers: Default::default(),
+            plants: Default::default(),
         };
         let applied = ServerMsg::Applied(EditResult {
             command: CommandId {
@@ -343,6 +346,7 @@ mod tests {
             status: EditStatus::Applied,
             deltas: Vec::new(),
             yields: vec![(MaterialId(2), 3)],
+            ledger: Default::default(),
         });
         t.send(Recipient::All, saved(0));
         t.send(Recipient::One(a.player()), snapshot.clone());

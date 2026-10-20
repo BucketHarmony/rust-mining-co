@@ -20,7 +20,7 @@ use std::sync::Arc;
 use rmc_protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use rmc_world::chunk::Chunk;
 use rmc_world::chunk::ChunkStorage;
-use rmc_world::coords::ChunkPos;
+use rmc_world::coords::{CHUNK_VOLUME, ChunkPos};
 use rmc_world::edit::PlayerId;
 use rmc_world::inventory::Inventory;
 use rmc_world::materials::{MaterialId, MaterialTable};
@@ -46,6 +46,9 @@ pub enum ReplicaError {
     /// The result's other deltas were applied.
     #[error("{} delta(s) refused, first: {}", .0.len(), .0[0])]
     Deltas(Vec<DeltaError>),
+    /// A `LayerSnapshot` the world refused.
+    #[error("layer snapshot refused: {0}")]
+    LayerSnapshot(DeltaError),
 }
 
 /// The client-side world, fed only by [`ServerMsg`]s.
@@ -154,7 +157,10 @@ impl Replica {
             ServerMsg::ChunkSnapshot {
                 pos,
                 revision,
+                eco_revision,
                 storage,
+                layers,
+                plants,
             } => {
                 let world = self
                     .world
@@ -162,7 +168,9 @@ impl Replica {
                     .ok_or(ReplicaError::NotJoined("ChunkSnapshot"))?;
                 // insert_chunk trusts its storage; a malformed one would
                 // panic later in get or compact.
-                if !storage.is_well_formed() {
+                if !storage.is_well_formed()
+                    || plants.keys().any(|&i| usize::from(i) >= CHUNK_VOLUME)
+                {
                     return Err(ReplicaError::MalformedSnapshot(pos));
                 }
                 let palette = match &storage {
@@ -174,6 +182,9 @@ impl Replica {
                 }
                 let mut chunk = Chunk::new(storage);
                 chunk.revision = revision;
+                chunk.eco_revision = eco_revision;
+                chunk.layers = layers;
+                chunk.plants = plants;
                 world
                     .insert_chunk(pos, chunk)
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
@@ -210,7 +221,28 @@ impl Replica {
             ServerMsg::Inventory { items } => {
                 self.inventory = Inventory::from_items(&items);
             }
-            ServerMsg::PlayerStates(_) | ServerMsg::Saved { .. } => {}
+            ServerMsg::LayerSnapshot {
+                pos,
+                eco_revision,
+                layers,
+                plants,
+            } => {
+                let world = self
+                    .world
+                    .as_mut()
+                    .ok_or(ReplicaError::NotJoined("LayerSnapshot"))?;
+                // A full snapshot is on its way and carries the layers too.
+                if self.awaiting.contains(&pos) {
+                    return Ok(());
+                }
+                world
+                    .apply_eco_snapshot(pos, eco_revision, layers, plants)
+                    .map_err(ReplicaError::LayerSnapshot)?;
+            }
+            ServerMsg::PlayerStates(_)
+            | ServerMsg::Saved { .. }
+            | ServerMsg::SeasonStarted { .. }
+            | ServerMsg::SeasonDone { .. } => {}
         }
         Ok(())
     }
@@ -452,6 +484,7 @@ mod tests {
         breaking: u32,
         cells_deltas: u32,
         full_deltas: u32,
+        layers_deltas: u32,
         rejected: BTreeMap<&'static str, u32>,
     }
 
@@ -474,6 +507,7 @@ mod tests {
                         RejectReason::UnknownMaterial(_) => "unknown_material",
                         RejectReason::TooManyCells => "too_many_cells",
                         RejectReason::OutsideBounds => "outside_bounds",
+                        RejectReason::InvalidLayerValue { .. } => "invalid_layer_value",
                     };
                     *self.rejected.entry(key).or_default() += 1;
                 }
@@ -485,6 +519,7 @@ mod tests {
                 match delta {
                     ChunkDelta::Cells { .. } => self.cells_deltas += 1,
                     ChunkDelta::Full { .. } => self.full_deltas += 1,
+                    ChunkDelta::Layers { .. } => self.layers_deltas += 1,
                 }
             }
         }
@@ -898,14 +933,7 @@ mod tests {
         }
         host.tick();
         let host_r = host.world().chunk(r).unwrap();
-        assert_eq!(
-            a.ep.drain(),
-            vec![ServerMsg::ChunkSnapshot {
-                pos: r,
-                revision: host_r.revision,
-                storage: host_r.storage.clone(),
-            }]
-        );
+        assert_eq!(a.ep.drain(), vec![ServerMsg::chunk_snapshot(r, host_r)]);
         assert!(b.ep.drain().is_empty());
 
         // Random edits from both players while b loses one Applied in eight.
@@ -1014,7 +1042,10 @@ mod tests {
             |pos: ChunkPos, revision: u64, storage: ChunkStorage| ServerMsg::ChunkSnapshot {
                 pos,
                 revision,
+                eco_revision: 0,
                 storage,
+                layers: Default::default(),
+                plants: BTreeMap::new(),
             };
         let applied = |deltas: Vec<ChunkDelta>| {
             ServerMsg::Applied(rmc_world::edit::EditResult {
@@ -1022,6 +1053,7 @@ mod tests {
                 status: EditStatus::Applied,
                 deltas,
                 yields: Vec::new(),
+                ledger: Default::default(),
             })
         };
         let a = ChunkPos::new(0, 0, 0);
@@ -1150,5 +1182,135 @@ mod tests {
         r.handle(welcome(5)).unwrap();
         assert_eq!(r.player(), Some(PlayerId(5)));
         assert_eq!(r.world().unwrap().chunk_count(), 0);
+    }
+
+    #[test]
+    fn layers_replicate_by_snapshot_and_delta() {
+        use rmc_world::coords::LocalPos;
+        use rmc_world::layers::{ChunkLayers, LayerId, PlantState};
+
+        let table = materials();
+        let a = ChunkPos::new(0, 0, 0);
+        let mut layers = ChunkLayers::default();
+        layers.set_u8(LayerId::Moisture, LocalPos::from_index(7), 90);
+        let plants = BTreeMap::from([(7, PlantState::default())]);
+        let mut r = Replica::new(Arc::clone(&table));
+        assert_eq!(
+            r.handle(ServerMsg::LayerSnapshot {
+                pos: a,
+                eco_revision: 1,
+                layers: layers.clone(),
+                plants: plants.clone(),
+            }),
+            Err(ReplicaError::NotJoined("LayerSnapshot"))
+        );
+        r.handle(ServerMsg::Welcome {
+            player: PlayerId(1),
+            seed: 1,
+            bounds: bounds(),
+            gen_params_hash: 2,
+        })
+        .unwrap();
+        // A v2 snapshot brings layers, plants and the eco revision along.
+        r.handle(ServerMsg::ChunkSnapshot {
+            pos: a,
+            revision: 4,
+            eco_revision: 2,
+            storage: ChunkStorage::Uniform(MaterialId::AIR),
+            layers: layers.clone(),
+            plants: plants.clone(),
+        })
+        .unwrap();
+        let chunk = r.world().unwrap().chunk(a).unwrap();
+        assert_eq!((chunk.revision, chunk.eco_revision), (4, 2));
+        assert_eq!(chunk.layers.hash(), layers.hash());
+        assert_eq!(chunk.plants, plants);
+        // A plant outside the chunk makes the snapshot malformed.
+        let mut bad = plants.clone();
+        bad.insert(u16::MAX, PlantState::default());
+        assert_eq!(
+            r.handle(ServerMsg::ChunkSnapshot {
+                pos: a,
+                revision: 5,
+                eco_revision: 3,
+                storage: ChunkStorage::Uniform(MaterialId::AIR),
+                layers: ChunkLayers::default(),
+                plants: bad,
+            }),
+            Err(ReplicaError::MalformedSnapshot(a))
+        );
+
+        // A Layers delta at eco revision + 1 applies; cells are untouched.
+        let layer_delta = |eco_revision, value| {
+            ServerMsg::Applied(rmc_world::edit::EditResult {
+                command: CommandId::default(),
+                status: EditStatus::Applied,
+                deltas: vec![ChunkDelta::Layers {
+                    pos: a,
+                    eco_revision,
+                    changes: vec![(7, LayerId::Moisture, value)],
+                    plants: vec![(7, None)],
+                }],
+                yields: Vec::new(),
+                ledger: Default::default(),
+            })
+        };
+        r.handle(layer_delta(3, 40)).unwrap();
+        let chunk = r.world().unwrap().chunk(a).unwrap();
+        assert_eq!((chunk.revision, chunk.eco_revision), (4, 3));
+        assert_eq!(
+            chunk
+                .layers
+                .get_u8(LayerId::Moisture, LocalPos::from_index(7)),
+            40
+        );
+        assert!(chunk.plants.is_empty());
+
+        // A gap asks for the chunk; layer snapshots wait for it.
+        r.handle(layer_delta(9, 1)).unwrap();
+        assert!(r.is_awaiting(a));
+        assert_eq!(r.take_requests(), vec![ClientMsg::RequestChunk(a)]);
+        r.handle(ServerMsg::LayerSnapshot {
+            pos: a,
+            eco_revision: 9,
+            layers: ChunkLayers::default(),
+            plants: BTreeMap::new(),
+        })
+        .unwrap();
+        assert_eq!(r.world().unwrap().chunk(a).unwrap().eco_revision, 3);
+        r.handle(ServerMsg::ChunkSnapshot {
+            pos: a,
+            revision: 4,
+            eco_revision: 9,
+            storage: ChunkStorage::Uniform(MaterialId::AIR),
+            layers: ChunkLayers::default(),
+            plants: BTreeMap::new(),
+        })
+        .unwrap();
+        assert!(!r.is_awaiting(a));
+
+        // Once resident and not awaited, a layer snapshot replaces the
+        // layers; one for a non-resident chunk is refused.
+        r.handle(ServerMsg::LayerSnapshot {
+            pos: a,
+            eco_revision: 12,
+            layers: layers.clone(),
+            plants: plants.clone(),
+        })
+        .unwrap();
+        let chunk = r.world().unwrap().chunk(a).unwrap();
+        assert_eq!(chunk.eco_revision, 12);
+        assert_eq!(chunk.layers.hash(), layers.hash());
+        assert_eq!(chunk.plants, plants);
+        let b = ChunkPos::new(-1, 0, 0);
+        assert_eq!(
+            r.handle(ServerMsg::LayerSnapshot {
+                pos: b,
+                eco_revision: 1,
+                layers,
+                plants,
+            }),
+            Err(ReplicaError::LayerSnapshot(DeltaError::NotResident(b)))
+        );
     }
 }
