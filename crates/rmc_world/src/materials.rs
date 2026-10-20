@@ -665,9 +665,10 @@ mod tests {
 
     #[test]
     fn phase1_table_loads_with_phase2_defaults() {
-        // The shipped Phase 1 table has no Phase 2 fields; every one takes
-        // its SAD-P2 §5 default.
-        let t = phase1();
+        // A Phase 1 table has no Phase 2 fields; every one takes its SAD-P2
+        // §5 default. The shipped table no longer qualifies: Phase 2 tunes
+        // its rows (SAD-P2 §4, §7.1), so the fixture is the Phase 1 text.
+        let t = MaterialTable::from_ron_str(FIXTURE).unwrap();
         for d in t.iter() {
             assert_ne!(d.phase, Phase::Liquid, "{}", d.key);
             assert!(!d.passable, "{} passable", d.key);
