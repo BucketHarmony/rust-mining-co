@@ -1778,3 +1778,29 @@ Decisions:
 - freeze_thaw is not set (F110).
 Next: F107 (season_tick on the host).
 Blockers: none.
+
+## 2026-10-20 00:25 — F107 season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone — passed
+Done:
+- `rmc_eco::tick`:
+  - `season_tick(world, tables, season, &mut Activity, exec) -> TickReport { ledger, substep_ms, active_cells_per_sweep, active_chunks_per_jacobi }`.
+  - It marks the season boundary in the activity, then runs `seasons.substeps` sub-steps. Each sub-step runs the passes in SAD-P2 §3 order inside `substep`; only temperature exists so far, and later passes slot in there.
+  - Jacobi passes run through `Activity::run`. `active_chunks_per_jacobi` gets one entry per Jacobi pass per sub-step (chunks computed, not skipped).
+- `rmc_host::season`:
+  - `Host::with_eco(Arc<EcoTables>)` installs the displacement rules in the world and keeps an `Activity`, the next season number, and the between-seasons ledger.
+  - `Host::advance_season()` (also run on `ClientMsg::AdvanceSeason` from a joined player) runs the tick on the host thread. Every joined player gets `SeasonStarted`, then the snapshots of changed chunks ascending (a `ChunkSnapshot` if `revision` changed, else a `LayerSnapshot` if only `eco_revision` did), then `SeasonDone { report, changed_chunks = snapshot count }`.
+  - Applied edits merge their `EditResult.ledger` into `between_seasons`. `SeasonDone` reports it and empties it.
+  - `Host::season()` and `Host::between_seasons()` expose the state. `replace_world` re-installs the rules and resets the activity and the between-seasons ledger.
+- `TemperaturePass` clips its 34³ box loop to the world bounds. Behavior is unchanged (cells out of bounds were already `None`); this made the determinism test fit in time.
+Tests added: the 5 listed: season::tests::{advance_season_roundtrip, layer_snapshot_sent_for_eco_only_changes, between_seasons_ledger_merged}, replica::tests::equivalence_after_three_seasons_with_edits_between, and tick::tests::whole_tick_deterministic_100.
+Decisions:
+- "Edits are paused": the host handles messages one at a time on its thread, so edits queued behind `AdvanceSeason` are applied after `SeasonDone`. The roundtrip test checks this ordering within one batch.
+- Seasons count from 0. The first tick runs row 0, the row worldgen starts from. The counter is not saved: a reloaded save restarts at season 0, and `replace_world` keeps the in-process count. Persisting it (save header or report) is for F108/F109 or the owner to decide.
+- A host without the Phase 2 tables ignores `AdvanceSeason` (warn log, nothing sent). `rmc_app` and the testkit do not call `with_eco` yet (F108/F109). Phase 1 behavior and hashes are unchanged until they do.
+- `with_eco` and `replace_world` assert that the tables were built on the world's material table. A mismatch is a programming error, since save loading already checks the material hash. The reviewer suggested a logged refusal instead; I kept the assert.
+- Snapshots travel as values over `ChannelTransport`, and the wire codec is unchanged (postcard; no zstd). Zstd compression is left for when a real network transport exists.
+- `whole_tick_deterministic_100`:
+  - 100 random 2-chunk worlds (seeded surface, overhangs, random temperatures), run Parallel vs Serial; world hash, chunk revisions and reports (minus timing) must be equal, and the tick must change the world.
+  - Every 10th seed runs two seasons (across a season boundary) and checks that the next season row gives a different world. The other seeds run one season, to stay under 10 s (about 7 s in dev).
+- Review (reviewer: PASS). Remaining test gaps: no real tick changes materials yet, so the ChunkSnapshot path is tested by calling `season_snapshots` directly after `eco_set`. Add an end-to-end ChunkSnapshot check when transitions land (F125).
+Next: F108 (headless --seasons CLI).
+Blockers: none.
