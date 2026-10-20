@@ -32,28 +32,20 @@ mod tests {
 
     #[test]
     fn parses_seed_and_save_path() {
+        let seed_and_save = |cli: Cli| (cli.seed, cli.save);
         assert_eq!(
-            parse(&["--seed", "42", "--save", "worlds/one"]).unwrap(),
-            Cli {
-                seed: Some(42),
-                save: PathBuf::from("worlds/one"),
-            }
+            seed_and_save(parse(&["--seed", "42", "--save", "worlds/one"]).unwrap()),
+            (Some(42), PathBuf::from("worlds/one"))
         );
         // Either order, `=` form, the full u64 range, spaces in the path.
         assert_eq!(
-            parse(&["--save=my saves/a b", "--seed=18446744073709551615"]).unwrap(),
-            Cli {
-                seed: Some(u64::MAX),
-                save: PathBuf::from("my saves/a b"),
-            }
+            seed_and_save(parse(&["--save=my saves/a b", "--seed=18446744073709551615"]).unwrap()),
+            (Some(u64::MAX), PathBuf::from("my saves/a b"))
         );
         // Defaults: no seed, the `save` directory.
         assert_eq!(
-            parse(&[]).unwrap(),
-            Cli {
-                seed: None,
-                save: PathBuf::from(DEFAULT_SAVE_DIR),
-            }
+            seed_and_save(parse(&[]).unwrap()),
+            (None, PathBuf::from(DEFAULT_SAVE_DIR))
         );
         assert_eq!(DEFAULT_SAVE_DIR, "save");
         assert_eq!(parse(&["--seed", "0"]).unwrap().seed, Some(0));
