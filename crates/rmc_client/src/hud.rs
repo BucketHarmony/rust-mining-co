@@ -20,6 +20,15 @@
 //!   after every `Applied` result that yields (SAD §8.4). [`ClientInventory`]
 //!   holds the last totals; `Welcome` empties it. Yields in `Applied` are
 //!   not added on top, so counts are never doubled.
+//! - Selection (owner extension, F093): the material right mouse places
+//!   ([`SelectedMaterial`]). Nothing is selected at first. The mouse wheel
+//!   (down: next, up: previous) and [`NEXT_SLOT_KEY`] / [`PREV_SLOT_KEY`]
+//!   step through the held materials in inventory order, wrapping. A
+//!   selected material that runs out stays selected (the host refuses to
+//!   place it) until the next step, which goes to the held material after
+//!   it. The inventory line of the selected material is marked with `> `.
+//!   While the editor is open, the wheel and keys leave it alone. `Welcome`
+//!   clears it.
 //! - Swing feedback: every swing the pickaxe sends ([`SwingState`]) starts a
 //!   pulse of [`SWING_PULSE_S`]: the crosshair arms grow and warm, and the
 //!   outline grows and lights up, both fading back.
@@ -35,6 +44,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use bevy::gizmos::GizmoPlugin;
+use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -44,11 +54,21 @@ use rmc_world::inventory::Inventory;
 use rmc_world::materials::{MaterialId, MaterialTable};
 
 use crate::controller::Player;
+use crate::editor::EditorState;
 use crate::flycam::FlyCam;
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
 use crate::render::GameCamera;
 use crate::replica::{Replica, apply_host_messages};
+
+/// Selects the next held material (as does the mouse wheel turned down).
+pub const NEXT_SLOT_KEY: KeyCode = KeyCode::KeyE;
+
+/// Selects the previous held material (as does the mouse wheel turned up).
+pub const PREV_SLOT_KEY: KeyCode = KeyCode::KeyQ;
+
+/// The prefix of the selected material's inventory line.
+pub const SELECTED_MARK: &str = "> ";
 
 /// The targeted cell's outline color: dark, to read against the mostly
 /// light terrain colors.
@@ -158,6 +178,33 @@ pub struct HudState {
     pub swing_pulse: f32,
     /// The break effect being shown, if any.
     pub last_break: Option<BreakEffect>,
+    /// The material right mouse places ([`SelectedMaterial`]).
+    pub selected: Option<MaterialId>,
+}
+
+/// The material right mouse places, if one is selected. It may no longer
+/// be held.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectedMaterial(pub Option<MaterialId>);
+
+/// The held material one step from `current` in inventory order, wrapping:
+/// the first one after it (`forward`) or the last one before it. With
+/// nothing selected, the first or the last. `None` when nothing is held.
+pub fn step_selection(
+    inventory: &Inventory,
+    current: Option<MaterialId>,
+    forward: bool,
+) -> Option<MaterialId> {
+    let held: Vec<MaterialId> = inventory.items().into_iter().map(|(id, _)| id).collect();
+    let (first, last) = (held.first().copied(), held.last().copied());
+    let Some(current) = current else {
+        return if forward { first } else { last };
+    };
+    if forward {
+        held.iter().copied().find(|&id| id > current).or(first)
+    } else {
+        held.iter().rev().copied().find(|&id| id < current).or(last)
+    }
 }
 
 /// The player's inventory as of the host's last `Inventory` message.
@@ -253,6 +300,7 @@ impl Plugin for HudPlugin {
             .init_resource::<DamageEstimate>()
             .init_resource::<PickTarget>()
             .init_resource::<Feedback>()
+            .init_resource::<SelectedMaterial>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 PreUpdate,
@@ -267,6 +315,7 @@ impl Plugin for HudPlugin {
                 (
                     attach_to_camera,
                     estimate_damage,
+                    select_material,
                     update_state,
                     show_state.run_if(resource_changed::<HudState>),
                 )
@@ -292,6 +341,7 @@ fn track_host(
     mut inventory: ResMut<ClientInventory>,
     mut estimate: ResMut<DamageEstimate>,
     mut feedback: ResMut<Feedback>,
+    mut selected: ResMut<SelectedMaterial>,
 ) {
     let world = replica.as_deref().map(Replica::world);
     let solid = |id: Option<MaterialId>| {
@@ -305,6 +355,7 @@ fn track_host(
                 inventory.0 = Inventory::new();
                 estimate.0.clear();
                 feedback.broke = None;
+                selected.set_if_neq(SelectedMaterial(None));
             }
             ServerMsg::Inventory { items } => inventory.0 = Inventory::from_items(items),
             ServerMsg::ChunkSnapshot { pos, .. } => estimate.clear_chunk(*pos),
@@ -384,6 +435,39 @@ fn estimate_damage(
     }
 }
 
+/// Steps the selection on this frame's wheel turn (one step per frame,
+/// whatever the amount) and on [`NEXT_SLOT_KEY`] / [`PREV_SLOT_KEY`]
+/// presses. Not while the editor is open.
+fn select_material(
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    scroll: Option<Res<AccumulatedMouseScroll>>,
+    editor: Option<Res<EditorState>>,
+    inventory: Res<ClientInventory>,
+    mut selected: ResMut<SelectedMaterial>,
+) {
+    if editor.is_some_and(|e| e.open) {
+        return;
+    }
+    let wheel = scroll.map_or(0.0, |s| s.delta.y);
+    let mut steps = Vec::new();
+    if wheel != 0.0 {
+        steps.push(wheel < 0.0);
+    }
+    if let Some(keys) = keys {
+        if keys.just_pressed(NEXT_SLOT_KEY) {
+            steps.push(true);
+        }
+        if keys.just_pressed(PREV_SLOT_KEY) {
+            steps.push(false);
+        }
+    }
+    let mut current = selected.0;
+    for forward in steps {
+        current = step_selection(&inventory.0, current, forward).or(current);
+    }
+    selected.set_if_neq(SelectedMaterial(current));
+}
+
 /// Recomputes [`HudState`].
 #[allow(clippy::too_many_arguments)]
 fn update_state(
@@ -392,6 +476,7 @@ fn update_state(
     client_materials: Option<Res<ClientMaterials>>,
     estimate: Res<DamageEstimate>,
     inventory: Res<ClientInventory>,
+    selected: Res<SelectedMaterial>,
     fly: Option<Res<FlyCam>>,
     swings: Option<Res<SwingState>>,
     time: Res<Time>,
@@ -435,6 +520,7 @@ fn update_state(
                 fade,
             })
         }),
+        selected: selected.0,
         ..default()
     };
     let aimed = target.0.filter(|_| crosshair && !flying);
@@ -621,7 +707,14 @@ fn show_state(
     let lines: Vec<String> = hud
         .inventory
         .iter()
-        .map(|item| format!("{} {}", item.name, item.count))
+        .map(|item| {
+            let mark = if hud.selected == Some(item.material) {
+                SELECTED_MARK
+            } else {
+                ""
+            };
+            format!("{mark}{} {}", item.name, item.count)
+        })
         .collect();
     for mut text in &mut inventory_text {
         text.0 = lines.join("\n");
@@ -693,7 +786,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bevy::input::mouse::AccumulatedMouseMotion;
+    use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
     use bevy::time::TimeUpdateStrategy;
     use rmc_world::ToolProfile;
     use rmc_world::chunk::Chunk;
@@ -900,6 +993,7 @@ mod tests {
                 inventory: vec![],
                 swing_pulse: 0.0,
                 last_break: None,
+                selected: None,
             }
         );
 
@@ -1059,5 +1153,137 @@ mod tests {
         }]);
         assert!(rig.hud().inventory.is_empty());
         assert!(rig.app.world().resource::<ClientInventory>().0.is_empty());
+    }
+
+    /// The inventory text as drawn.
+    fn inventory_text(rig: &mut Rig) -> String {
+        rig.app
+            .world_mut()
+            .query_filtered::<&Text, With<InventoryText>>()
+            .single(rig.app.world())
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    /// One frame with the wheel turned by `y` notches (positive is up).
+    fn wheel(rig: &mut Rig, y: f32) {
+        rig.app
+            .world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::new(0.0, y);
+        rig.frames(1);
+        rig.app
+            .world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::ZERO;
+        rig.frames(1);
+    }
+
+    /// One frame with `key` just pressed, then one with it released.
+    fn tap(rig: &mut Rig, key: KeyCode) {
+        rig.app
+            .world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+        rig.frames(1);
+        let mut keys = rig.app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release(key);
+        keys.clear();
+        rig.frames(1);
+    }
+
+    #[test]
+    fn selected_slot_cycles_with_wheel_and_shows_in_hudstate() {
+        let mut rig = Rig::new(world("stone", "stone"));
+        rig.app.init_resource::<AccumulatedMouseScroll>();
+        let m = rig.replica_world().materials().clone();
+        let (dirt, stone, copper) = (
+            m.id("dirt").unwrap(),
+            m.id("stone").unwrap(),
+            m.id("copper_ore").unwrap(),
+        );
+        assert!(dirt < stone && stone < copper);
+        assert_eq!(
+            (NEXT_SLOT_KEY, PREV_SLOT_KEY),
+            (KeyCode::KeyE, KeyCode::KeyQ)
+        );
+
+        // Nothing held: nothing to select.
+        assert_eq!(rig.hud().selected, None);
+        wheel(&mut rig, -1.0);
+        tap(&mut rig, NEXT_SLOT_KEY);
+        assert_eq!(rig.hud().selected, None);
+
+        // Holding materials selects nothing by itself.
+        rig.deliver([ServerMsg::Inventory {
+            items: vec![(dirt, 2), (stone, 1), (copper, 4)],
+        }]);
+        assert_eq!(rig.hud().selected, None);
+        assert_eq!(inventory_text(&mut rig), "dirt 2\nstone 1\ncopper_ore 4");
+
+        // Wheel down steps forward in inventory order, wrapping; wheel up
+        // steps back.
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            wheel(&mut rig, -1.0);
+            seen.push(rig.hud().selected);
+        }
+        assert_eq!(seen, [Some(dirt), Some(stone), Some(copper), Some(dirt)]);
+        wheel(&mut rig, 1.0);
+        assert_eq!(rig.hud().selected, Some(copper));
+        assert_eq!(
+            rig.app.world().resource::<SelectedMaterial>().0,
+            Some(copper),
+            "HudState mirrors the selection"
+        );
+
+        // E and Q do the same.
+        tap(&mut rig, NEXT_SLOT_KEY);
+        assert_eq!(rig.hud().selected, Some(dirt));
+        tap(&mut rig, PREV_SLOT_KEY);
+        tap(&mut rig, PREV_SLOT_KEY);
+        assert_eq!(rig.hud().selected, Some(stone));
+
+        // The selected line is marked.
+        assert_eq!(inventory_text(&mut rig), "dirt 2\n> stone 1\ncopper_ore 4");
+
+        // The last stone spent: still selected (a place of it is refused by
+        // the host), no line marked, and the next step skips it.
+        rig.deliver([ServerMsg::Inventory {
+            items: vec![(dirt, 2), (copper, 4)],
+        }]);
+        assert_eq!(rig.hud().selected, Some(stone));
+        assert_eq!(inventory_text(&mut rig), "dirt 2\ncopper_ore 4");
+        wheel(&mut rig, -1.0);
+        assert_eq!(rig.hud().selected, Some(copper));
+        assert_eq!(inventory_text(&mut rig), "dirt 2\n> copper_ore 4");
+
+        // With the editor open the wheel and keys leave the selection alone.
+        rig.app
+            .world_mut()
+            .insert_resource(crate::editor::EditorState {
+                open: true,
+                ..default()
+            });
+        wheel(&mut rig, -1.0);
+        tap(&mut rig, NEXT_SLOT_KEY);
+        assert_eq!(rig.hud().selected, Some(copper));
+        rig.app
+            .world_mut()
+            .resource_mut::<crate::editor::EditorState>()
+            .open = false;
+        wheel(&mut rig, -1.0);
+        assert_eq!(rig.hud().selected, Some(dirt));
+
+        // A new Welcome empties the inventory and the selection.
+        let bounds = rig.replica_world().bounds();
+        rig.deliver([ServerMsg::Welcome {
+            player: PlayerId(1),
+            seed: 0,
+            bounds,
+            gen_params_hash: 0,
+        }]);
+        assert_eq!(rig.hud().selected, None);
     }
 }

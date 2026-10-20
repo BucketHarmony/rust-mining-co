@@ -53,9 +53,13 @@ impl Cause {
         matches!(self, Cause::Edit(EditOp::Damage(_)))
     }
 
-    /// Brush `Set` (and `Paint`) of water or ice writes a full cell.
+    /// Brush `Set` (and `Paint`, and a placed cell) of water or ice writes a
+    /// full cell.
     fn brush_fills(self) -> bool {
-        matches!(self, Cause::Edit(EditOp::Set(_) | EditOp::Paint(_)))
+        matches!(
+            self,
+            Cause::Edit(EditOp::Set(_) | EditOp::Paint(_) | EditOp::Place(_))
+        )
     }
 }
 

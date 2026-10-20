@@ -15,7 +15,8 @@ use crate::edit::{
 };
 use crate::layers::{ChunkLayers, LayerId, PlantState};
 use crate::ledger::SeasonLedger;
-use crate::materials::{MaterialId, MaterialTable, Phase};
+use crate::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
+use crate::shape::Shape;
 
 /// Errors from world mutation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -191,7 +192,8 @@ impl World {
     /// rejected by [`World::apply`] with nothing applied. In order: the op
     /// must name a known material (and be supported), the shape must have at
     /// most [`MAX_EDIT_CELLS`] cells, and at least one of its cells must lie
-    /// inside the bounds. Resident chunks do not matter here.
+    /// inside the bounds. Resident chunks do not matter here, except that a
+    /// `Place` must have a [`Shape::Cell`] shape whose cell is not `Solid`.
     pub fn validate(&self, cmd: &EditCommand) -> Result<(), RejectReason> {
         cmd.op.validate(&self.materials)?;
         if cmd.shape.cell_count_exceeds(MAX_EDIT_CELLS) {
@@ -200,6 +202,18 @@ impl World {
         // At most MAX_EDIT_CELLS cells to scan, and it stops at the first hit.
         if !cmd.shape.cells().any(|c| self.bounds.contains(c)) {
             return Err(RejectReason::OutsideBounds);
+        }
+        if let EditOp::Place(_) = cmd.op {
+            let Shape::Cell(cell) = cmd.shape else {
+                return Err(RejectReason::PlaceNeedsCell);
+            };
+            let solid = self
+                .get_cell(cell)
+                .and_then(|id| self.materials.get(id))
+                .is_some_and(MaterialDef::is_solid);
+            if solid {
+                return Err(RejectReason::PlaceOnSolid(cell));
+            }
         }
         Ok(())
     }
@@ -224,7 +238,7 @@ impl World {
         self.apply_keeping_clear(cmd, &[])
     }
 
-    /// [`World::apply`], except that a `Set` also skips every cell inside
+    /// [`World::apply`], except that a `Set` or `Place` also skips every cell inside
     /// one of the `keep_clear` boxes (the host's player boxes), cell by cell
     /// like the other skips: the rest of the command applies, and a skipped
     /// cell keeps its material and damage. The other ops ignore the boxes.
@@ -274,7 +288,7 @@ impl World {
                     MaterialId::AIR
                 }
                 _ => {
-                    if matches!(cmd.op, EditOp::Set(_))
+                    if matches!(cmd.op, EditOp::Set(_) | EditOp::Place(_))
                         && keep_clear.iter().any(|b| b.contains(cell))
                     {
                         continue;

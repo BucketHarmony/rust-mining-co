@@ -24,24 +24,39 @@
 //!   then applies the brush), the pickaxe does not swing. Nor while a
 //!   [`CursorGrab`] is released, or on the press that grabbed it, until
 //!   the button is let go.
+//!
+//! Placing (owner extension, F093): while [`PLACE_BUTTON`] is held, the
+//! same targeting sends `Edit { Place(material), Cell(cell) }` for the
+//! [`SelectedMaterial`] at the open cell on the face-normal side of the
+//! hit, at most once per swing interval (its own clock, held like the
+//! swing's). Nothing is sent without a selection or a target, while the
+//! fly camera is on or the editor is open, or while the cursor is
+//! released. The host decides: it refuses a material the player holds none
+//! of and spends one per placed cell.
 
 use std::time::Duration;
 
 use bevy::prelude::*;
 use rmc_protocol::ClientMsg;
+use rmc_world::coords::CellPos;
 use rmc_world::edit::{EditCommand, EditOp};
+use rmc_world::shape::Shape;
 use rmc_world::world::World;
 use rmc_world::{Hit, ToolProfile, raycast};
 
 use crate::controller::{ControllerSystems, Player};
-use crate::cursor::{CursorGrab, swing_allowed};
+use crate::cursor::{CursorGrab, look_allowed, swing_allowed};
 use crate::editor::EditorState;
 use crate::flycam::FlyCam;
+use crate::hud::SelectedMaterial;
 use crate::net::{CommandSeq, ToHost};
 use crate::replica::Replica;
 
 /// The button that swings.
 pub const SWING_BUTTON: MouseButton = MouseButton::Left;
+
+/// The button that places the selected material.
+pub const PLACE_BUTTON: MouseButton = MouseButton::Right;
 
 /// Clock rounding allowed when checking the interval: a whole number of
 /// fixed steps that adds up to the interval may fall a few nanoseconds short.
@@ -68,6 +83,21 @@ impl SwingState {
     /// Swings sent so far.
     pub fn swings(&self) -> u64 {
         self.swings
+    }
+}
+
+/// Place timing, like [`SwingState`] for the place button.
+#[derive(Resource, Debug, Default)]
+pub struct PlaceState {
+    /// Fixed-step time since the last place; `None` before the first.
+    since_place: Option<Duration>,
+    places: u64,
+}
+
+impl PlaceState {
+    /// Places sent so far.
+    pub fn places(&self) -> u64 {
+        self.places
     }
 }
 
@@ -99,10 +129,13 @@ impl Plugin for PickaxePlugin {
         app.add_message::<ToHost>()
             .init_resource::<PickTarget>()
             .init_resource::<SwingState>()
+            .init_resource::<PlaceState>()
+            .init_resource::<SelectedMaterial>()
             .init_resource::<CommandSeq>()
             .add_systems(
                 FixedUpdate,
-                swing
+                (swing, place)
+                    .chain()
                     .in_set(PickaxeSystems::Swing)
                     .after(ControllerSystems::Move),
             )
@@ -184,6 +217,73 @@ fn swing(
     debug!(cell = ?hit.cell, "pickaxe swing");
 }
 
+/// One fixed step of placing: advances the interval clock, then places
+/// the selected material in front of the target if the button is held and
+/// the interval has passed.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    pickaxe: Option<Res<Pickaxe>>,
+    replica: Option<Res<Replica>>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    fly: Option<Res<FlyCam>>,
+    editor: Option<Res<EditorState>>,
+    grab: Option<Res<CursorGrab>>,
+    selected: Res<SelectedMaterial>,
+    time: Res<Time>,
+    mut state: ResMut<PlaceState>,
+    mut seq: ResMut<CommandSeq>,
+    players: Query<&Player>,
+    mut out: MessageWriter<ToHost>,
+) {
+    let (Some(pickaxe), Some(replica)) = (pickaxe, replica) else {
+        return;
+    };
+    let profile = pickaxe.0;
+    if let Some(since) = state.since_place.as_mut() {
+        *since += time.delta();
+    }
+    let held = buttons.is_some_and(|b| b.pressed(PLACE_BUTTON));
+    // Placing needs the cursor held in the window, as looking does.
+    if !held
+        || fly.is_some_and(|f| f.enabled)
+        || editor.is_some_and(|e| e.open)
+        || !look_allowed(grab.as_deref())
+    {
+        return;
+    }
+    let Some(material) = selected.0 else {
+        return;
+    };
+    let interval = Duration::from_secs_f32(profile.interval_s);
+    if state
+        .since_place
+        .is_some_and(|since| since + SWING_SLACK < interval)
+    {
+        return;
+    }
+    let Some(player) = players.iter().next() else {
+        return;
+    };
+    let Some(hit) = target(replica.world(), player, profile.reach_m) else {
+        return;
+    };
+    // A ray that starts inside the hit cell has no face to place against.
+    if hit.face_normal == IVec3::ZERO {
+        return;
+    }
+    let cell = CellPos(hit.cell.0 + hit.face_normal);
+    let issuer = replica.player();
+    out.write(ToHost(ClientMsg::Edit(EditCommand {
+        id: seq.next_id(issuer),
+        issuer,
+        op: EditOp::Place(material),
+        shape: Shape::Cell(cell),
+    })));
+    state.since_place = Some(Duration::ZERO);
+    state.places += 1;
+    debug!(?cell, ?material, "place");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +298,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::controller::ControllerPlugin;
+    use crate::hud::SelectedMaterial;
     use crate::hud::{
         BREAK_EFFECT_S, BreakEffect, CROSSHAIR_SIZE, CrosshairArm, HudPlugin, HudState,
         SWING_PULSE_S,
@@ -583,6 +684,154 @@ mod tests {
         rig.frames(30);
         assert_eq!(rig.target(), None);
         assert!(rig.edits().is_empty());
+    }
+
+    fn press_place(rig: &mut Rig, held: bool) {
+        let mut buttons = rig
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>();
+        if held {
+            buttons.press(PLACE_BUTTON);
+        } else {
+            buttons.release(PLACE_BUTTON);
+        }
+    }
+
+    fn places(rig: &Rig) -> Vec<(u32, EditCommand)> {
+        rig.edits()
+            .into_iter()
+            .filter(|(_, c)| matches!(c.op, EditOp::Place(_)))
+            .collect()
+    }
+
+    #[test]
+    fn right_click_places_selected_on_face_normal_side() {
+        let p = profile();
+        let steps = (f64::from(p.interval_s) * 60.0).round() as u32;
+        let materials = MaterialTable::load(MATERIALS_PATH).unwrap();
+        let topsoil = materials.id("topsoil").unwrap();
+        let stone = materials.id("stone").unwrap();
+        assert_eq!(PLACE_BUTTON, MouseButton::Right);
+
+        // The wall cell 2 m ahead, entered through its +Z face: the cell
+        // placed is the open one in front of it.
+        let mut rig = Rig::new(world(Some(27)), feet_at_z(16.0), p);
+        let hit = rig.expected_hit().expect("the wall is in reach");
+        assert_eq!(
+            (hit.cell, hit.face_normal),
+            (CellPos::new(32, 7, 27), IVec3::Z)
+        );
+        let front = CellPos::new(32, 7, 28);
+
+        // Nothing selected: right mouse sends nothing.
+        press_place(&mut rig, true);
+        rig.frames(30);
+        assert!(rig.edits().is_empty(), "{:?}", rig.edits());
+        press_place(&mut rig, false);
+        rig.frames(1);
+
+        // Selected: one Place per swing interval while held.
+        rig.app
+            .world_mut()
+            .insert_resource(SelectedMaterial(Some(topsoil)));
+        press_place(&mut rig, true);
+        rig.frames(1);
+        let edits = rig.edits();
+        assert_eq!(edits.len(), 1, "{edits:?}");
+        assert_eq!(
+            edits[0].1,
+            EditCommand {
+                id: CommandId { issuer: ME, seq: 0 },
+                issuer: ME,
+                op: EditOp::Place(topsoil),
+                shape: Shape::Cell(front),
+            }
+        );
+        rig.frames(2 * steps);
+        press_place(&mut rig, false);
+        rig.frames(60);
+        let edits = places(&rig);
+        assert_eq!(edits.len(), 3, "{edits:?}");
+        assert_eq!(gaps(&edits), vec![steps; 2]);
+        assert!(edits.iter().all(|(_, c)| c.shape == Shape::Cell(front)));
+        assert_eq!(rig.edits().len(), 3, "only places were sent");
+
+        // It places what is selected now.
+        rig.app
+            .world_mut()
+            .insert_resource(SelectedMaterial(Some(stone)));
+        press_place(&mut rig, true);
+        rig.frames(1);
+        press_place(&mut rig, false);
+        assert_eq!(rig.edits().last().unwrap().1.op, EditOp::Place(stone));
+
+        // Looking down at the floor: the cell above the floor cell.
+        rig.player_mut().pitch = -1.0;
+        rig.frames(30);
+        let hit = rig.expected_hit().expect("the floor is in reach");
+        assert_eq!(hit.face_normal, IVec3::Y);
+        press_place(&mut rig, true);
+        rig.frames(1);
+        press_place(&mut rig, false);
+        assert_eq!(
+            rig.edits().last().unwrap().1.shape,
+            Shape::Cell(CellPos(hit.cell.0 + IVec3::Y))
+        );
+
+        // Left mouse still swings the pickaxe, and never places.
+        let mut rig = Rig::new(world(Some(27)), feet_at_z(16.0), p);
+        rig.app
+            .world_mut()
+            .insert_resource(SelectedMaterial(Some(topsoil)));
+        rig.hold(true);
+        rig.frames(1);
+        rig.hold(false);
+        let edits = rig.edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].1.op, EditOp::Damage(p.damage));
+
+        // Out of reach (3.02 m), at the sky, with the fly camera on, or
+        // with the editor open: nothing is placed.
+        let blocked: [(Option<i32>, f32, f32, bool, bool); 4] = [
+            (Some(25), 16.02, 0.0, false, false),
+            (None, 16.0, 1.2, false, false),
+            (Some(27), 16.0, 0.0, true, false),
+            (Some(27), 16.0, 0.0, false, true),
+        ];
+        for (wall, z, pitch, fly, editor) in blocked {
+            let mut rig = Rig::new(world(wall), feet_at_z(z), p);
+            rig.app
+                .world_mut()
+                .insert_resource(SelectedMaterial(Some(topsoil)));
+            rig.player_mut().pitch = pitch;
+            rig.app.world_mut().resource_mut::<FlyCam>().enabled = fly;
+            rig.app.world_mut().insert_resource(EditorState {
+                open: editor,
+                ..default()
+            });
+            press_place(&mut rig, true);
+            rig.frames(60);
+            assert!(
+                rig.edits().is_empty(),
+                "wall {wall:?} z {z} pitch {pitch} fly {fly} editor {editor}: {:?}",
+                rig.edits()
+            );
+        }
+
+        // With the cursor released (Escape), right mouse places nothing;
+        // grabbed again, it places.
+        let mut rig = Rig::new(world(Some(27)), feet_at_z(16.0), p);
+        rig.app
+            .world_mut()
+            .insert_resource(SelectedMaterial(Some(topsoil)));
+        rig.app.world_mut().insert_resource(CursorGrab::released());
+        press_place(&mut rig, true);
+        rig.frames(60);
+        assert!(rig.edits().is_empty(), "{:?}", rig.edits());
+        rig.app.world_mut().insert_resource(CursorGrab::default());
+        rig.frames(1);
+        assert_eq!(places(&rig).len(), 1);
     }
 
     /// Applies `op` over `shape` to `world` as player `issuer`.

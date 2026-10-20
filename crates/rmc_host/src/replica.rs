@@ -509,6 +509,10 @@ mod tests {
                         RejectReason::TooManyCells => "too_many_cells",
                         RejectReason::OutsideBounds => "outside_bounds",
                         RejectReason::InvalidLayerValue { .. } => "invalid_layer_value",
+                        RejectReason::PlaceNeedsCell => "place_needs_cell",
+                        RejectReason::PlaceNotSolid(_) => "place_not_solid",
+                        RejectReason::PlaceOnSolid(_) => "place_on_solid",
+                        RejectReason::NotInInventory(_) => "not_in_inventory",
                     };
                     *self.rejected.entry(key).or_default() += 1;
                 }

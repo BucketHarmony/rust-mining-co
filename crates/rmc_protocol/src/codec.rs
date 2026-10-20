@@ -170,6 +170,8 @@ mod tests {
             EditOp::Damage(u16::MAX),
             EditOp::Paint(MaterialId(7)),
             EditOp::Paint(MaterialId(u16::MAX)),
+            EditOp::Place(MaterialId(0)),
+            EditOp::Place(MaterialId(u16::MAX)),
         ]
     }
 
@@ -369,6 +371,10 @@ mod tests {
             RejectReason::UnknownMaterial(MaterialId(u16::MAX)),
             RejectReason::TooManyCells,
             RejectReason::OutsideBounds,
+            RejectReason::PlaceNeedsCell,
+            RejectReason::PlaceNotSolid(MaterialId(u16::MAX)),
+            RejectReason::PlaceOnSolid(CellPos::new(i32::MIN, 0, i32::MAX)),
+            RejectReason::NotInInventory(MaterialId(4)),
         ];
         for (i, reason) in reasons.into_iter().enumerate() {
             msgs.push(ServerMsg::Applied(EditResult {

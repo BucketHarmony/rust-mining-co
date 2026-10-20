@@ -57,6 +57,15 @@ impl Default for CursorGrab {
 }
 
 impl CursorGrab {
+    /// The cursor released, as after [`RELEASE_KEY`].
+    #[cfg(test)]
+    pub(crate) fn released() -> Self {
+        Self {
+            grabbed: false,
+            ..Self::default()
+        }
+    }
+
     /// Whether the cursor is grabbed: hidden, locked, and turning the view.
     pub fn grabbed(&self) -> bool {
         self.grabbed

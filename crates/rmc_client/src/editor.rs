@@ -396,6 +396,8 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::KeyA => "A",
         KeyCode::KeyS => "S",
         KeyCode::KeyD => "D",
+        KeyCode::KeyE => "E",
+        KeyCode::KeyQ => "Q",
         KeyCode::KeyV => "V",
         KeyCode::Space => "Space",
         KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
@@ -889,6 +891,8 @@ mod tests {
             KeyCode::ShiftLeft,
             KeyCode::ControlLeft,
             FLY_TOGGLE_KEY,
+            crate::hud::NEXT_SLOT_KEY,
+            crate::hud::PREV_SLOT_KEY,
         ];
         for key in play_keys {
             let label = format!("`{}`", key_label(key));
@@ -905,6 +909,15 @@ mod tests {
         assert!(
             rows.iter().any(|(k, _)| k.contains("`Mouse`")),
             "CONTROLS.md has no row for mouse look"
+        );
+        let place = format!("`{}`", mouse_label(crate::pickaxe::PLACE_BUTTON));
+        assert!(
+            rows.iter().any(|(k, _)| k.contains(&place)),
+            "CONTROLS.md has no row for {place}"
+        );
+        assert!(
+            rows.iter().any(|(k, _)| k.contains("`Mouse wheel`")),
+            "CONTROLS.md has no row for the mouse wheel"
         );
 
         // No editor row names a key the editor does not bind.

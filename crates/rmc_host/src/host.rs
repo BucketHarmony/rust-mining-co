@@ -14,7 +14,11 @@
 //!
 //! Each joined player has an [`Inventory`]. When an applied edit yields
 //! materials, they go to the player that sent it, and that player then gets
-//! an `Inventory` message with its new totals. A `RequestChunk` (a replica
+//! an `Inventory` message with its new totals. A `Place` (owner extension,
+//! F093) costs one of its material: the host rejects it, to the issuer only,
+//! when the issuer holds none, and otherwise takes one per placed cell and
+//! sends the new totals. A skipped cell (a player's box, a chunk the host
+//! does not hold) costs nothing. A `RequestChunk` (a replica
 //! repairing a revision gap) is answered with a `ChunkSnapshot` of that
 //! chunk, to the requester only.
 //!
@@ -25,7 +29,7 @@
 //!
 //! Each joined player's last `PlayerState` is kept as the cells its box
 //! ([`PLAYER_WIDTH_M`] × [`PLAYER_HEIGHT_M`] over the feet) overlaps; a
-//! `Set` from anyone skips those cells, one by one like the other SAD §8.2
+//! `Set` or `Place` from anyone skips those cells, one by one like the other SAD §8.2
 //! skips, so a placed cell never ends up inside a player. A player that has
 //! sent no `PlayerState` is not protected.
 //!
@@ -42,7 +46,9 @@ use std::path::PathBuf;
 use crossbeam_channel::Receiver;
 use rmc_protocol::{ClientMsg, PLAYER_HEIGHT_M, PLAYER_WIDTH_M, PROTOCOL_VERSION, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellAabb, CellPos, ChunkPos};
-use rmc_world::edit::{EditCommand, EditStatus, PlayerId};
+use rmc_world::edit::{
+    ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, PlayerId, RejectReason,
+};
 use rmc_world::inventory::Inventory;
 use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World;
@@ -294,7 +300,10 @@ impl Host {
         cmd.issuer = player;
         cmd.id.issuer = player;
         let keep_clear: Vec<CellAabb> = self.player_cells.values().copied().collect();
-        let result = self.world.apply_keeping_clear(&cmd, &keep_clear);
+        let result = match self.unaffordable(player, &cmd) {
+            Some(reason) => EditResult::rejected(cmd.id, reason),
+            None => self.world.apply_keeping_clear(&cmd, &keep_clear),
+        };
         if let EditStatus::Rejected(_) = result.status {
             self.transport
                 .send(Recipient::One(player), ServerMsg::Applied(result));
@@ -306,17 +315,36 @@ impl Host {
             eco.edited(&result.ledger);
         }
         let yields = result.yields.clone();
+        // A placed cell changed a material; a skipped one sent no delta.
+        let spent = match cmd.op {
+            EditOp::Place(id) if result.deltas.iter().any(changes_material) => Some(id),
+            _ => None,
+        };
         let msg = ServerMsg::Applied(result);
         for &p in &self.joined {
             self.transport.send(Recipient::One(p), msg.clone());
         }
-        if !yields.is_empty() {
+        if !yields.is_empty() || spent.is_some() {
             let inventory = self.inventories.entry(player).or_default();
+            if let Some(id) = spent {
+                inventory.remove(id, 1);
+            }
             inventory.add_all(&yields);
             let items = inventory.items();
             self.transport
                 .send(Recipient::One(player), ServerMsg::Inventory { items });
         }
+    }
+
+    /// Why `cmd` is refused for what `player` holds: a `Place` that would
+    /// otherwise apply, of a material `player` has none of. The world's own
+    /// checks come first, so their reasons win.
+    fn unaffordable(&self, player: PlayerId, cmd: &EditCommand) -> Option<RejectReason> {
+        let EditOp::Place(id) = cmd.op else {
+            return None;
+        };
+        let held = self.inventories.get(&player).map_or(0, |i| i.count(id));
+        (held == 0 && self.world.validate(cmd).is_ok()).then_some(RejectReason::NotInInventory(id))
     }
 
     /// Keeps the cells `player`'s box overlaps with its feet at `feet`. A
@@ -373,6 +401,11 @@ impl Host {
         let msg = ServerMsg::chunk_snapshot(pos, chunk);
         self.transport.send(Recipient::One(player), msg);
     }
+}
+
+/// Whether `delta` changes cell materials (rather than only layers).
+fn changes_material(delta: &ChunkDelta) -> bool {
+    matches!(delta, ChunkDelta::Cells { .. } | ChunkDelta::Full { .. })
 }
 
 /// The cells a player's box with its feet at `feet` shares volume with
@@ -1873,5 +1906,231 @@ mod tests {
         assert_eq!(replica_a.hash(), host.world().hash());
         assert_eq!(replica_b.hash(), host.world().hash());
         assert!(c.drain().is_empty());
+    }
+
+    /// `msgs` without `Applied` results: the `Inventory` messages and
+    /// anything else.
+    fn not_results(msgs: &[ServerMsg]) -> Vec<&ServerMsg> {
+        msgs.iter()
+            .filter(|m| !matches!(m, ServerMsg::Applied(_)))
+            .collect()
+    }
+
+    /// Only the `Applied` results of `msgs`.
+    fn results(msgs: &[ServerMsg]) -> Vec<ServerMsg> {
+        msgs.iter()
+            .filter(|m| matches!(m, ServerMsg::Applied(_)))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn place_spends_one_from_the_issuer_inventory() {
+        let (mut host, eps) = host_with(test_world(), 2);
+        let (a, b) = (&eps[0], &eps[1]);
+        a.send(hello(host.world())).unwrap();
+        b.send(hello(host.world())).unwrap();
+        host.tick();
+        let mut replica_a = assert_join(&host, a.player(), &a.drain());
+        let mut replica_b = assert_join(&host, b.player(), &b.drain());
+        let stone = mat(host.world(), "stone");
+        let cell = |x, y, z| Shape::Cell(CellPos::new(x, y, z));
+
+        // a digs two stone cells.
+        a.send(edit(1, 0, EditOp::Damage(u16::MAX), cell(10, 3, 10)))
+            .unwrap();
+        a.send(edit(1, 1, EditOp::Damage(u16::MAX), cell(11, 3, 10)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        let to_b = b.drain();
+        assert_eq!(to_a.len(), 4, "{to_a:?}");
+        replay(&mut replica_a, &to_b);
+        replay(&mut replica_b, &to_b);
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 2);
+
+        // a places one into the air (chunk (-1, 1, 1)): the cell is stone
+        // for everybody, and a alone is told it holds one stone now.
+        let open = CellPos::new(-30, 40, 40);
+        assert_eq!(host.world().get_cell(open), Some(MaterialId::AIR));
+        a.send(edit(1, 2, EditOp::Place(stone), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        assert_eq!(host.world().get_cell(open), Some(stone));
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 1);
+        let to_a = a.drain();
+        let to_b = b.drain();
+        let placed = only_result(&to_b);
+        assert_eq!(placed.status, EditStatus::Applied);
+        assert!(placed.yields.is_empty());
+        assert_eq!(placed.deltas.len(), 1);
+        assert_eq!(to_a.len(), 2, "{to_a:?}");
+        assert_eq!(to_a[0], to_b[0]);
+        assert_eq!(
+            to_a[1],
+            ServerMsg::Inventory {
+                items: vec![(stone, 1)]
+            }
+        );
+        replay(&mut replica_a, &to_b);
+        replay(&mut replica_b, &to_b);
+
+        // A cell in a non-resident chunk is skipped: applied, nothing
+        // placed, nothing spent, no Inventory message.
+        a.send(edit(1, 3, EditOp::Place(stone), cell(40, 40, 40)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert!(only_result(&to_a).deltas.is_empty());
+        assert_eq!(b.drain(), to_a);
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 1);
+
+        // A cell inside a player's box is skipped (F086), and nothing is
+        // spent. a stands on the stone chunk (1, 0, 0): its box covers
+        // cells x 39..=40, y 32..=35, z 9..=10. b digs a stone to place.
+        a.send(state(glam::Vec3::new(20.0, 16.0, 5.0))).unwrap();
+        b.send(edit(2, 0, EditOp::Damage(u16::MAX), cell(12, 3, 10)))
+            .unwrap();
+        host.tick();
+        let to_b = results(&b.drain());
+        assert_eq!(a.drain(), to_b);
+        replay(&mut replica_a, &to_b);
+        replay(&mut replica_b, &to_b);
+        assert_eq!(host.inventory(b.player()).unwrap().count(stone), 1);
+        let inside = CellPos::new(40, 33, 10);
+        b.send(edit(2, 1, EditOp::Place(stone), Shape::Cell(inside)))
+            .unwrap();
+        host.tick();
+        assert_eq!(host.world().get_cell(inside), Some(MaterialId::AIR));
+        let to_b = b.drain();
+        assert_eq!(only_result(&to_b).status, EditStatus::Applied);
+        assert!(only_result(&to_b).deltas.is_empty());
+        assert_eq!(a.drain(), to_b);
+        assert_eq!(host.inventory(b.player()).unwrap().count(stone), 1);
+
+        // a spends its last stone: the Inventory message no longer lists it.
+        let next = CellPos::new(-30, 41, 40);
+        a.send(edit(1, 4, EditOp::Place(stone), Shape::Cell(next)))
+            .unwrap();
+        host.tick();
+        assert_eq!(host.world().get_cell(next), Some(stone));
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 0);
+        let to_a = a.drain();
+        let to_b = b.drain();
+        assert_eq!(
+            not_results(&to_a),
+            [&ServerMsg::Inventory { items: vec![] }]
+        );
+        assert!(not_results(&to_b).is_empty(), "{to_b:?}");
+        // b's stone is untouched by a's placing.
+        assert_eq!(host.inventory(b.player()).unwrap().count(stone), 1);
+        replay(&mut replica_a, &to_b);
+        replay(&mut replica_b, &to_b);
+        assert_eq!(replica_a.hash(), host.world().hash());
+        assert_eq!(replica_b.hash(), host.world().hash());
+    }
+
+    #[test]
+    fn place_rejected_when_inventory_has_none() {
+        let (mut host, eps) = host_with(test_world(), 2);
+        let (a, b) = (&eps[0], &eps[1]);
+        a.send(hello(host.world())).unwrap();
+        b.send(hello(host.world())).unwrap();
+        host.tick();
+        let mut replica_a = assert_join(&host, a.player(), &a.drain());
+        assert_join(&host, b.player(), &b.drain());
+        let stone = mat(host.world(), "stone");
+        let dirt = mat(host.world(), "dirt");
+        let water = mat(host.world(), "water");
+        let open = CellPos::new(-30, 40, 40);
+        let cell = |x, y, z| Shape::Cell(CellPos::new(x, y, z));
+        let refused = |msgs: &[ServerMsg], m: MaterialId| {
+            let r = only_result(msgs);
+            assert_eq!(
+                r.status,
+                EditStatus::Rejected(RejectReason::NotInInventory(m))
+            );
+            assert!(r.deltas.is_empty() && r.yields.is_empty());
+        };
+
+        // An empty inventory: rejected whole, to a only, nothing changes.
+        let before = host.world().hash();
+        a.send(edit(1, 0, EditOp::Place(stone), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        refused(&to_a, stone);
+        assert_eq!(only_result(&to_a).command.issuer, a.player());
+        assert!(b.drain().is_empty(), "a rejection goes to the issuer only");
+        assert_eq!(host.world().hash(), before);
+
+        // a digs one stone. It is a's, not b's; and stone does not pay for
+        // dirt.
+        a.send(edit(1, 1, EditOp::Damage(u16::MAX), cell(10, 3, 10)))
+            .unwrap();
+        host.tick();
+        replay(&mut replica_a, &results(&a.drain()));
+        b.drain();
+        let before = host.world().hash();
+        b.send(edit(2, 0, EditOp::Place(stone), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        refused(&b.drain(), stone);
+        assert!(a.drain().is_empty());
+        a.send(edit(1, 2, EditOp::Place(dirt), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        refused(&a.drain(), dirt);
+        assert!(b.drain().is_empty());
+        assert_eq!(host.world().hash(), before);
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 1);
+
+        // The world's own checks spend nothing: a solid target, a non-solid
+        // material, a shape that is not one cell.
+        let solid = CellPos::new(13, 3, 10);
+        let checks = [
+            (
+                EditOp::Place(stone),
+                Shape::Cell(solid),
+                RejectReason::PlaceOnSolid(solid),
+            ),
+            (
+                EditOp::Place(water),
+                Shape::Cell(open),
+                RejectReason::PlaceNotSolid(water),
+            ),
+            (
+                EditOp::Place(stone),
+                Shape::Box {
+                    min: open,
+                    max: open,
+                },
+                RejectReason::PlaceNeedsCell,
+            ),
+        ];
+        for (seq, (op, shape, reason)) in (3..).zip(checks) {
+            a.send(edit(1, seq, op, shape)).unwrap();
+            host.tick();
+            assert_eq!(only_result(&a.drain()).status, EditStatus::Rejected(reason));
+            assert!(b.drain().is_empty());
+        }
+        assert_eq!(host.world().hash(), before);
+        assert_eq!(host.inventory(a.player()).unwrap().count(stone), 1);
+
+        // With one in hand it places, and the next one is refused again.
+        a.send(edit(1, 10, EditOp::Place(stone), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 2, "{to_a:?}");
+        replay(&mut replica_a, &results(&to_a));
+        assert_eq!(replica_a.hash(), host.world().hash());
+        let above = CellPos::new(-30, 41, 40);
+        a.send(edit(1, 11, EditOp::Place(stone), Shape::Cell(above)))
+            .unwrap();
+        host.tick();
+        refused(&a.drain(), stone);
+        assert_eq!(host.world().get_cell(above), Some(MaterialId::AIR));
+        assert_eq!(replica_a.hash(), host.world().hash());
     }
 }

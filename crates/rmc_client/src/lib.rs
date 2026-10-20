@@ -38,7 +38,8 @@ pub use gizmo::{
 };
 pub use hud::{
     BreakEffect, ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot,
-    HudState, HudSystems,
+    HudState, HudSystems, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK, SelectedMaterial,
+    step_selection,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
@@ -57,7 +58,8 @@ pub use panel::{
     brush_summary, editor_panel,
 };
 pub use pickaxe::{
-    PickTarget, Pickaxe, PickaxePlugin, PickaxeSystems, SWING_BUTTON, SWING_SLACK, SwingState,
+    PLACE_BUTTON, PickTarget, Pickaxe, PickaxePlugin, PickaxeSystems, PlaceState, SWING_BUTTON,
+    SWING_SLACK, SwingState,
 };
 pub use render::{CameraStart, GameCamera, GameRenderPlugin};
 pub use replica::{Replica, ReplicaError, ReplicaPlugin};

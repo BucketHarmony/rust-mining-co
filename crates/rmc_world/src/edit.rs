@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::chunk::ChunkStorage;
-use crate::coords::ChunkPos;
+use crate::coords::{CellPos, ChunkPos};
 use crate::displace::layer_value_fits;
 use crate::layers::{LayerId, PlantState};
 use crate::ledger::SeasonLedger;
@@ -50,14 +50,25 @@ pub enum EditOp {
     /// Every cell's `layer` becomes `value` (SAD-P2 §9). Materials do not
     /// change. Gas layers are written on air cells only.
     SetLayer { layer: LayerId, value: i32 },
+    /// The player places one cell of a `Solid` material from its inventory
+    /// (owner extension, F093). Only with [`Shape::Cell`], and only onto a
+    /// non-`Solid` cell; [`World::validate`](crate::world::World::validate)
+    /// rejects anything else. Like `Set`, it skips a cell inside a player's
+    /// box. The host spends one from the issuer's inventory per placed cell.
+    Place(MaterialId),
 }
 
 impl EditOp {
     /// Checks the op against the material table before any cell is touched.
     pub(crate) fn validate(self, materials: &MaterialTable) -> Result<(), RejectReason> {
         match self {
-            EditOp::Set(id) | EditOp::Paint(id) if materials.get(id).is_none() => {
+            EditOp::Set(id) | EditOp::Paint(id) | EditOp::Place(id)
+                if materials.get(id).is_none() =>
+            {
                 Err(RejectReason::UnknownMaterial(id))
+            }
+            EditOp::Place(id) if !materials.get(id).is_some_and(MaterialDef::is_solid) => {
+                Err(RejectReason::PlaceNotSolid(id))
             }
             EditOp::SetLayer { layer, value }
                 if !layer.is_valid() || !layer_value_fits(layer, value) =>
@@ -66,6 +77,7 @@ impl EditOp {
             }
             EditOp::Set(_)
             | EditOp::Paint(_)
+            | EditOp::Place(_)
             | EditOp::Remove
             | EditOp::Damage(_)
             | EditOp::SetLayer { .. } => Ok(()),
@@ -80,6 +92,7 @@ impl EditOp {
     pub(crate) fn target(self, old: Option<&MaterialDef>) -> Option<MaterialId> {
         match self {
             EditOp::Set(id) => Some(id),
+            EditOp::Place(id) => old.is_none_or(|d| !d.is_solid()).then_some(id),
             EditOp::Remove => old.is_some_and(|d| d.diggable).then_some(MaterialId::AIR),
             EditOp::Paint(id) => old.is_some_and(|d| d.is_solid()).then_some(id),
             EditOp::Damage(_) | EditOp::SetLayer { .. } => None,
@@ -107,6 +120,14 @@ pub enum RejectReason {
     OutsideBounds,
     #[error("value {value} does not fit layer {layer:?}")]
     InvalidLayerValue { layer: LayerId, value: i32 },
+    #[error("place takes a single cell")]
+    PlaceNeedsCell,
+    #[error("material {0:?} is not solid and cannot be placed")]
+    PlaceNotSolid(MaterialId),
+    #[error("cell {0:?} is solid; place needs an open cell")]
+    PlaceOnSolid(CellPos),
+    #[error("the issuer's inventory holds no {0:?}")]
+    NotInInventory(MaterialId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +206,7 @@ pub struct EditResult {
 }
 
 impl EditResult {
-    pub(crate) fn rejected(command: CommandId, reason: RejectReason) -> Self {
+    pub fn rejected(command: CommandId, reason: RejectReason) -> Self {
         Self {
             command,
             status: EditStatus::Rejected(reason),
@@ -627,6 +648,102 @@ mod tests {
                 .collect()
         };
         assert_eq!(flags(w), flags(&before));
+    }
+
+    #[test]
+    fn place_needs_non_solid_target_and_a_single_cell() {
+        // The full shipped table: water is a Phase 2 non-solid.
+        let table = Arc::new(MaterialTable::load(PHASE1_PATH).expect("materials.ron loads"));
+        let stone = id(&table, "stone");
+        let topsoil = id(&table, "topsoil");
+        let water = id(&table, "water");
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 31));
+        let mut w = World::new(table.clone(), bounds);
+        w.insert_chunk(ChunkPos::new(0, 0, 0), Chunk::uniform(MaterialId::AIR))
+            .unwrap();
+        w.insert_chunk(ChunkPos::new(1, 0, 0), Chunk::uniform(stone))
+            .unwrap();
+        let open = CellPos::new(5, 5, 5);
+        let wet = CellPos::new(6, 5, 5);
+        let rock = CellPos::new(40, 5, 5);
+        assert_eq!(
+            w.apply(&cmd(1, EditOp::Set(water), Shape::Cell(wet)))
+                .status,
+            EditStatus::Applied
+        );
+
+        // Onto air: the cell takes the material, and the delta replays it.
+        let before = w.clone();
+        let r = w.apply(&cmd(2, EditOp::Place(topsoil), Shape::Cell(open)));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert!(r.yields.is_empty());
+        assert_eq!(w.get_cell(open), Some(topsoil));
+        assert_eq!(changed_cells(&r), 1);
+        assert_eq!(replay(&before, &r.deltas).hash(), w.hash());
+
+        // Onto a non-solid that is not air (water): allowed.
+        let r = w.apply(&cmd(3, EditOp::Place(stone), Shape::Cell(wet)));
+        assert_eq!(r.status, EditStatus::Applied);
+        assert_eq!(w.get_cell(wet), Some(stone));
+
+        // Onto a solid cell, the one just placed included: rejected whole.
+        for (seq, at) in [(4, rock), (5, open)] {
+            assert_rejected(
+                &mut w,
+                &cmd(seq, EditOp::Place(topsoil), Shape::Cell(at)),
+                RejectReason::PlaceOnSolid(at),
+            );
+        }
+
+        // Any shape but a cell, even a one-cell box or a radius-0 sphere.
+        let air_cell = CellPos::new(7, 5, 5);
+        for (seq, shape) in [
+            (6, boxed((7, 5, 5), (7, 5, 5))),
+            (7, sphere((7, 5, 5), 0)),
+            (8, boxed((7, 5, 5), (9, 5, 5))),
+        ] {
+            assert_rejected(
+                &mut w,
+                &cmd(seq, EditOp::Place(topsoil), shape),
+                RejectReason::PlaceNeedsCell,
+            );
+        }
+
+        // Only solid materials are placed: not air, not water.
+        for (seq, m) in [(9, MaterialId::AIR), (10, water)] {
+            assert_rejected(
+                &mut w,
+                &cmd(seq, EditOp::Place(m), Shape::Cell(air_cell)),
+                RejectReason::PlaceNotSolid(m),
+            );
+        }
+        let bogus = MaterialId(table.len() as u16);
+        assert_rejected(
+            &mut w,
+            &cmd(11, EditOp::Place(bogus), Shape::Cell(air_cell)),
+            RejectReason::UnknownMaterial(bogus),
+        );
+        assert_rejected(
+            &mut w,
+            &cmd(
+                12,
+                EditOp::Place(topsoil),
+                Shape::Cell(CellPos::new(-1, 5, 5)),
+            ),
+            RejectReason::OutsideBounds,
+        );
+
+        // Like Set, it skips a cell inside a player's box: applied, unchanged.
+        let before = w.hash();
+        let keep = [CellAabb::new(air_cell, air_cell)];
+        let r = w.apply_keeping_clear(
+            &cmd(13, EditOp::Place(topsoil), Shape::Cell(air_cell)),
+            &keep,
+        );
+        assert_eq!(r.status, EditStatus::Applied);
+        assert!(r.deltas.is_empty(), "{:?}", r.deltas);
+        assert_eq!(w.hash(), before);
+        assert_eq!(w.get_cell(air_cell), Some(MaterialId::AIR));
     }
 
     fn sphere(center: (i32, i32, i32), radius: u16) -> Shape {

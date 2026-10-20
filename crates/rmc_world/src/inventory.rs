@@ -44,6 +44,20 @@ impl Inventory {
         }
     }
 
+    /// Takes up to `count` of `id` and returns how many it took. A
+    /// material whose count reaches zero is no longer held.
+    pub fn remove(&mut self, id: MaterialId, count: u32) -> u32 {
+        let Some(c) = self.counts.get_mut(&id) else {
+            return 0;
+        };
+        let taken = count.min(*c);
+        *c -= taken;
+        if *c == 0 {
+            self.counts.remove(&id);
+        }
+        taken
+    }
+
     /// How many of `id` the inventory holds.
     pub fn count(&self, id: MaterialId) -> u32 {
         self.counts.get(&id).copied().unwrap_or(0)
@@ -85,5 +99,18 @@ mod tests {
             vec![(a, 2)]
         );
         assert_eq!(Inventory::from_items(&[(b, 0)]), Inventory::new());
+    }
+
+    #[test]
+    fn remove_takes_at_most_what_is_held() {
+        let (a, b) = (MaterialId(4), MaterialId(2));
+        let mut inv = Inventory::from_items(&[(a, 3), (b, 1)]);
+        assert_eq!(inv.remove(a, 1), 1);
+        assert_eq!(inv.count(a), 2);
+        assert_eq!(inv.remove(a, 5), 2);
+        assert_eq!(inv.items(), vec![(b, 1)], "an emptied material is gone");
+        assert_eq!(inv.remove(a, 1), 0);
+        assert_eq!(inv.remove(b, 0), 0);
+        assert_eq!(inv, Inventory::from_items(&[(b, 1)]));
     }
 }

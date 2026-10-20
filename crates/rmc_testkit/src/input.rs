@@ -8,7 +8,8 @@
 
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
-use bevy::input::mouse::{MouseButtonInput, MouseMotion};
+use bevy::input::mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel};
+use bevy::input::touch::TouchPhase;
 use bevy::prelude::*;
 
 use crate::app::TestApp;
@@ -39,6 +40,20 @@ impl TestApp {
     pub fn look(&mut self, dx: f32, dy: f32) {
         self.app_mut().world_mut().write_message(MouseMotion {
             delta: Vec2::new(dx, dy),
+        });
+    }
+
+    /// Turns the mouse wheel by `notches` lines during the next step:
+    /// positive is up (away from the user), negative down. Several calls
+    /// before one step add up.
+    pub fn scroll(&mut self, notches: f32) {
+        self.app_mut().world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: notches,
+            // There is no window; nothing in the game reads this field.
+            window: Entity::PLACEHOLDER,
+            phase: TouchPhase::Moved,
         });
     }
 
@@ -352,5 +367,32 @@ mod tests {
         assert_eq!(keys.get_pressed().count(), 0);
         let buttons = t.app().world().resource::<ButtonInput<MouseButton>>();
         assert_eq!(buttons.get_pressed().count(), 0);
+    }
+
+    #[test]
+    fn scroll_accumulates_mouse_wheel() {
+        use bevy::input::mouse::AccumulatedMouseScroll;
+        let scroll = |t: &TestApp| t.app().world().resource::<AccumulatedMouseScroll>().delta;
+        let mut t = logic_app();
+        t.step();
+        assert_eq!(scroll(&t), Vec2::ZERO);
+
+        t.scroll(-1.0);
+        assert_eq!(
+            scroll(&t),
+            Vec2::ZERO,
+            "scroll takes effect at the next step"
+        );
+        t.step();
+        assert_eq!(scroll(&t), Vec2::new(0.0, -1.0));
+        t.step();
+        assert_eq!(scroll(&t), Vec2::ZERO, "one frame only");
+
+        t.scroll(2.0);
+        t.scroll(1.0);
+        t.step();
+        assert_eq!(scroll(&t), Vec2::new(0.0, 3.0));
+        t.step();
+        assert_eq!(scroll(&t), Vec2::ZERO);
     }
 }

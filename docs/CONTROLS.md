@@ -14,8 +14,19 @@ test kit. Keys are named by their position on a US layout.
 | `Shift` | Sprint while held |
 | `Space` | Jump (held: jump again on landing) |
 | `Left mouse` | Swing the pickaxe at the targeted cell (hold to keep swinging) |
+| `Right mouse` | Place the selected material against the targeted face (hold to keep placing) |
+| `Mouse wheel` | Select the next (down) / previous (up) material in the inventory |
+| `E` / `Q` | Select the next / previous material in the inventory |
 
 The player climbs a one-cell rise by walking into it; two cells need a jump.
+
+Placing spends one of the selected material per cell, and only works on an
+open cell (air or water) within the pickaxe's reach (3 m). Nothing is
+selected until you turn the wheel or press `E` / `Q`; the selected line of the
+inventory is marked `>`. With none of it left, a place is refused and the
+selection stays until you pick another. A cell where a player stands is left
+open and costs nothing. With the editor open, right mouse, the wheel and
+`E` / `Q` do nothing.
 
 ## Cursor
 
