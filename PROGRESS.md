@@ -1878,3 +1878,29 @@ Decisions:
 - TestApp worlds now carry a temperature layer, so their hashes differ from before. No E2E test pins a hash.
 Next: F120 (water material with fill).
 Blockers: none.
+
+## 2026-10-20 07:30 — F120 Water material with fill; air↔water via delta — passed
+Done:
+- `materials.ron`: `water`, appended as id 13.
+  - Liquid, diggable, hardness 0, yield_count 0, `light_attenuation: Some(32)`.
+  - Heat values: conductivity 64, heat_capacity 8, like the other surface materials.
+  - Color (40, 90, 200, 160). The alpha is for F127's liquid pass. The mesher reads emissive, not alpha, so the opaque pass is unchanged.
+  - Its `moisture` layer is its fill.
+- `rmc_eco::water::WaterPass` (re-exported as `rmc_eco::WaterPass`): the §7.3 B flow sweep over `SWEEP_WATER`. It has step 1 (air with moisture > 0 becomes water) and step 5 (water at fill 0 becomes air). Both go through `World::eco_set`, so §7.0 applies: moisture stays on the cell, and gases leave a cell that turns to water. Steps 2–4, 6 and 7 slot in between them (F121, F122, F130, F131).
+- `season_tick` runs `eco.flow_iters` water sweeps per sub-step, after temperature (§3 order; transitions are not written yet). `TickReport.active_cells_per_sweep` now gets one entry per sweep.
+- `Seasons::install` (host: `with_eco`, `replace_world`) calls `activate_holders` for the water pass. Worldgen and loads keep no active sets; edits and passes keep them current after that.
+- Air↔water reaches clients: a season that changes a material bumps the chunk `revision`, so the host sends a `ChunkSnapshot`. Brush `Set(water)` already produced a delta with fill 255 (F102 displacement).
+Tests added:
+- `water::tests::{air_with_moisture_becomes_water, water_at_zero_fill_becomes_air}` (the listed two), plus `water::tests::without_water_role_nothing_changes`.
+- `season::tests::season_turns_moist_air_into_water_on_the_replica` (rmc_host): a real season tick sends a ChunkSnapshot and the replica ends up equal to the host. This is the real-tick ChunkSnapshot check F109 left open.
+- `eco::tests::pool_fixture_is_full_water_through_a_season` (testkit): `Fixture::Pool` builds, its cells are all water at fill 255, and the replica matches after a season.
+- TDD: the listed tests first failed because `materials.ron` had no water. With water added, disabling step 1 or step 5 fails the matching test.
+Decisions:
+- `WaterPass::holds` covers water cells and moist air. Ice keeps its moisture in place, so it leaves the set. Porous solids join when seepage lands (F122).
+- The water tests use one-cell pockets in a stone slab, so later flow, seepage and evaporation do not change what they assert. The host test uses a sealed cavity in stone for the same reason.
+- Two `test-fix:` commits:
+  - 1a12e97: the temperature tests' extra-material fixture skips keys the shipped table already has. It defined its own `water`, which would now be a duplicate.
+  - d620bef: `loads_phase1_table` and `determinism_proptest` (rmc_world) assert the shipped table is exactly the 13 Phase 1 rows. Their `phase1()` helpers now take rows 0..13 of the shipped table, and every assertion is unchanged. The proptest regression file from the transient failure was removed; it recorded the table length, not a logic case.
+- `ice` is not added here; F125 adds it along with its transitions.
+Next: F121 (water sweep: down and sideways, invariant proptest).
+Blockers: none.
