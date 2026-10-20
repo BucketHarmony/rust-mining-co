@@ -31,10 +31,12 @@ use rmc_eco::EcoTables;
 use rmc_host::{ClientEndpoint, Host, HostConfig, HostHandle, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
+use rmc_world::coords::CellAabb;
 use rmc_world::materials::MaterialTable;
 use rmc_world::save::{self, HEADER_FILE, SaveHeader};
 use rmc_world::world::World as CellWorld;
-use rmc_worldgen::{GenParams, Generator, NOISE_CRATE_VERSION};
+use rmc_worldgen::params::WorldBounds;
+use rmc_worldgen::{GenParams, Generator, NOISE_CRATE_VERSION, TemperatureInit};
 use tracing::{error, info, warn};
 
 /// The seed when there is neither a `--seed` nor a save to take one from.
@@ -49,6 +51,9 @@ pub struct GameAssets {
     pub materials: Arc<MaterialTable>,
     pub tools: ToolTable,
     pub worldgen: GenParams,
+    /// The Phase 2 tables, built on `materials`: the host's seasons and the
+    /// generated temperature layer.
+    pub eco: Arc<EcoTables>,
     /// [`EcoTables::hash`] of the Phase 2 tables, for the save header.
     pub tables_hash: u64,
 }
@@ -64,15 +69,29 @@ impl GameAssets {
         let worldgen = GenParams::load(dir.join("worldgen.ron"))
             .with_context(|| format!("loading {}", dir.join("worldgen.ron").display()))?;
         let materials = Arc::new(materials);
-        let tables_hash = EcoTables::load_with_materials(materials.clone(), dir)
-            .with_context(|| format!("loading the Phase 2 tables in {}", dir.display()))?
-            .hash();
+        let eco = EcoTables::load_with_materials(materials.clone(), dir)
+            .with_context(|| format!("loading the Phase 2 tables in {}", dir.display()))?;
         Ok(Self {
             materials,
             tools,
             worldgen,
-            tables_hash,
+            tables_hash: eco.hash(),
+            eco: Arc::new(eco),
         })
+    }
+
+    /// These tables for a world of `bounds`: `worldgen.ron` fitted to them
+    /// ([`GenParams::fit_to`]: the surface keeps its share of the height).
+    pub fn with_world_bounds(mut self, bounds: CellAabb) -> anyhow::Result<Self> {
+        let bounds = WorldBounds {
+            min: bounds.min.0.to_array(),
+            max: bounds.max.0.to_array(),
+        };
+        self.worldgen = self
+            .worldgen
+            .fit_to(bounds)
+            .with_context(|| format!("worldgen params for the world {bounds:?}"))?;
+        Ok(self)
     }
 
     /// What `Welcome` reports for a world generated from `seed`.
@@ -107,10 +126,12 @@ pub fn assets_dir() -> PathBuf {
     }
 }
 
-/// Every chunk in the bounds of `assets.worldgen`, generated from `seed`.
+/// Every chunk in the bounds of `assets.worldgen`, generated from `seed`,
+/// with its temperature layer (SAD-P2 §8).
 pub fn generate_world(assets: &GameAssets, seed: u64) -> anyhow::Result<CellWorld> {
     let generator = Generator::new(seed, &assets.worldgen, &assets.materials)
-        .context("worldgen params do not fit the material table")?;
+        .context("worldgen params do not fit the material table")?
+        .with_temperature(TemperatureInit::new(&assets.eco));
     let mut world = CellWorld::new(assets.materials.clone(), generator.bounds());
     for (pos, chunk) in generator.generate_world() {
         world
@@ -154,12 +175,17 @@ pub struct StartWorld {
     pub host: HostConfig,
     pub save: SaveConfig,
     pub origin: WorldOrigin,
+    /// The tables the host runs seasons with.
+    pub eco: Arc<EcoTables>,
 }
 
 impl StartWorld {
-    /// A host over this world that saves to its save directory.
+    /// A host over this world that saves to its save directory and runs
+    /// seasons.
     pub fn into_host(self, transport: Box<dyn rmc_host::Transport>) -> Host {
-        Host::new(self.world, self.host, transport).with_save(self.save)
+        Host::new(self.world, self.host, transport)
+            .with_save(self.save)
+            .with_eco(self.eco)
     }
 }
 
@@ -201,6 +227,7 @@ pub fn start_world(
         host: assets.host_config(seed),
         save,
         origin,
+        eco: assets.eco.clone(),
     })
 }
 

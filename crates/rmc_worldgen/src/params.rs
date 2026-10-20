@@ -384,6 +384,37 @@ impl GenParams {
         Ok(())
     }
 
+    /// These parameters for a world of `bounds`: the bounds replaced and the
+    /// surface's base height moved to the same fraction of the world's
+    /// height (truncating), so a lower world keeps its share of ground and
+    /// sky (SAD-P2 §2: the 64-cell-high Phase 2 world). Everything else is
+    /// kept. Bounds of the same height and floor give these parameters
+    /// unchanged. Fails if the result does not validate or the highest
+    /// surface does not lie below the top cell.
+    pub fn fit_to(&self, bounds: WorldBounds) -> Result<Self, GenError> {
+        let (old_floor, new_floor) = (self.bounds.min[1], bounds.min[1]);
+        let old_height = i64::from(self.bounds.max[1]) - i64::from(old_floor) + 1;
+        let new_height = i64::from(bounds.max[1]) - i64::from(new_floor) + 1;
+        let above_floor = i64::from(self.surface.base_height) - i64::from(old_floor);
+        let base = i64::from(new_floor) + above_floor * new_height / old_height;
+        let mut fitted = self.clone();
+        fitted.bounds = bounds;
+        fitted.surface.base_height = i32::try_from(base)
+            .map_err(|_| invalid("surface.base_height", format!("{base} overflows i32")))?;
+        fitted.validate()?;
+        let highest = i64::from(fitted.surface.base_height) + i64::from(fitted.surface.amplitude);
+        if highest >= i64::from(bounds.max[1]) {
+            return Err(invalid(
+                "surface.base_height",
+                format!(
+                    "the surface reaches y {highest}, not below the top cell {}",
+                    bounds.max[1]
+                ),
+            ));
+        }
+        Ok(fitted)
+    }
+
     /// xxh3 over the postcard encoding of the parameters. Independent of
     /// RON formatting; any field change moves it.
     pub fn hash(&self) -> u64 {
@@ -404,6 +435,37 @@ mod tests {
 
     fn phase1() -> GenParams {
         GenParams::load(PHASE1_PATH).expect("assets/worldgen.ron loads")
+    }
+
+    #[test]
+    fn fit_to_scales_the_surface_to_the_height() {
+        let p = phase1();
+        let size = |w: i32, h: i32, d: i32| WorldBounds {
+            min: [0, 0, 0],
+            max: [w - 1, h - 1, d - 1],
+        };
+        // The same height keeps everything, whatever the width.
+        assert_eq!(p.fit_to(p.bounds).unwrap(), p);
+        let wide = p.fit_to(size(64, 128, 64)).unwrap();
+        assert_eq!(wide.surface, p.surface);
+        assert_eq!(wide.bounds, size(64, 128, 64));
+        // Half the height: half the base height, the same relief.
+        let low = p.fit_to(size(128, 64, 128)).unwrap();
+        assert_eq!(low.surface.base_height, p.surface.base_height / 2);
+        assert_eq!(low.surface.amplitude, p.surface.amplitude);
+        assert_eq!((&low.soil, &low.strata), (&p.soil, &p.strata));
+        assert_ne!(low.hash(), p.hash());
+        // Measured from the floor.
+        let raised = WorldBounds {
+            min: [0, 100, 0],
+            max: [127, 163, 127],
+        };
+        assert_eq!(
+            p.fit_to(raised).unwrap().surface.base_height,
+            100 + p.surface.base_height / 2
+        );
+        // Too low for the relief: the surface would reach the top.
+        assert!(p.fit_to(size(64, 16, 64)).is_err());
     }
 
     #[test]

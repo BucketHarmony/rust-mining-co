@@ -22,11 +22,12 @@ use rmc_world::chunk::ChunkStorage;
 use rmc_world::coords::{CHUNK_VOLUME, LocalPos};
 use rmc_world::layers::{LayerData, LayerId, N_GASES, N_SUBSTANCES};
 use rmc_world::world::World;
+use serde::{Deserialize, Serialize};
 
 use crate::ledger::SeasonLedger;
 
 /// The conserved quantities of a world.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Totals {
     /// Moisture on every cell plus the steam gas.
     pub water: i64,
@@ -120,7 +121,7 @@ fn layer_sum(data: Option<&LayerData>) -> i64 {
 }
 
 /// One conserved quantity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Quantity {
     Water,
     Substance(u8),
@@ -129,7 +130,7 @@ pub enum Quantity {
 }
 
 /// A quantity whose measured total differs from what the ledger explains.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Violation {
     pub quantity: Quantity,
     pub expected: i64,

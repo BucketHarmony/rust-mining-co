@@ -12,7 +12,7 @@
 //! the middle of the world. A new world from the host (the editor's Load or
 //! Regenerate) puts it there again.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::input::InputPlugin;
@@ -27,13 +27,14 @@ use rmc_client::{
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
 use rmc_protocol::ServerMsg;
-use rmc_world::coords::{CELL_SIZE_M, CellPos};
+use rmc_world::coords::{CELL_SIZE_M, CellAabb, CellPos};
+use rmc_world::save;
 use rmc_world::world::World as CellWorld;
 use tracing::info;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, DEFAULT_WORLD_SIZE, WorldSize};
 use crate::session::{
-    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, start_world,
+    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, has_save, start_world,
 };
 
 /// The window's title.
@@ -50,14 +51,31 @@ pub struct GameConfig {
 
 impl GameConfig {
     /// The command line's seed and save directory, with the tables from
-    /// [`assets_dir`].
+    /// [`assets_dir`] fitted to the world size ([`world_bounds`]).
     pub fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
+        let bounds = world_bounds(cli.world_size, &cli.save)?;
         Ok(Self {
-            assets: GameAssets::load(&assets_dir())?,
+            assets: GameAssets::load(&assets_dir())?.with_world_bounds(bounds)?,
             seed: cli.seed,
             save_dir: cli.save.clone(),
         })
     }
+}
+
+/// The world's bounds: `size` if given, else the bounds of the save in
+/// `save_dir` if there is one, else [`DEFAULT_WORLD_SIZE`]'s. A size that
+/// differs from the save's fails the load later, field for field.
+pub fn world_bounds(size: Option<WorldSize>, save_dir: &Path) -> anyhow::Result<CellAabb> {
+    if let Some(size) = size {
+        return Ok(size.bounds());
+    }
+    if has_save(save_dir) {
+        let header = anyhow::Context::with_context(save::read_header(save_dir), || {
+            format!("reading the save in {}", save_dir.display())
+        })?;
+        return Ok(header.bounds);
+    }
+    Ok(DEFAULT_WORLD_SIZE.bounds())
 }
 
 /// The game: the host thread and the client app. `windowed` builds

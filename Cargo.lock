@@ -5889,6 +5889,8 @@ dependencies = [
  "rmc_protocol",
  "rmc_world",
  "rmc_worldgen",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 
