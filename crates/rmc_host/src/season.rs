@@ -22,7 +22,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmc_eco::ledger::merge;
-use rmc_eco::{Activity, EcoTables, Exec, season_tick};
+use rmc_eco::runner::activate_holders;
+use rmc_eco::{Activity, EcoTables, Exec, WaterPass, season_tick};
 use rmc_protocol::{SeasonReport, ServerMsg};
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::PlayerId;
@@ -55,7 +56,8 @@ impl Seasons {
     }
 
     /// Prepares a (new) world for seasons: installs the tables'
-    /// displacement rules and forgets the activity and edits of the world
+    /// displacement rules, fills the water sweep's active set (worldgen and
+    /// loads keep none) and forgets the activity and edits of the world
     /// before. The season count goes on.
     pub(crate) fn install(&mut self, world: &mut World) {
         assert_eq!(
@@ -64,6 +66,7 @@ impl Seasons {
             "the Phase 2 tables are built on another material table"
         );
         world.set_eco_rules(self.tables.displacement_rules());
+        activate_holders(world, &WaterPass::new(&self.tables));
         self.activity = Activity::new(self.tables.params().quiet_skip);
         self.between_seasons = SeasonLedger::default();
     }
@@ -602,5 +605,62 @@ mod tests {
         let msgs = b.drain();
         let (_, report, _) = season_frame(&msgs, 2);
         assert_eq!(report.between_seasons, SeasonLedger::default());
+    }
+
+    #[test]
+    fn season_turns_moist_air_into_water_on_the_replica() {
+        let t = tables();
+        let water = t.role_material("water").expect("materials.ron has water");
+        let (mut host, eps) = host_with(world(&t, true), 1);
+        let ep = &eps[0];
+        let mut replica = Replica::new(t.materials().clone());
+        ep.send(replica.hello()).unwrap();
+        host.tick();
+        for msg in ep.drain() {
+            replica.handle(msg).unwrap();
+        }
+
+        // A sealed one-cell cavity in the stone, given moisture between
+        // seasons: nothing can flow, evaporate, freeze or boil there.
+        let cavity = CellPos::new(40, 10, 5);
+        ep.send(edit(ep, 0, EditOp::Remove, Shape::Cell(cavity)))
+            .unwrap();
+        ep.send(edit(
+            ep,
+            1,
+            EditOp::SetLayer {
+                layer: LayerId::Moisture,
+                value: 200,
+            },
+            Shape::Cell(cavity),
+        ))
+        .unwrap();
+        host.tick();
+        for msg in ep.drain() {
+            replica.handle(msg).unwrap();
+        }
+        assert_eq!(host.world().get_cell(cavity), Some(MaterialId::AIR));
+        let rev = host.world().chunk(cavity.chunk()).unwrap().revision;
+
+        // The water sweep turns it into water; the chunk goes out whole.
+        ep.send(ClientMsg::AdvanceSeason).unwrap();
+        host.tick();
+        let msgs = ep.drain();
+        let (snaps, report, _) = season_frame(&msgs, 0);
+        assert!(report.active_cells_per_sweep.iter().any(|&n| n > 0));
+        let c = host.world().chunk(cavity.chunk()).unwrap();
+        assert!(c.revision > rev);
+        assert!(
+            snaps.contains(&ServerMsg::chunk_snapshot(cavity.chunk(), c)),
+            "{snaps:?}"
+        );
+        for msg in msgs {
+            replica.handle(msg).unwrap();
+        }
+        let r = replica.world().unwrap();
+        assert_eq!(host.world().get_cell(cavity), Some(water));
+        assert_eq!(r.get_cell(cavity), Some(water));
+        assert_eq!(r.layer(cavity, LayerId::Moisture), 200);
+        assert_eq!(r.hash(), host.world().hash());
     }
 }

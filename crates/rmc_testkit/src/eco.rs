@@ -642,6 +642,23 @@ mod tests {
     }
 
     #[test]
+    fn pool_fixture_is_full_water_through_a_season() {
+        let mut t = joined();
+        let s = t.fixture(Fixture::Pool);
+        let size = s.feature.max.0 - s.feature.min.0 + IVec3::ONE;
+        let volume = u32::try_from(size.x * size.y * size.z).unwrap();
+        assert_eq!(t.count("water", s.feature), volume);
+        assert_eq!(
+            t.sum_layer(LayerId::Moisture, s.feature),
+            u64::from(volume) * u64::from(u8::MAX),
+            "brush water is a full cell"
+        );
+        t.advance_season();
+        assert!(t.count("water", s.feature) > 0);
+        assert_eq!(replica_hash(&t), t.host_world().hash());
+    }
+
+    #[test]
     fn advance_season_applies_both_snapshot_kinds() {
         let mut t = joined();
         assert_eq!(t.host().season(), Some(0), "the testkit host runs seasons");

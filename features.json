@@ -1498,8 +1498,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Material changes go through World::eco_set (SAD-P2 §7.0.1), never World::apply."
+      "passes": true,
+      "notes": "Material changes go through World::eco_set (SAD-P2 §7.0.1), never World::apply.",
+      "passedAt": "2026-10-20T04:57:10Z"
     },
     {
       "id": "F121",

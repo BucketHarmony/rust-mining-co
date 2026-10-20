@@ -37,4 +37,11 @@
 
     (id: 12, key: "brass_plate", phase: Solid, tags: ["placeable"],
      hardness: 40, diggable: true, yield_count: 1, color: (201, 160, 72, 255), emissive: 0.0),
+
+    // Phase 2 (SAD-P2 §5). Water: a liquid whose `moisture` layer is its fill
+    // (0..255); the pickaxe empties it and yields nothing. Alpha is for the
+    // liquid pass (F127).
+    (id: 13, key: "water", phase: Liquid, tags: [],
+     hardness: 0, diggable: true, yield_count: 0, color: (40, 90, 200, 160), emissive: 0.0,
+     conductivity: 64, heat_capacity: 8, light_attenuation: Some(32)),
 ]

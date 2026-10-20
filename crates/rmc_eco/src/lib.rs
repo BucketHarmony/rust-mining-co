@@ -10,6 +10,7 @@ pub mod runner;
 pub mod tables;
 pub mod temperature;
 pub mod tick;
+pub mod water;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
@@ -20,3 +21,4 @@ pub use runner::{
 pub use tables::{EcoTableError, EcoTables, SeasonOverride};
 pub use temperature::{Profile, TemperaturePass};
 pub use tick::{TickReport, season_tick};
+pub use water::WaterPass;

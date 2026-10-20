@@ -4,8 +4,11 @@
 //!
 //! The host calls [`season_tick`] with edits paused. Jacobi passes run
 //! through the host's [`Activity`], which skips quiet chunks; sweeps run
-//! over their active sets. Only the passes that exist so far are run; each
+//! over their active sets, which the caller fills after worldgen or a load
+//! ([`activate_holders`]; the host does it when it installs a world). Only the passes that exist so far are run; each
 //! later pass takes its place in the §3 order inside [`substep`].
+//!
+//! [`activate_holders`]: crate::runner::activate_holders
 
 use std::time::Instant;
 
@@ -13,9 +16,10 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
-use crate::runner::Exec;
+use crate::runner::{Exec, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
+use crate::water::WaterPass;
 
 /// What one season tick did. Everything but `substep_ms` is a function of
 /// the world, the tables, the season and the activity state.
@@ -36,6 +40,7 @@ pub struct TickReport {
 /// row.
 struct Passes {
     temperature: TemperaturePass,
+    water: WaterPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -53,14 +58,15 @@ pub fn season_tick(
         *world.eco_rules() == tables.displacement_rules(),
         "world lacks the tables' displacement rules"
     );
-    let passes = Passes {
+    let mut passes = Passes {
         temperature: TemperaturePass::new(tables, season),
+        water: WaterPass::new(tables),
     };
     let mut report = TickReport::default();
     activity.season_boundary(world);
     for _ in 0..tables.seasons().substeps {
         let start = Instant::now();
-        substep(world, &passes, activity, exec, &mut report);
+        substep(world, &mut passes, activity, exec, &mut report);
         let ms = start.elapsed().as_millis();
         report
             .substep_ms
@@ -78,7 +84,7 @@ pub fn season_tick(
 /// One sub-step: the passes in SAD-P2 §3 order.
 fn substep(
     world: &mut World,
-    passes: &Passes,
+    passes: &mut Passes,
     activity: &mut Activity,
     exec: Exec,
     report: &mut TickReport,
@@ -90,6 +96,12 @@ fn substep(
             .push(u32::try_from(r.computed.len()).unwrap_or(u32::MAX));
     };
     jacobi(JacobiKind::Temperature, &passes.temperature, world, report);
+    for _ in 0..passes.water.flow_iters() {
+        let r = run_sweep(world, &mut passes.water, &mut report.ledger);
+        report
+            .active_cells_per_sweep
+            .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
+    }
 }
 
 #[cfg(test)]
