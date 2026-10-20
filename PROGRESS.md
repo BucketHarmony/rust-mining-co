@@ -1589,3 +1589,38 @@ Decisions:
 - The proptest takes about 5 s at 256 cases and 20 s at CI's 1000.
 Next: F102 (save format v2 with layers and plant state; v1 rejected).
 Blockers: none.
+
+## 2026-10-19 22:10 — F102 Save format v2 with layers and plant state; v1 rejected — passed
+Done:
+- `SAVE_FORMAT_VERSION` = 2. `SaveHeader` gains `tables_hash` (after `material_hash`, checked in that order), with `HeaderField::TablesHash`. `SaveHeader::new` takes it as its fourth argument.
+- `SavedChunk` v2 is `{ pos, revision, storage: Option<ChunkStorage>, eco_revision, layers, plants }`, still `zstd(postcard(Vec<SavedChunk>))` sorted by position.
+  - A chunk is saved when `modified || eco_revision != 0`.
+  - `storage` is `None` when the cells are as generated, so a chunk whose only change is ecological stays unmodified after load.
+  - Storage and layers are compacted.
+- `ChunkLayers` gets a hand-written serde: a sequence of `(LayerId, U8(values) | I16(values))` in storage order. Decoding rejects:
+  - an out-of-range id;
+  - ids that are not strictly ascending;
+  - the wrong value type for an id;
+  - a length other than `CHUNK_VOLUME`.
+- New `World::apply_eco_snapshot(pos, eco_revision, layers, plants)`. It replaces a resident chunk's layers, plants and eco revision, and does not touch cells, revision, `modified` or `surface_y`. It refuses an out-of-bounds or non-resident chunk, or a plant index ≥ `CHUNK_VOLUME`.
+- `load`: saved cells go through `apply_delta(Full)` as before. Then every saved chunk's eco state goes through `apply_eco_snapshot`, replacing the generated layers completely.
+- `read_header` first parses only `format_version` (`VersionProbe`). Any other version fails before the rest of the header is parsed, as `HeaderMismatch { field: FormatVersion, expected: "2", found }`. Its message reads "save format version 1 is not supported: this build reads save format version 2 only". Other fields keep the old mismatch message.
+- Callers:
+  - `rmc_host::SaveConfig` gains `tables_hash`.
+  - `rmc_app::GameAssets` gains `tables_hash`, from `EcoTables::load_with_materials` at startup.
+  - The testkit computes it with `EcoTables::load(assets/)`.
+  - rmc_app and rmc_testkit now depend on rmc_eco (Cargo.lock updated).
+Tests added:
+- rmc_world: save::tests::{v2_roundtrip_with_layers_and_plants_hash_identical, v1_rejected_with_version_message, tables_hash_mismatch_fails}, layers::tests::layers_encode_round_trip_and_bad_layers_are_refused.
+- The implementation was written before the three listed tests. They were mutation-checked instead:
+  - saving only `modified` chunks fails the v2 round trip and the tables-hash test;
+  - skipping the version probe fails the v1 test (a parse error, not a version message).
+Decisions:
+- test-fix (commit 8176772, before the feature): `only_modified_chunks_written` and `corrupt_chunks_fail` hand-decoded and hand-wrote chunks.bin as the v1 tuple `(ChunkPos, u64, ChunkStorage)`. They now go through `SavedChunk` helpers (`raw_chunk`, `decode_raw_chunks`), which passed unchanged on v1. No assertion changed. The feature commit adapts only those helpers (and one `.storage` read) to `Option<ChunkStorage>` with `.expect("cells saved")`, which is stricter.
+- A version mismatch stays a `HeaderMismatch { FormatVersion }`, not a new error variant, so `header_mismatch_fails` (which writes version 0) and the testkit's mismatch checks hold. Only the Display text is version-specific.
+- "Saved" means `modified || eco_revision != 0`. This relies on worldgen (F106/F126/...) leaving `eco_revision` at 0 for generated layers. If worldgen bumps it, every chunk is saved: correct, only larger. A chunk changed and changed back is still saved, as in Phase 1.
+- With `storage: None`, the saved `revision` is informational and load keeps the generated revision. An unmodified chunk's revision is always the generated one.
+- `apply_eco_snapshot` is the snapshot-application path under rule 14. F103's `LayerSnapshot` can reuse it.
+- `tables_hash` is opaque to rmc_world (it cannot depend on rmc_eco). The world check (`check_world`) still covers only bounds and material hash.
+Next: F103 (protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger; displacement rules).
+Blockers: none.
