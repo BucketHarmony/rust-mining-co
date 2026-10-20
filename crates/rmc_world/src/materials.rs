@@ -470,8 +470,15 @@ mod tests {
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 
+    /// Rows of the shipped table that Phase 1 defined (ids `0..13`); Phase 2
+    /// appends its materials after them.
+    const PHASE1_ROWS: usize = 13;
+
+    /// The Phase 1 rows of the shipped table.
     fn phase1() -> MaterialTable {
-        MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads")
+        let t = MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads");
+        let rows = t.iter().take(PHASE1_ROWS).cloned().collect();
+        MaterialTable::from_defs(rows).expect("Phase 1 rows form a table")
     }
 
     /// Small fixed table for hash and validation tests, independent of the

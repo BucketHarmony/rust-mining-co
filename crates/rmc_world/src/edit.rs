@@ -208,8 +208,15 @@ mod tests {
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 
+    /// Rows of the shipped table that Phase 1 defined (ids `0..13`); Phase 2
+    /// appends its materials after them.
+    const PHASE1_ROWS: usize = 13;
+
+    /// The Phase 1 rows of the shipped table.
     fn phase1() -> Arc<MaterialTable> {
-        Arc::new(MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads"))
+        let t = MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads");
+        let rows = t.iter().take(PHASE1_ROWS).cloned().collect();
+        Arc::new(MaterialTable::from_defs(rows).expect("Phase 1 rows form a table"))
     }
 
     fn id(table: &MaterialTable, key: &str) -> MaterialId {
