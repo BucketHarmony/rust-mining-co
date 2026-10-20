@@ -1470,3 +1470,18 @@ Decisions:
 - `gh` here is logged into the work account by default. CI was read with `GH_TOKEN=$(gh auth token --user BucketHarmony)`.
 Next: F084 (playtester report and screenshot gallery).
 Blockers: none.
+
+## 2026-10-19 21:10 — F084 Playtester report and screenshot gallery — passed
+Done:
+- Smoke green at session start (105d692).
+- Ran the playtester subagent for M8. It ran `scripts/screens.sh` (all 17 scenarios pass, about 52 min of scenario time on WARP) and `scripts/soak.sh` (passes; seed 17247, 3,600 frames, 0 penetrating frames, the hashes match after the drain, WARP p95 352 ms recorded but not asserted). It added `tests/e2e/tests/playtest_20261020.rs` (passes, 539 s) and appended its report to docs/PLAYTEST.md.
+- Gallery: all 35 committed docs/screens PNGs came out byte-identical, so the gallery is current. screens.sh also copied 57 stray playtest_20261018/19 PNGs into docs/screens; they were deleted, not committed.
+- No code changes. Neither "broken" item is a Phase 1 defect (see Decisions).
+Tests added: playtest_20261020 (E2E scenario, written by the playtester). Feature test coords::tests::smoke_compiles passes.
+Decisions:
+- Playtest A1, "a one-cell hole cannot be descended": the SAD fixes the player AABB at 0.6 m wide (§11.4) and cells at 0.5 m (§2). A 0.6 m box cannot fit a 0.5 m shaft, so a player has to dig a 2-cell-wide hole to go down. That is the designed behavior, so the player box was not narrowed. If the owner wants one-cell shafts, the SAD constant has to change.
+- Playtest A2, "the fly camera goes blank high above the world": SAD §12.4 says the fly camera is noclip and not clamped, and §11.5 specifies linear distance fog. Past the fog distance from all geometry, the frame is all fog color, as specified. Clamping the camera would contradict §12.4, and height-faded fog is a look change for the owner. Left as is.
+- "Stats panel not visible in screenshots": TestApp's render mode does not add EditorPanelPlugin (F072/F077 decisions). The panel is covered by its unit test, so this is not a defect.
+- The playtester's look/feel list (fog band edge, wireframe chips, flat surfaces, no place control) is owner work or later features. It is recorded in docs/PLAYTEST.md.
+Next: F085 (docs/REPORT.md via scripts/report.sh), the last M8 feature. After it passes, M8 is complete and the playtester runs per step 11.
+Blockers: none.
