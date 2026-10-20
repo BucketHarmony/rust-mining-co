@@ -1485,3 +1485,21 @@ Decisions:
 - The playtester's look/feel list (fog band edge, wireframe chips, flat surfaces, no place control) is owner work or later features. It is recorded in docs/PLAYTEST.md.
 Next: F085 (docs/REPORT.md via scripts/report.sh), the last M8 feature. After it passes, M8 is complete and the playtester runs per step 11.
 Blockers: none.
+
+## 2026-10-20 00:20 — F085 docs/REPORT.md via scripts/report.sh — passed
+Done:
+- Smoke green at session start (1bd70d0).
+- scripts/report.sh brought up to SAD §16.6:
+  - Each feature row lists its test names, and a skipped feature shows its `skipReason`.
+  - A new per-milestone table gives passing, skipped and the ids still not passing.
+  - The headline count now includes skipped features.
+  - Decisions and Blockers now come from each PROGRESS.md block in full, under that block's heading. The old `grep -A3` cut multi-line Decisions after three lines. Blockers that say "none" are left out.
+  - docs/perf.md is nested under the report with its headings demoted one level.
+  - The play commands match §16.6, including the "or download the CI windows-release artifact" alternative. The `user@` part is stripped from the remote URL so the clone line works for anyone.
+- docs/REPORT.md regenerated after F085 passed: 68/128 features, M0–M8 all passing.
+Tests added: none (feature test is coords::tests::smoke_compiles; the proof is the generated docs/REPORT.md).
+Decisions:
+- REPORT.md is a generated file and is committed as generated. Its "at commit" line names the HEAD it was built from, which is the commit before the one that adds it.
+- Phase 2 features (E0–E5) appear in the report as not passing. The report covers all of features.json rather than hiding unstarted work.
+Next: M8 complete; playtester runs per step 11. Then F100 (rmc_eco crate, Phase 2 data files).
+Blockers: none.
