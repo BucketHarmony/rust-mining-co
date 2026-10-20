@@ -63,6 +63,9 @@ pub struct SaveConfig {
     pub dir: PathBuf,
     /// The noise crate version worldgen samples, for the save header.
     pub noise_crate_version: String,
+    /// Hash of the Phase 2 data tables (`rmc_eco::EcoTables::hash`), for
+    /// the save header.
+    pub tables_hash: u64,
 }
 
 /// Why [`Host::save`] wrote nothing.
@@ -145,6 +148,7 @@ impl Host {
             self.config.seed,
             self.world.bounds(),
             self.world.materials().hash(),
+            config.tables_hash,
             self.config.gen_params_hash,
             config.noise_crate_version.clone(),
         );
@@ -1284,11 +1288,13 @@ mod tests {
     }
 
     const NOISE_VERSION: &str = "fastnoise-lite 1.1.1";
+    const TABLES_HASH: u64 = 0x7AB1_E500;
 
     fn save_config(dir: &std::path::Path) -> SaveConfig {
         SaveConfig {
             dir: dir.to_path_buf(),
             noise_crate_version: NOISE_VERSION.into(),
+            tables_hash: TABLES_HASH,
         }
     }
 
@@ -1325,6 +1331,7 @@ mod tests {
             CONFIG.seed,
             world.bounds(),
             world.materials().hash(),
+            TABLES_HASH,
             CONFIG.gen_params_hash,
             NOISE_VERSION,
         );

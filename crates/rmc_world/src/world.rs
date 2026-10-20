@@ -12,6 +12,7 @@ use crate::edit::{
     ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
     RejectReason,
 };
+use crate::layers::{ChunkLayers, PlantState};
 use crate::materials::{MaterialId, MaterialTable};
 
 /// Errors from world mutation.
@@ -428,6 +429,35 @@ impl World {
         let previous = self.chunks.insert(pos, chunk);
         self.rebuild_columns(pos);
         Ok(previous)
+    }
+
+    /// Replaces the ecology state of the resident chunk at `pos` (snapshot
+    /// application: a save load, or a layer snapshot): its layers and plants
+    /// become `layers` and `plants` and its eco revision `eco_revision`.
+    /// Cells, revision, `modified` and `surface_y` are untouched, since
+    /// layers do not change materials. A refused snapshot changes nothing.
+    pub fn apply_eco_snapshot(
+        &mut self,
+        pos: ChunkPos,
+        eco_revision: u64,
+        layers: ChunkLayers,
+        plants: BTreeMap<u16, PlantState>,
+    ) -> Result<(), DeltaError> {
+        if !self.bounds.intersects_chunk(pos) {
+            return Err(DeltaError::OutOfBounds(pos));
+        }
+        if let Some(&index) = plants.keys().find(|&&i| usize::from(i) >= CHUNK_VOLUME) {
+            return Err(DeltaError::BadIndex { pos, index });
+        }
+        let chunk = self
+            .chunks
+            .get_mut(&pos)
+            .ok_or(DeltaError::NotResident(pos))?;
+        chunk.layers = layers;
+        chunk.plants = plants;
+        chunk.eco_revision = eco_revision;
+        tracing::debug!(?pos, eco_revision, "eco snapshot applied");
+        Ok(())
     }
 
     /// Recomputes `surface_y` for every cell column of `pos`'s chunk column.

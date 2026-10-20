@@ -27,6 +27,7 @@ use bevy::prelude::{
     SystemSet, Update,
 };
 use rmc_client::{EditorState, EditorSystems, HostLink};
+use rmc_eco::EcoTables;
 use rmc_host::{ClientEndpoint, Host, HostConfig, HostHandle, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
@@ -48,10 +49,13 @@ pub struct GameAssets {
     pub materials: Arc<MaterialTable>,
     pub tools: ToolTable,
     pub worldgen: GenParams,
+    /// [`EcoTables::hash`] of the Phase 2 tables, for the save header.
+    pub tables_hash: u64,
 }
 
 impl GameAssets {
-    /// Loads `materials.ron`, `tools.ron` and `worldgen.ron` from `dir`.
+    /// Loads `materials.ron`, `tools.ron`, `worldgen.ron` and the Phase 2
+    /// tables from `dir`.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let materials = MaterialTable::load(dir.join("materials.ron"))
             .with_context(|| format!("loading {}", dir.join("materials.ron").display()))?;
@@ -59,10 +63,15 @@ impl GameAssets {
             .with_context(|| format!("loading {}", dir.join("tools.ron").display()))?;
         let worldgen = GenParams::load(dir.join("worldgen.ron"))
             .with_context(|| format!("loading {}", dir.join("worldgen.ron").display()))?;
+        let materials = Arc::new(materials);
+        let tables_hash = EcoTables::load_with_materials(materials.clone(), dir)
+            .with_context(|| format!("loading the Phase 2 tables in {}", dir.display()))?
+            .hash();
         Ok(Self {
-            materials: Arc::new(materials),
+            materials,
             tools,
             worldgen,
+            tables_hash,
         })
     }
 
@@ -80,6 +89,7 @@ impl GameAssets {
             seed,
             self.worldgen.bounds.aabb(),
             self.materials.hash(),
+            self.tables_hash,
             self.worldgen.hash(),
             NOISE_CRATE_VERSION,
         )
@@ -164,6 +174,7 @@ pub fn start_world(
     let save = SaveConfig {
         dir: save_dir.to_path_buf(),
         noise_crate_version: NOISE_CRATE_VERSION.to_string(),
+        tables_hash: assets.tables_hash,
     };
     let (world, seed, origin) = if has_save(save_dir) {
         let found = save::read_header(save_dir)

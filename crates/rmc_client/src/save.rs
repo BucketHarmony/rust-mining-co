@@ -303,7 +303,7 @@ mod tests {
         });
         assert_eq!(result.status, EditStatus::Applied);
         let dir = TempDir::new("round_trip");
-        let header = SaveHeader::new(7, host_world.bounds(), materials.hash(), 9, "noise 1");
+        let header = SaveHeader::new(7, host_world.bounds(), materials.hash(), 8, 9, "noise 1");
         assert_eq!(save::save(&dir.0, &header, &host_world).unwrap(), 1);
         let path = dir.0.display().to_string();
         link.answer(true, &path);

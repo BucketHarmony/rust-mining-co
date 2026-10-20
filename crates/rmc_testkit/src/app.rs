@@ -24,6 +24,7 @@ use rmc_client::{
     MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, ReplicaPlugin, SaveOutcome, SavePlugin,
     SaveStatus, ToHost,
 };
+use rmc_eco::EcoTables;
 use rmc_host::{ChannelTransport, ClientEndpoint, Host, HostConfig, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
@@ -132,6 +133,7 @@ impl TestApp {
             config.seed,
             config.world_bounds,
             materials.hash(),
+            tables_hash(),
             host_config.gen_params_hash,
             NOISE_CRATE_VERSION,
         );
@@ -330,6 +332,14 @@ fn load_materials() -> Arc<MaterialTable> {
     Arc::new(MaterialTable::load(asset_path("materials.ron")).expect("assets/materials.ron loads"))
 }
 
+/// [`EcoTables::hash`] of the Phase 2 tables in `assets/`, for the save
+/// header.
+fn tables_hash() -> u64 {
+    EcoTables::load(asset_path(""))
+        .expect("assets/ Phase 2 tables load")
+        .hash()
+}
+
 /// `assets/worldgen.ron` with its bounds replaced by `config.world_bounds`
 /// (so the bedrock shell follows them).
 fn gen_params(config: &TestConfig) -> GenParams {
@@ -374,6 +384,7 @@ fn save_config(dir: &Path) -> SaveConfig {
     SaveConfig {
         dir: dir.to_path_buf(),
         noise_crate_version: NOISE_CRATE_VERSION.to_string(),
+        tables_hash: tables_hash(),
     }
 }
 

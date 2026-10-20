@@ -264,6 +264,74 @@ impl PartialEq for ChunkLayers {
 
 impl Eq for ChunkLayers {}
 
+/// One layer's values in local index order, as the save encodes them.
+#[derive(Serialize)]
+enum LayerValuesRef<'a> {
+    U8(&'a [u8]),
+    I16(&'a [i16]),
+}
+
+/// The owned form of [`LayerValuesRef`], read back from a save.
+#[derive(Deserialize)]
+enum LayerValues {
+    U8(Vec<u8>),
+    I16(Vec<i16>),
+}
+
+/// Encodes the materialized layers in storage order as a sequence of
+/// `(LayerId, values)`.
+impl Serialize for ChunkLayers {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.map.iter().map(|(id, data)| {
+            let values = match data {
+                LayerData::U8(v) => LayerValuesRef::U8(&v[..]),
+                LayerData::I16(v) => LayerValuesRef::I16(&v[..]),
+            };
+            (*id, values)
+        }))
+    }
+}
+
+/// Decodes what [`Serialize`] wrote. Rejects an id out of range, ids not
+/// strictly ascending, values of the wrong type for the id, or a length
+/// other than one value per cell.
+impl<'de> Deserialize<'de> for ChunkLayers {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let entries = Vec::<(LayerId, LayerValues)>::deserialize(deserializer)?;
+        let mut map = BTreeMap::new();
+        for (id, values) in entries {
+            if !id.is_valid() {
+                return Err(D::Error::custom(format!("layer {id:?} out of range")));
+            }
+            if map.last_key_value().is_some_and(|(last, _)| *last >= id) {
+                return Err(D::Error::custom(format!("layer {id:?} out of order")));
+            }
+            let wrong_length =
+                || D::Error::custom(format!("layer {id:?} is not one value per cell"));
+            let data = match values {
+                LayerValues::U8(v) if !id.is_i16() => LayerData::U8(
+                    v.into_boxed_slice()
+                        .try_into()
+                        .map_err(|_| wrong_length())?,
+                ),
+                LayerValues::I16(v) if id.is_i16() => LayerData::I16(
+                    v.into_boxed_slice()
+                        .try_into()
+                        .map_err(|_| wrong_length())?,
+                ),
+                _ => {
+                    return Err(D::Error::custom(format!(
+                        "layer {id:?} has the wrong value type"
+                    )));
+                }
+            };
+            map.insert(id, data);
+        }
+        Ok(Self { map })
+    }
+}
+
 /// One plant cell's state (SAD-P2 §6, §7.8), keyed by local index in
 /// [`Chunk::plants`](crate::chunk::Chunk::plants).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -615,6 +683,52 @@ mod tests {
         meta.freeze_thaw.insert(at);
         meta.active[N_SWEEPS - 1].insert(at);
         assert_eq!(meta.hash(), temp.hash());
+    }
+
+    #[test]
+    fn layers_encode_round_trip_and_bad_layers_are_refused() {
+        let mut layers = ChunkLayers::default();
+        layers.set_i16(LayerId::Temperature, LocalPos::new(1, 2, 3), -40);
+        layers.set_u8(LayerId::Gas(2), LocalPos::new(31, 0, 7), 200);
+        layers.materialize(LayerId::Light);
+        let bytes = postcard::to_stdvec(&layers).unwrap();
+        let back: ChunkLayers = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(back, layers);
+        assert_eq!(back.hash(), layers.hash());
+        assert_eq!(
+            back.ids().collect::<Vec<_>>(),
+            layers.ids().collect::<Vec<_>>()
+        );
+
+        let decode = |entries: Vec<(LayerId, LayerValues)>| {
+            let bytes = postcard::to_stdvec(&RawLayers(entries)).unwrap();
+            postcard::from_bytes::<ChunkLayers>(&bytes)
+        };
+        let u8s = || LayerValues::U8(vec![0; CHUNK_VOLUME]);
+        let i16s = || LayerValues::I16(vec![0; CHUNK_VOLUME]);
+        assert!(decode(vec![(LayerId::Moisture, u8s())]).is_ok());
+        // Wrong value type, wrong length, out of range, out of order.
+        assert!(decode(vec![(LayerId::Moisture, i16s())]).is_err());
+        assert!(decode(vec![(LayerId::Temperature, u8s())]).is_err());
+        assert!(decode(vec![(LayerId::Moisture, LayerValues::U8(vec![0; 7]))]).is_err());
+        assert!(decode(vec![(LayerId::Gas(N_GASES as u8), u8s())]).is_err());
+        assert!(decode(vec![(LayerId::Moisture, u8s()), (LayerId::Moisture, u8s())]).is_err());
+        assert!(decode(vec![(LayerId::Light, u8s()), (LayerId::Moisture, u8s())]).is_err());
+    }
+
+    /// Encodes like [`ChunkLayers`] from arbitrary entries.
+    struct RawLayers(Vec<(LayerId, LayerValues)>);
+
+    impl Serialize for RawLayers {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(self.0.iter().map(|(id, v)| {
+                let v = match v {
+                    LayerValues::U8(v) => LayerValuesRef::U8(v),
+                    LayerValues::I16(v) => LayerValuesRef::I16(v),
+                };
+                (*id, v)
+            }))
+        }
     }
 
     #[test]

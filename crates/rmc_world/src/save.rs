@@ -1,25 +1,31 @@
-//! Save format (SAD §10): a RON header naming everything the world was built
-//! from, plus the modified chunks as `zstd(postcard(Vec<(ChunkPos, revision,
-//! ChunkStorage)>))`, sorted by position.
+//! Save format v2 (SAD §10, SAD-P2 §3): a RON header naming everything the
+//! world was built from, plus the saved chunks as
+//! `zstd(postcard(Vec<SavedChunk>))`, sorted by position. A chunk is saved
+//! when its cells or its ecology state (layers, plants) differ from worldgen
+//! output.
 //!
 //! Loading generates the world from the seed (the caller supplies the
 //! generator, since worldgen sits above this crate) and then overwrites it
-//! with the saved chunks. Any header mismatch fails the load.
+//! with the saved chunks. Any header mismatch fails the load; a save of
+//! another format version (Phase 1 saves are version 1) fails with a version
+//! message.
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::chunk::ChunkStorage;
+use crate::chunk::{Chunk, ChunkStorage};
 use crate::coords::{CellAabb, ChunkPos};
 use crate::edit::ChunkDelta;
+use crate::layers::{ChunkLayers, PlantState};
 use crate::world::{DeltaError, World};
 
 /// Version of the on-disk layout. Bump on any change to the header or chunk
-/// encoding.
-pub const SAVE_FORMAT_VERSION: u32 = 1;
+/// encoding. Version 2 adds `tables_hash` and per-chunk ecology state.
+pub const SAVE_FORMAT_VERSION: u32 = 2;
 /// Header file name inside a save directory.
 pub const HEADER_FILE: &str = "header.ron";
 /// Chunk file name inside a save directory.
@@ -38,11 +44,22 @@ pub struct SaveHeader {
     pub bounds: CellAabb,
     /// [`MaterialTable::hash`](crate::materials::MaterialTable::hash).
     pub material_hash: u64,
+    /// Hash of the Phase 2 data tables (`rmc_eco::EcoTables::hash`), which
+    /// decide what the saved ecology state means.
+    pub tables_hash: u64,
     /// Hash of the worldgen parameters (`assets/worldgen.ron`).
     pub gen_params_hash: u64,
     /// Version of the noise crate worldgen samples, since its output decides
     /// every unmodified chunk.
     pub noise_crate_version: String,
+}
+
+/// The one header field every format version shares, read before the rest
+/// so a save of another version fails with a version message rather than a
+/// parse error.
+#[derive(Deserialize)]
+struct VersionProbe {
+    format_version: u32,
 }
 
 impl SaveHeader {
@@ -51,6 +68,7 @@ impl SaveHeader {
         seed: u64,
         bounds: CellAabb,
         material_hash: u64,
+        tables_hash: u64,
         gen_params_hash: u64,
         noise_crate_version: impl Into<String>,
     ) -> Self {
@@ -59,6 +77,7 @@ impl SaveHeader {
             seed,
             bounds,
             material_hash,
+            tables_hash,
             gen_params_hash,
             noise_crate_version: noise_crate_version.into(),
         }
@@ -67,17 +86,6 @@ impl SaveHeader {
     /// Fails with the first field (in declaration order) where `found`
     /// differs from `self`.
     fn check(&self, found: &SaveHeader) -> Result<(), SaveError> {
-        fn same<T: PartialEq + Debug>(field: HeaderField, e: &T, f: &T) -> Result<(), SaveError> {
-            if e == f {
-                Ok(())
-            } else {
-                Err(SaveError::HeaderMismatch {
-                    field,
-                    expected: format!("{e:?}"),
-                    found: format!("{f:?}"),
-                })
-            }
-        }
         same(
             HeaderField::FormatVersion,
             &self.format_version,
@@ -89,6 +97,11 @@ impl SaveHeader {
             HeaderField::MaterialHash,
             &self.material_hash,
             &found.material_hash,
+        )?;
+        same(
+            HeaderField::TablesHash,
+            &self.tables_hash,
+            &found.tables_hash,
         )?;
         same(
             HeaderField::GenParamsHash,
@@ -115,6 +128,23 @@ impl SaveHeader {
     }
 }
 
+/// [`SaveError::HeaderMismatch`] unless `expected == found`.
+fn same<T: PartialEq + Debug>(
+    field: HeaderField,
+    expected: &T,
+    found: &T,
+) -> Result<(), SaveError> {
+    if expected == found {
+        Ok(())
+    } else {
+        Err(SaveError::HeaderMismatch {
+            field,
+            expected: format!("{expected:?}"),
+            found: format!("{found:?}"),
+        })
+    }
+}
+
 /// A [`SaveHeader`] field, named in mismatch errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderField {
@@ -122,18 +152,25 @@ pub enum HeaderField {
     Seed,
     Bounds,
     MaterialHash,
+    TablesHash,
     GenParamsHash,
     NoiseCrateVersion,
 }
 
-/// One saved chunk. Encodes exactly like the tuple `(ChunkPos, u64,
-/// ChunkStorage)`.
+/// One saved chunk.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedChunk {
     pub pos: ChunkPos,
+    /// The chunk's revision. With `storage` `None` it is the generated
+    /// chunk's, and loading leaves the generated revision in place.
     pub revision: u64,
+    /// Compacted cells; `None` when the cells are as generated (the chunk is
+    /// not `modified`) and only its ecology state is saved.
+    pub storage: Option<ChunkStorage>,
+    pub eco_revision: u64,
     /// Compacted.
-    pub storage: ChunkStorage,
+    pub layers: ChunkLayers,
+    pub plants: BTreeMap<u16, PlantState>,
 }
 
 /// Why a save or load failed. A failed load returns no world.
@@ -151,7 +188,7 @@ pub enum SaveError {
     },
     #[error("save header does not encode: {0}")]
     HeaderEncode(Box<ron::Error>),
-    #[error("save header {field:?} mismatch: expected {expected}, save has {found}")]
+    #[error("{}", mismatch_message(*field, expected, found))]
     HeaderMismatch {
         field: HeaderField,
         expected: String,
@@ -171,6 +208,18 @@ pub enum SaveError {
     BadChunk(DeltaError),
 }
 
+/// The [`SaveError::HeaderMismatch`] message. A format version mismatch says
+/// which version the save has and which this build reads.
+fn mismatch_message(field: HeaderField, expected: &str, found: &str) -> String {
+    match field {
+        HeaderField::FormatVersion => format!(
+            "save format version {found} is not supported: this build reads save format \
+             version {expected} only"
+        ),
+        _ => format!("save header {field:?} mismatch: expected {expected}, save has {found}"),
+    }
+}
+
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> SaveError + '_ {
     move |source| SaveError::Io {
         path: path.to_path_buf(),
@@ -178,27 +227,42 @@ fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> SaveError + '_ {
     }
 }
 
-/// The world's modified chunks in [`ChunkPos`] order, storage compacted.
-/// This is what [`save`] writes; the host can take it on its own thread and
-/// write it elsewhere with [`write`].
+/// Whether `chunk` differs from worldgen output, so it is saved: its cells
+/// changed, or its layers or plants did (every such change bumps
+/// `eco_revision`).
+fn is_saved(chunk: &Chunk) -> bool {
+    chunk.modified || chunk.eco_revision != 0
+}
+
+/// The world's saved chunks (see [`is_saved`]) in [`ChunkPos`] order,
+/// storage and layers compacted. This is what [`save`] writes; the host can
+/// take it on its own thread and write it elsewhere with [`write`].
 pub fn snapshot(world: &World) -> Vec<SavedChunk> {
     world
         .iter_chunks_sorted()
-        .filter(|(_, chunk)| chunk.modified)
+        .filter(|(_, chunk)| is_saved(chunk))
         .map(|(pos, chunk)| {
-            let mut storage = chunk.storage.clone();
-            storage.compact();
+            let storage = chunk.modified.then(|| {
+                let mut storage = chunk.storage.clone();
+                storage.compact();
+                storage
+            });
+            let mut layers = chunk.layers.clone();
+            layers.compact();
             SavedChunk {
                 pos,
                 revision: chunk.revision,
                 storage,
+                eco_revision: chunk.eco_revision,
+                layers,
+                plants: chunk.plants.clone(),
             }
         })
         .collect()
 }
 
-/// Writes `world`'s modified chunks under `header` into `dir`, creating it
-/// if needed and replacing any save there. Returns the number of chunks
+/// Writes `world`'s saved chunks under `header` into `dir`, creating it if
+/// needed and replacing any save there. Returns the number of chunks
 /// written. Fails without writing if the world's bounds or material table
 /// differ from the header.
 pub fn save(dir: &Path, header: &SaveHeader, world: &World) -> Result<usize, SaveError> {
@@ -240,14 +304,23 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
     fs::rename(&tmp, path).map_err(io_err(path))
 }
 
-/// Reads the header of the save in `dir`.
+/// Reads the header of the save in `dir`. A header of another format
+/// version (a Phase 1 save, say) fails with a
+/// [`HeaderField::FormatVersion`] mismatch before the rest of it is parsed.
 pub fn read_header(dir: &Path) -> Result<SaveHeader, SaveError> {
     let path = dir.join(HEADER_FILE);
     let text = fs::read_to_string(&path).map_err(io_err(&path))?;
-    ron::from_str(&text).map_err(|source| SaveError::HeaderParse {
-        path,
+    let parse_err = |source| SaveError::HeaderParse {
+        path: path.clone(),
         source: Box::new(source),
-    })
+    };
+    let probe: VersionProbe = ron::from_str(&text).map_err(parse_err)?;
+    same(
+        HeaderField::FormatVersion,
+        &SAVE_FORMAT_VERSION,
+        &probe.format_version,
+    )?;
+    ron::from_str(&text).map_err(parse_err)
 }
 
 /// Reads the chunks of the save in `dir`, checking they are strictly
@@ -270,11 +343,16 @@ fn check_sorted(chunks: &[SavedChunk]) -> Result<(), SaveError> {
 
 /// Loads the save in `dir`. Its header must equal `expected` field for
 /// field. Then `generate` builds the world from the seed (it is not called
-/// if the save is refused before that), the world must match the header's
-/// bounds and material table, and every saved chunk replaces the generated
-/// one through [`World::apply_delta`] as a `Full` delta: the storage must be
-/// well formed, in bounds and use only known materials, and the chunk keeps
-/// its saved revision and is marked modified. Damage starts empty.
+/// if the save is refused before that), and the world must match the
+/// header's bounds and material table. Each saved chunk then overwrites the
+/// generated one:
+/// - saved cells go through [`World::apply_delta`] as a `Full` delta: the
+///   storage must be well formed, in bounds and use only known materials,
+///   and the chunk keeps its saved revision and is marked modified;
+/// - its ecology state goes through [`World::apply_eco_snapshot`]: the
+///   chunk takes the saved layers, plants and eco revision.
+///
+/// Damage starts empty.
 pub fn load(
     dir: &Path,
     expected: &SaveHeader,
@@ -290,14 +368,22 @@ pub fn load(
         pos,
         revision,
         storage,
+        eco_revision,
+        layers,
+        plants,
     } in chunks
     {
+        if let Some(storage) = storage {
+            world
+                .apply_delta(&ChunkDelta::Full {
+                    pos,
+                    revision,
+                    storage,
+                })
+                .map_err(SaveError::BadChunk)?;
+        }
         world
-            .apply_delta(&ChunkDelta::Full {
-                pos,
-                revision,
-                storage,
-            })
+            .apply_eco_snapshot(pos, eco_revision, layers, plants)
             .map_err(SaveError::BadChunk)?;
     }
     tracing::info!(dir = %dir.display(), chunks = count, "world loaded");
@@ -314,11 +400,13 @@ mod tests {
     use crate::chunk::Chunk;
     use crate::coords::{CHUNK_VOLUME, CellPos, LocalPos};
     use crate::edit::{CommandId, EditCommand, EditOp, EditStatus, PlayerId};
+    use crate::layers::LayerId;
     use crate::materials::{MaterialDef, MaterialId, MaterialTable};
     use crate::shape::Shape;
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
     const GEN_HASH: u64 = 0xC0FF_EE00_1234_5678;
+    const TABLES_HASH: u64 = 0x7AB1_E500_8765_4321;
     const NOISE: &str = "1.1.1";
 
     fn phase1() -> Arc<MaterialTable> {
@@ -337,7 +425,7 @@ mod tests {
     }
 
     fn header(seed: u64, table: &MaterialTable) -> SaveHeader {
-        SaveHeader::new(seed, bounds(), table.hash(), GEN_HASH, NOISE)
+        SaveHeader::new(seed, bounds(), table.hash(), TABLES_HASH, GEN_HASH, NOISE)
     }
 
     /// Stand-in for worldgen: the lower layer is stone with seed-dependent
@@ -502,7 +590,10 @@ mod tests {
         SavedChunk {
             pos,
             revision,
-            storage,
+            storage: Some(storage),
+            eco_revision: 0,
+            layers: ChunkLayers::default(),
+            plants: BTreeMap::new(),
         }
     }
 
@@ -525,7 +616,7 @@ mod tests {
             postcard::from_bytes(&zstd::decode_all(raw).unwrap()).unwrap();
         chunks
             .into_iter()
-            .map(|c| (c.pos, c.revision, c.storage))
+            .map(|c| (c.pos, c.revision, c.storage.expect("cells saved")))
             .collect()
     }
 
@@ -679,7 +770,7 @@ mod tests {
         let read = read_chunks(dir.path()).unwrap();
         assert_eq!(
             read.iter()
-                .map(|c| (c.pos, c.revision, c.storage.clone()))
+                .map(|c| (c.pos, c.revision, c.storage.clone().expect("cells saved")))
                 .collect::<Vec<_>>(),
             decoded
         );
@@ -872,18 +963,7 @@ mod tests {
             write(
                 dir.path(),
                 &header(5, &t),
-                &[
-                    SavedChunk {
-                        pos: b,
-                        revision: 1,
-                        storage: s.clone()
-                    },
-                    SavedChunk {
-                        pos: a,
-                        revision: 1,
-                        storage: s.clone()
-                    },
-                ]
+                &[raw_chunk(b, 1, s.clone()), raw_chunk(a, 1, s.clone())]
             ),
             Err(SaveError::UnsortedChunks(_))
         ));
@@ -923,5 +1003,296 @@ mod tests {
         let c = loaded.chunk(a).unwrap();
         assert_eq!((c.revision, c.modified), (17, true));
         assert_eq!(c.storage, ChunkStorage::Uniform(stone));
+    }
+    /// Ecology state on two chunks, the way the season tick leaves it: the
+    /// edited chunk (0, -1, -1) and the unedited chunk (-1, 0, 0), whose
+    /// cells stay as generated. Each gets temperature, moisture, a
+    /// substance, a gas, an all-zero materialized layer (which the save
+    /// compacts away) and plants, and its eco revision bumps.
+    fn eco_edit(w: &mut World) -> [ChunkPos; 2] {
+        let edited = ChunkPos::new(0, -1, -1);
+        let unedited = ChunkPos::new(-1, 0, 0);
+        assert!(w.chunk(edited).unwrap().modified);
+        assert!(!w.chunk(unedited).unwrap().modified);
+        for (k, pos) in [edited, unedited].into_iter().enumerate() {
+            let k = k as u8;
+            let chunk = w.chunk(pos).unwrap();
+            let mut layers = chunk.layers.clone();
+            let mut plants = chunk.plants.clone();
+            for i in 0..CHUNK_VOLUME as u16 {
+                let local = LocalPos::from_index(i);
+                layers.set_i16(LayerId::Temperature, local, 150 - (i / 1024) as i16 * 7);
+                if i % 3 == 0 {
+                    layers.set_u8(LayerId::Moisture, local, (i % 251) as u8 + k);
+                }
+            }
+            layers.set_u8(LayerId::Substance(3), LocalPos::new(4, 5, 6), 77 + k);
+            layers.set_u8(LayerId::Gas(1), LocalPos::new(31, 31, 31), 9);
+            layers.materialize(LayerId::Regolith);
+            plants.insert(
+                LocalPos::new(1, 2, 3).index(),
+                PlantState {
+                    species: 1 + k,
+                    stress: 20,
+                    age_seasons: 3,
+                    held: [0, 4, 0, 0, 0, 0, 0, 0, 9, 1],
+                },
+            );
+            plants.insert(LocalPos::new(30, 0, 2).index(), PlantState::default());
+            let eco_revision = chunk.eco_revision + 5 + u64::from(k);
+            w.apply_eco_snapshot(pos, eco_revision, layers, plants)
+                .unwrap();
+        }
+        [edited, unedited]
+    }
+
+    fn assert_same_eco(a: &World, b: &World) {
+        for pos in bounds().chunks() {
+            let (ca, cb) = (a.chunk(pos).unwrap(), b.chunk(pos).unwrap());
+            assert_eq!(ca.eco_revision, cb.eco_revision, "{pos:?}");
+            assert_eq!(ca.layers, cb.layers, "{pos:?}");
+            assert_eq!(ca.plants, cb.plants, "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn v2_roundtrip_with_layers_and_plants_hash_identical() {
+        let t = phase1();
+        let dir = TempDir::new("v2_roundtrip");
+        let mut w = generate(7, t.clone());
+        edit(&mut w);
+        let materials_only = w.hash();
+        let [edited, unedited] = eco_edit(&mut w);
+        assert_ne!(w.hash(), materials_only, "the world hash covers ecology");
+
+        let modified = w.iter_chunks_sorted().filter(|(_, c)| c.modified).count();
+        let written = save(dir.path(), &header(7, &t), &w).unwrap();
+        assert_eq!(
+            written,
+            modified + 1,
+            "plus the unedited chunk with eco state"
+        );
+
+        // The header carries the tables hash at format version 2.
+        let read = read_header(dir.path()).unwrap();
+        assert_eq!(read.format_version, 2);
+        assert_eq!(read.tables_hash, TABLES_HASH);
+
+        // chunks.bin by hand: zstd around postcard of the v2 records.
+        let raw = fs::read(dir.path().join(CHUNKS_FILE)).unwrap();
+        let decoded: Vec<SavedChunk> =
+            postcard::from_bytes(&zstd::decode_all(raw.as_slice()).unwrap()).unwrap();
+        assert_eq!(decoded, read_chunks(dir.path()).unwrap());
+        assert_eq!(decoded, snapshot(&w));
+        let record = |pos| decoded.iter().find(|c| c.pos == pos).unwrap();
+        // The unedited chunk saves its eco state but not its cells.
+        let u = record(unedited);
+        assert_eq!(u.storage, None);
+        assert_eq!(u.eco_revision, w.chunk(unedited).unwrap().eco_revision);
+        assert_eq!(u.plants.len(), 2);
+        // Layers are compacted: the all-zero Regolith layer is dropped.
+        for pos in [edited, unedited] {
+            let ids: Vec<LayerId> = record(pos).layers.ids().collect();
+            assert_eq!(
+                ids,
+                [
+                    LayerId::Temperature,
+                    LayerId::Moisture,
+                    LayerId::Substance(3),
+                    LayerId::Gas(1)
+                ],
+                "{pos:?}"
+            );
+        }
+        assert!(record(edited).storage.is_some());
+
+        // Load: cells, revisions, modified flags, layers, plants and eco
+        // revisions all match, so the world hash is identical.
+        let loaded = load(dir.path(), &header(7, &t), || generate(7, t.clone())).unwrap();
+        assert_same_chunks(&w, &loaded);
+        assert_same_eco(&w, &loaded);
+        assert_eq!(loaded.hash(), w.hash());
+        assert!(!loaded.chunk(unedited).unwrap().modified);
+        let probe = LocalPos::new(4, 5, 6);
+        assert_eq!(
+            loaded
+                .chunk(edited)
+                .unwrap()
+                .layers
+                .get_u8(LayerId::Substance(3), probe),
+            77
+        );
+        assert_eq!(
+            loaded
+                .chunk(unedited)
+                .unwrap()
+                .layers
+                .get_i16(LayerId::Temperature, LocalPos::from_index(5000)),
+            150 - 4 * 7
+        );
+
+        // Saving the loaded world, or the same edits on an independently
+        // built world, gives byte-identical files.
+        let dir2 = TempDir::new("v2_roundtrip2");
+        save(dir2.path(), &header(7, &t), &loaded).unwrap();
+        assert_eq!(files(dir.path()), files(dir2.path()));
+        let mut w2 = generate(7, t.clone());
+        edit(&mut w2);
+        eco_edit(&mut w2);
+        let dir3 = TempDir::new("v2_roundtrip3");
+        save(dir3.path(), &header(7, &t), &w2).unwrap();
+        assert_eq!(files(dir.path()), files(dir3.path()));
+
+        // Saved layers replace the generated ones entirely: a layer the
+        // generated chunk has but the save does not reads 0 after load.
+        let dir4 = TempDir::new("v2_roundtrip4");
+        save(dir4.path(), &header(7, &t), &w).unwrap();
+        let loaded = load(dir4.path(), &header(7, &t), || {
+            let mut g = generate(7, t.clone());
+            let mut layers = ChunkLayers::default();
+            layers.set_u8(LayerId::Growth, LocalPos::new(0, 0, 0), 200);
+            g.apply_eco_snapshot(unedited, 0, layers, BTreeMap::new())
+                .unwrap();
+            g
+        })
+        .unwrap();
+        assert_eq!(loaded.hash(), w.hash());
+
+        // A saved plant outside the chunk, or eco state for a chunk the
+        // generator did not make resident, is refused.
+        let mut bad = decoded.clone();
+        bad[0]
+            .plants
+            .insert(CHUNK_VOLUME as u16, PlantState::default());
+        write(dir.path(), &header(7, &t), &bad).unwrap();
+        assert!(matches!(
+            load(dir.path(), &header(7, &t), || generate(7, t.clone())),
+            Err(SaveError::BadChunk(DeltaError::BadIndex { .. }))
+        ));
+        write(dir.path(), &header(7, &t), &decoded).unwrap();
+        assert!(matches!(
+            load(dir.path(), &header(7, &t), || {
+                let generated = generate(7, t.clone());
+                let mut g = World::new(t.clone(), bounds());
+                for pos in bounds().chunks().filter(|&p| p != unedited) {
+                    g.insert_chunk(pos, generated.chunk(pos).unwrap().clone())
+                        .unwrap();
+                }
+                g
+            }),
+            Err(SaveError::BadChunk(DeltaError::NotResident(p))) if p == unedited
+        ));
+    }
+
+    #[test]
+    fn v1_rejected_with_version_message() {
+        /// The Phase 1 header: no `tables_hash`.
+        #[derive(Serialize)]
+        struct V1Header {
+            format_version: u32,
+            seed: u64,
+            bounds: CellAabb,
+            material_hash: u64,
+            gen_params_hash: u64,
+            noise_crate_version: String,
+        }
+        let t = phase1();
+        let dir = TempDir::new("v1");
+        fs::create_dir_all(dir.path()).unwrap();
+        let v1 = V1Header {
+            format_version: 1,
+            seed: 7,
+            bounds: bounds(),
+            material_hash: t.hash(),
+            gen_params_hash: GEN_HASH,
+            noise_crate_version: NOISE.into(),
+        };
+        fs::write(
+            dir.path().join(HEADER_FILE),
+            ron::ser::to_string_pretty(&v1, Default::default()).unwrap(),
+        )
+        .unwrap();
+        // A v1 chunk list: (pos, revision, storage) per chunk.
+        let stone = id(&t, "stone");
+        let v1_chunks = vec![(ChunkPos::new(0, -1, 0), 1u64, ChunkStorage::Uniform(stone))];
+        let encoded = postcard::to_stdvec(&v1_chunks).unwrap();
+        fs::write(
+            dir.path().join(CHUNKS_FILE),
+            zstd::encode_all(encoded.as_slice(), 3).unwrap(),
+        )
+        .unwrap();
+
+        let check = |e: SaveError| {
+            match &e {
+                SaveError::HeaderMismatch {
+                    field: HeaderField::FormatVersion,
+                    expected,
+                    found,
+                } => assert_eq!((expected.as_str(), found.as_str()), ("2", "1")),
+                other => panic!("expected a format version mismatch, got {other:?}"),
+            }
+            let message = e.to_string();
+            assert!(
+                message.contains("save format version 1 is not supported")
+                    && message.contains("version 2"),
+                "{message}"
+            );
+        };
+        check(read_header(dir.path()).unwrap_err());
+        let called = Cell::new(false);
+        let r = load(dir.path(), &header(7, &t), || {
+            called.set(true);
+            generate(7, t.clone())
+        });
+        check(r.map(|w| w.hash()).unwrap_err());
+        assert!(!called.get(), "generator ran for a v1 save");
+
+        // Any other version is refused the same way; the current one parses.
+        let mut text = fs::read_to_string(dir.path().join(HEADER_FILE)).unwrap();
+        text = text.replace("format_version: 1", "format_version: 3");
+        fs::write(dir.path().join(HEADER_FILE), &text).unwrap();
+        assert!(matches!(
+            read_header(dir.path()),
+            Err(SaveError::HeaderMismatch {
+                field: HeaderField::FormatVersion,
+                ..
+            })
+        ));
+        save(dir.path(), &header(7, &t), &generate(7, t.clone())).unwrap();
+        assert_eq!(read_header(dir.path()).unwrap(), header(7, &t));
+    }
+
+    #[test]
+    fn tables_hash_mismatch_fails() {
+        let t = phase1();
+        let dir = TempDir::new("tables_hash");
+        let mut w = generate(7, t.clone());
+        edit(&mut w);
+        eco_edit(&mut w);
+        save(dir.path(), &header(7, &t), &w).unwrap();
+
+        let other = SaveHeader {
+            tables_hash: TABLES_HASH ^ 1,
+            ..header(7, &t)
+        };
+        let called = Cell::new(false);
+        let r = load(dir.path(), &other, || {
+            called.set(true);
+            generate(7, t.clone())
+        });
+        match r.map(|w| w.hash()) {
+            Err(
+                e @ SaveError::HeaderMismatch {
+                    field: HeaderField::TablesHash,
+                    ..
+                },
+            ) => assert!(e.to_string().contains("TablesHash"), "{e}"),
+            other => panic!("expected a tables hash mismatch, got {other:?}"),
+        }
+        assert!(!called.get(), "generator ran before the header check");
+
+        // The matching tables hash loads.
+        let loaded = load(dir.path(), &header(7, &t), || generate(7, t.clone())).unwrap();
+        assert_eq!(loaded.hash(), w.hash());
     }
 }
