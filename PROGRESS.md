@@ -1556,3 +1556,36 @@ Decisions:
 - `N_SUBSTANCES` = 10 and `N_GASES` = 4 live in rmc_eco::tables for now. F103 may move them to rmc_world for the ledger arrays.
 Next: F101 (chunk layers, PlantState map, eco_revision, surface_y column cache).
 Blockers: none.
+
+## 2026-10-19 20:52 — F101 Chunk layers, PlantState map, eco_revision, surface_y column cache (i16) — passed
+Done:
+- Smoke not rerun separately; the tree was clean at 7a0d22b and the full gate (fmt, clippy, workspace tests, check-no-bevy) was green before and after.
+- New `rmc_world::layers`:
+  - `LayerId` (Temperature, Moisture, Regolith, Substance(u8), Gas(u8), Light, Growth) and `LayerData` (U8 / I16 boxed 32768-cell arrays).
+  - `ChunkLayers`: `get_u8`/`get_i16` read 0 when the layer is absent; `set_*` materialize; `materialize`, `compact`, `hash`, `is_zero`, `heap_bytes`.
+  - `PlantState` (species, stress, age_seasons, held[N_SUBSTANCES]) and `plants_hash`.
+  - `CellSet`, a one-bit-per-cell chunk bitset, used for `freeze_thaw` and the `N_SWEEPS` = 7 active sets (water, 4 gases, transport, spread).
+  - `N_SUBSTANCES` and `N_GASES` moved here; rmc_eco::tables re-exports them.
+- `Chunk` gains `layers`, `plants: BTreeMap<u16, PlantState>`, `freeze_thaw`, `active`, `eco_revision` and `heap_bytes()`. `Chunk::hash` folds storage, layers and plants. Revisions, `modified`, freeze-thaw and active sets are not hashed.
+- New `rmc_world::columns`: `Columns` keeps `surface_y: i16` per cell column, with `NO_SURFACE` = `i16::MIN`, in a `HashMap<(cx, cz), [i16; 1024]>`. `World::surface_y(x, z)` reads it.
+  - `World::apply` and `apply_delta` (`Cells`) update it per changed cell. A rise is O(1). Removing the top cell rescans the column downward through the resident chunks.
+  - `insert_chunk` and `Full` deltas rebuild the chunk column.
+  - `MaterialDef::forms_surface()` = Liquid, or Solid and not passable.
+- `World::memory_bytes` counts `Chunk::heap_bytes` (storage plus the new state).
+Tests added:
+- layers::tests::{absent_layer_reads_zero, compact_drops_zero_keeps_temperature_and_light, chunk_hash_covers_layers_and_plants, u8_read_of_temperature_panics, substance_index_out_of_range_panics, cell_set_insert_remove_iter}
+- columns::tests::{surface_y_matches_brute_force_proptest, passable_solids_and_liquids_and_gaps}
+- world::tests::full_delta_keeps_layers_and_plants
+Decisions:
+- A chunk with no nonzero layer and no plants hashes exactly as `ChunkStorage::hash`. Otherwise the hash is xxh3 over a prefix plus the storage, layer and plant hashes. So Phase 1 chunk, world and worldgen golden hashes are unchanged and no test-fix was needed.
+- Layer hash and equality go by what the layers read: an all-zero layer equals an absent one, so `compact` never moves the hash. `CellSet` equality is by content too.
+- `freeze_thaw` and the active sets are `CellSet`s that allocate on first insert, not eagerly boxed `[u64; 512]` as the SAD struct sketch shows. Eager boxes would cost 32 KB per chunk (8 MB for the Phase 1 world) and break `memory_256_chunks_under_budget` ("uniform chunks own no cell data"). The bits are the same; only the allocation is lazy.
+- Reading or writing a layer with the wrong type (u8 vs i16), or with a substance or gas index out of range, panics. It is a programming error.
+- `set_*` always materializes the layer, even for a 0 value ("materialize on set", SAD-P2 §12).
+- A `Full` delta onto a resident chunk replaces only its cells and keeps its layers, plants and `eco_revision`. Material deltas and layer state replicate separately (`LayerSnapshot` and `ChunkDelta::Layers`, F103). A non-resident chunk arrives with no layers.
+- `surface_y` counts only in-bounds cells of resident chunks, so the brute-force oracle is a top-down `get_cell` scan. `World::new` asserts that the bounds' y range fits `i16` above `NO_SURFACE`.
+- `ChunkDelta::Layers` does not exist yet (F103). Layer deltas never change materials, so they cannot move `surface_y`. The proptest covers Set, Remove, Paint, Damage, Cells, Full and insert_chunk.
+- No `World` API mutates layers or bumps `eco_revision` yet. `SetLayer`, `eco_set` and the passes (F103+) will own that.
+- The proptest takes about 5 s at 256 cases and 20 s at CI's 1000.
+Next: F102 (save format v2 with layers and plant state; v1 rejected).
+Blockers: none.
