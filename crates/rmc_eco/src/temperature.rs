@@ -241,6 +241,7 @@ mod tests {
 
     /// Materials later features add to `materials.ron` (F120 water and ice,
     /// F130 magma sources), defined here so the clamps can be tested now.
+    /// A row whose key the shipped table already has is skipped.
     const EXTRA: [&str; 3] = [
         r#"(id: 0, key: "water", phase: Liquid, tags: [], hardness: 0, diggable: true,
             yield_count: 0, color: (40, 90, 200, 160), emissive: 0.0,
@@ -258,6 +259,9 @@ mod tests {
         let mut defs: Vec<MaterialDef> = base.iter().cloned().collect();
         for text in EXTRA {
             let mut d: MaterialDef = ron::from_str(text).unwrap();
+            if base.id(&d.key).is_some() {
+                continue;
+            }
             d.id = MaterialId(defs.len() as u16);
             defs.push(d);
         }
