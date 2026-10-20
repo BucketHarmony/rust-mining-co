@@ -497,12 +497,36 @@ mod tests {
         out
     }
 
+    /// The saved record for a chunk at `revision` holding `storage`.
+    fn raw_chunk(pos: ChunkPos, revision: u64, storage: ChunkStorage) -> SavedChunk {
+        SavedChunk {
+            pos,
+            revision,
+            storage,
+        }
+    }
+
     /// Writes `chunks.bin` bytes for `chunks` directly, bypassing the
     /// checks in [`write`].
     fn write_raw_chunks(dir: &Path, chunks: &[(ChunkPos, u64, ChunkStorage)]) {
-        let encoded = postcard::to_stdvec(chunks).unwrap();
+        let chunks: Vec<SavedChunk> = chunks
+            .iter()
+            .map(|(pos, revision, storage)| raw_chunk(*pos, *revision, storage.clone()))
+            .collect();
+        let encoded = postcard::to_stdvec(&chunks).unwrap();
         let compressed = zstd::encode_all(encoded.as_slice(), 3).unwrap();
         fs::write(dir.join(CHUNKS_FILE), compressed).unwrap();
+    }
+
+    /// Decodes `chunks.bin` bytes by hand (zstd, then postcard) into
+    /// position, revision and storage per saved chunk.
+    fn decode_raw_chunks(raw: &[u8]) -> Vec<(ChunkPos, u64, ChunkStorage)> {
+        let chunks: Vec<SavedChunk> =
+            postcard::from_bytes(&zstd::decode_all(raw).unwrap()).unwrap();
+        chunks
+            .into_iter()
+            .map(|c| (c.pos, c.revision, c.storage))
+            .collect()
     }
 
     fn assert_same_chunks(a: &World, b: &World) {
@@ -628,11 +652,10 @@ mod tests {
 
         assert_eq!(save(dir.path(), &header(3, &t), &w).unwrap(), 6);
 
-        // Decode chunks.bin by hand, in the SAD §10 form.
+        // Decode chunks.bin by hand: zstd around postcard.
         let raw = fs::read(dir.path().join(CHUNKS_FILE)).unwrap();
         assert_eq!(&raw[..4], &[0x28, 0xB5, 0x2F, 0xFD], "zstd frame magic");
-        let decoded: Vec<(ChunkPos, u64, ChunkStorage)> =
-            postcard::from_bytes(&zstd::decode_all(raw.as_slice()).unwrap()).unwrap();
+        let decoded = decode_raw_chunks(&raw);
         assert_eq!(
             decoded.iter().map(|(p, r, _)| (*p, *r)).collect::<Vec<_>>(),
             expected
@@ -680,9 +703,7 @@ mod tests {
         let dir2 = TempDir::new("modified2");
         save(dir2.path(), &header(3, &t), &generate(3, t.clone())).unwrap();
         let raw = fs::read(dir2.path().join(CHUNKS_FILE)).unwrap();
-        let decoded: Vec<(ChunkPos, u64, ChunkStorage)> =
-            postcard::from_bytes(&zstd::decode_all(raw.as_slice()).unwrap()).unwrap();
-        assert!(decoded.is_empty());
+        assert!(decode_raw_chunks(&raw).is_empty());
 
         // snapshot is what save writes.
         assert_eq!(snapshot(&w), read);
