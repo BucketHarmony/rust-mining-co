@@ -3,10 +3,12 @@
 
 mod bench_smoke;
 pub mod chunk;
+pub mod columns;
 pub mod coords;
 pub mod damage;
 pub mod edit;
 pub mod inventory;
+pub mod layers;
 pub mod materials;
 pub mod raycast;
 pub mod save;

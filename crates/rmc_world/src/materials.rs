@@ -133,6 +133,16 @@ impl MaterialDef {
         self.phase != Phase::Air
     }
 
+    /// Whether the cell can be a column's `surface_y` (SAD-P2 §3): `Liquid`,
+    /// or `Solid` and not `passable`.
+    pub fn forms_surface(&self) -> bool {
+        match self.phase {
+            Phase::Liquid => true,
+            Phase::Solid => !self.passable,
+            Phase::Air => false,
+        }
+    }
+
     /// Light lost entering this cell: the table value, else 0 for air and
     /// passable solids and 255 otherwise (SAD-P2 §5).
     pub fn light_attenuation(&self) -> u8 {

@@ -14,10 +14,8 @@ use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Substance layers per chunk (SAD-P2 §3: ten `u8` layers).
-pub const N_SUBSTANCES: usize = 10;
-/// Gas kinds (SAD-P2 §2: steam, firedamp, chokedamp, smoke).
-pub const N_GASES: usize = 4;
+/// Layer counts live with the chunk layers in `rmc_world` (SAD-P2 §6).
+pub use rmc_world::layers::{N_GASES, N_SUBSTANCES};
 /// Upper end of the derived pH scale (SAD-P2 §7.6 clamps to `0..=14`).
 pub const PH_MAX: u8 = 14;
 /// Largest accepted `*_shift` constant; keeps `x / 2^shift` inside `i32`.

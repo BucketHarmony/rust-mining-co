@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::chunk::{Chunk, ChunkStorage};
+use crate::columns::{Columns, NO_SURFACE};
 use crate::coords::{CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use crate::damage::DamageMap;
 use crate::edit::{
@@ -44,16 +45,27 @@ pub struct World {
     damage: DamageMap,
     materials: Arc<MaterialTable>,
     bounds: CellAabb,
+    columns: Columns,
 }
 
 impl World {
     /// An empty world: no chunks are resident until inserted.
+    ///
+    /// Panics unless every y in `bounds` fits `i16` above [`NO_SURFACE`],
+    /// the range `surface_y` stores (SAD-P2 §6).
     pub fn new(materials: Arc<MaterialTable>, bounds: CellAabb) -> Self {
+        assert!(
+            bounds.min.0.y > i32::from(NO_SURFACE) && bounds.max.0.y <= i32::from(i16::MAX),
+            "world y range {}..={} does not fit i16",
+            bounds.min.0.y,
+            bounds.max.0.y
+        );
         Self {
             chunks: HashMap::new(),
             damage: DamageMap::default(),
             materials,
             bounds,
+            columns: Columns::default(),
         }
     }
 
@@ -97,6 +109,14 @@ impl World {
             .is_some_and(|def| def.is_solid_or_liquid())
     }
 
+    /// `surface_y` of the cell column `(x, z)` (SAD-P2 §3): the highest
+    /// in-bounds resident cell that is `Liquid`, or `Solid` and not
+    /// `passable`; [`NO_SURFACE`] if there is none. "Sky-open" is
+    /// `y > surface_y`.
+    pub fn surface_y(&self, x: i32, z: i32) -> i16 {
+        self.columns.surface_y(x, z)
+    }
+
     /// The resident chunk at `pos`.
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)
@@ -108,8 +128,8 @@ impl World {
     }
 
     /// Approximate bytes the chunks occupy: the `World` itself, the chunk
-    /// map's table, and each chunk's heap storage. The shared material table
-    /// is not counted.
+    /// map's table, and each chunk's heap data ([`Chunk::heap_bytes`]). The
+    /// shared material table and the `surface_y` cache are not counted.
     ///
     /// The table size follows std's SwissTable layout: `capacity()` usable
     /// slots in a power-of-two bucket count at 7/8 load, one entry and one
@@ -126,8 +146,8 @@ impl World {
         } else {
             buckets * (std::mem::size_of::<(ChunkPos, Chunk)>() + 1) + 16
         };
-        let cells: usize = self.chunks.values().map(|c| c.storage.heap_bytes()).sum();
-        std::mem::size_of::<Self>() + table + cells
+        let chunks: usize = self.chunks.values().map(Chunk::heap_bytes).sum();
+        std::mem::size_of::<Self>() + table + chunks
     }
 
     /// Resident chunks in [`ChunkPos`] order (y, then z, then x). Use this for
@@ -243,6 +263,14 @@ impl World {
             if new != old {
                 chunk.storage.set(local, new);
                 changed.entry(pos).or_default().push((local.index(), new));
+                self.columns.cell_changed(
+                    cell,
+                    old,
+                    new,
+                    &self.chunks,
+                    &self.materials,
+                    self.bounds,
+                );
             }
         }
 
@@ -294,10 +322,12 @@ impl World {
     /// replica repairs with `RequestChunk`. Its indices must lie inside the
     /// chunk and its materials in the table. Changes are written in order.
     ///
-    /// `Full` replaces the chunk whatever its local revision, and makes an
-    /// in-bounds chunk resident if it was not. Its storage must be well
-    /// formed and every material it uses must be in the table; it is
-    /// stored compacted.
+    /// `Full` replaces the chunk's cells whatever its local revision, and
+    /// makes an in-bounds chunk resident if it was not. Its storage must be
+    /// well formed and every material it uses must be in the table; it is
+    /// stored compacted. A resident chunk keeps its layers and plants.
+    ///
+    /// Both kinds keep `surface_y` current for the columns they touch.
     ///
     /// Either way the chunk takes the delta's revision and is marked
     /// modified (as it is on the world that produced the delta), and damage
@@ -332,12 +362,22 @@ impl World {
                     }
                     known(id)?;
                 }
-                let chunk = self.chunks.get_mut(&pos).expect("checked resident");
                 for &(index, id) in changes {
                     let local = LocalPos::from_index(index);
-                    chunk.storage.set(local, id);
-                    self.damage.clear(CellPos::from_chunk_local(pos, local));
+                    let cell = CellPos::from_chunk_local(pos, local);
+                    let chunk = self.chunks.get_mut(&pos).expect("checked resident");
+                    let old = chunk.storage.set(local, id);
+                    self.damage.clear(cell);
+                    self.columns.cell_changed(
+                        cell,
+                        old,
+                        id,
+                        &self.chunks,
+                        &self.materials,
+                        self.bounds,
+                    );
                 }
+                let chunk = self.chunks.get_mut(&pos).expect("checked resident");
                 chunk.revision = *revision;
                 chunk.modified = true;
             }
@@ -357,14 +397,16 @@ impl World {
                     }
                 }
                 self.damage.clear_chunk(pos);
-                self.chunks.insert(
-                    pos,
-                    Chunk {
-                        storage,
-                        revision: *revision,
-                        modified: true,
-                    },
-                );
+                // Only the cells are replaced: a resident chunk keeps its
+                // layers, plants and eco revision.
+                let chunk = self
+                    .chunks
+                    .entry(pos)
+                    .or_insert_with(|| Chunk::new(ChunkStorage::Uniform(MaterialId::AIR)));
+                chunk.storage = storage;
+                chunk.revision = *revision;
+                chunk.modified = true;
+                self.rebuild_columns(pos);
             }
         }
         tracing::debug!(?pos, revision = delta.revision(), "delta applied");
@@ -383,7 +425,15 @@ impl World {
         }
         tracing::debug!(?pos, revision = chunk.revision, "chunk inserted");
         self.damage.clear_chunk(pos);
-        Ok(self.chunks.insert(pos, chunk))
+        let previous = self.chunks.insert(pos, chunk);
+        self.rebuild_columns(pos);
+        Ok(previous)
+    }
+
+    /// Recomputes `surface_y` for every cell column of `pos`'s chunk column.
+    fn rebuild_columns(&mut self, pos: ChunkPos) {
+        self.columns
+            .rebuild(pos.0.x, pos.0.z, &self.chunks, &self.materials, self.bounds);
     }
 }
 
@@ -633,6 +683,43 @@ mod tests {
         let empty_b = World::new(table, CellAabb::PHASE1_DEFAULT);
         assert_eq!(empty_a.hash(), empty_b.hash());
         assert_ne!(empty_a.hash(), forward.hash());
+    }
+
+    /// A `Full` delta replaces the cells of a resident chunk and leaves its
+    /// layers, plants and eco revision alone (SAD-P2 §3: material deltas and
+    /// layer state replicate separately).
+    #[test]
+    fn full_delta_keeps_layers_and_plants() {
+        use crate::layers::{LayerId, N_SUBSTANCES, PlantState};
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let pos = ChunkPos::new(0, 0, 0);
+        let at = LocalPos::new(4, 5, 6);
+        let mut chunk = Chunk::uniform(MaterialId::AIR);
+        chunk.layers.set_i16(LayerId::Temperature, at, 150);
+        let plant = PlantState {
+            species: 2,
+            stress: 0,
+            age_seasons: 1,
+            held: [0; N_SUBSTANCES],
+        };
+        chunk.plants.insert(at.index(), plant);
+        chunk.eco_revision = 7;
+        let mut w = World::new(table, small_bounds());
+        w.insert_chunk(pos, chunk).unwrap();
+
+        w.apply_delta(&ChunkDelta::Full {
+            pos,
+            revision: 1,
+            storage: ChunkStorage::Uniform(stone),
+        })
+        .unwrap();
+        let c = w.chunk(pos).unwrap();
+        assert_eq!(c.storage, ChunkStorage::Uniform(stone));
+        assert_eq!(c.layers.get_i16(LayerId::Temperature, at), 150);
+        assert_eq!(c.plants.get(&at.index()), Some(&plant));
+        assert_eq!((c.revision, c.eco_revision, c.modified), (1, 7, true));
+        assert_eq!(w.surface_y(4, 6), 31);
     }
 
     /// SAD §13 budget: the Phase 1 world of 256 chunks fits in 64 MB, both

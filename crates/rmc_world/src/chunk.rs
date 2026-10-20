@@ -1,30 +1,48 @@
 //! Chunk storage (SAD §7): a 32³ block of cells, either one material or a
 //! bit-packed palette.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::coords::{CHUNK_VOLUME, LocalPos};
+use crate::layers::{CellSet, ChunkLayers, N_SWEEPS, PlantState, plants_hash};
 use crate::materials::MaterialId;
 
 /// Bit widths a paletted chunk may use. Each divides 64, so no entry spans two words.
 pub const PALETTE_BITS: [u8; 5] = [1, 2, 4, 8, 16];
 
-/// One chunk of the world.
+/// One chunk of the world: cells plus the ecology state of SAD-P2 §6.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     pub storage: ChunkStorage,
-    /// Increments on every applied change.
+    /// Per-cell layers; absent layers read 0.
+    pub layers: ChunkLayers,
+    /// Plant state by local index.
+    pub plants: BTreeMap<u16, PlantState>,
+    /// Season-scoped freeze-thaw bits. Not hashed or saved.
+    pub freeze_thaw: CellSet,
+    /// Cells each sweep visits. Not hashed or saved.
+    pub active: [CellSet; N_SWEEPS],
+    /// Increments on every material change.
     pub revision: u64,
+    /// Increments on every layer or plant-state change.
+    pub eco_revision: u64,
     /// Differs from worldgen output, so it is saved.
     pub modified: bool,
 }
 
 impl Chunk {
-    /// A chunk with revision 0 that is not modified.
+    /// A chunk with revisions 0, no layers or plants, that is not modified.
     pub fn new(storage: ChunkStorage) -> Self {
         Self {
             storage,
+            layers: ChunkLayers::default(),
+            plants: BTreeMap::new(),
+            freeze_thaw: CellSet::default(),
+            active: Default::default(),
             revision: 0,
+            eco_revision: 0,
             modified: false,
         }
     }
@@ -34,10 +52,38 @@ impl Chunk {
         Self::new(ChunkStorage::Uniform(id))
     }
 
-    /// Content hash of the cells; see [`ChunkStorage::hash`]. Revision and
-    /// `modified` are not part of it.
+    /// Content hash of the cells, layers and plants (SAD-P2 §6). Revisions,
+    /// `modified`, freeze-thaw bits and active sets are not part of it.
+    ///
+    /// A chunk whose layers all read 0 and that has no plants hashes as its
+    /// storage alone ([`ChunkStorage::hash`]), so Phase 1 hashes are
+    /// unchanged. Otherwise the hash is xxh3 over a prefix and the storage,
+    /// layer and plant hashes.
     pub fn hash(&self) -> u64 {
-        self.storage.hash()
+        if self.layers.is_zero() && self.plants.is_empty() {
+            return self.storage.hash();
+        }
+        const PREFIX: &[u8] = b"rmc.chunk.eco.v1";
+        let mut buf = Vec::with_capacity(PREFIX.len() + 3 * 8);
+        buf.extend_from_slice(PREFIX);
+        for h in [
+            self.storage.hash(),
+            self.layers.hash(),
+            plants_hash(&self.plants),
+        ] {
+            buf.extend_from_slice(&h.to_le_bytes());
+        }
+        xxhash_rust::xxh3::xxh3_64(&buf)
+    }
+
+    /// Bytes the chunk owns on the heap: storage, layers, bitsets, and the
+    /// plant entries (map node overhead excluded).
+    pub fn heap_bytes(&self) -> usize {
+        self.storage.heap_bytes()
+            + self.layers.heap_bytes()
+            + self.freeze_thaw.heap_bytes()
+            + self.active.iter().map(CellSet::heap_bytes).sum::<usize>()
+            + self.plants.len() * std::mem::size_of::<(u16, PlantState)>()
     }
 }
 
