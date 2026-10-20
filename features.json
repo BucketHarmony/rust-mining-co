@@ -1398,6 +1398,101 @@
       "passedAt": "2026-10-20T04:38:04Z"
     },
     {
+      "id": "F093",
+      "milestone": "M9",
+      "title": "Place from inventory: right mouse places the selected material against the targeted face and spends one",
+      "sad": "§8.1, §8.2, §11.5",
+      "tests": [
+        "cargo:rmc_world:edit::tests::place_needs_non_solid_target_and_a_single_cell",
+        "cargo:rmc_host:host::tests::place_spends_one_from_the_issuer_inventory",
+        "cargo:rmc_host:host::tests::place_rejected_when_inventory_has_none",
+        "cargo:rmc_client:pickaxe::tests::right_click_places_selected_on_face_normal_side",
+        "cargo:rmc_client:hud::tests::selected_slot_cycles_with_wheel_and_shows_in_hudstate",
+        "e2e:dig_carry_place"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Playability, from the M7/M8 playtests (docs/PLAYTEST.md, 2026-10-20); added by the owner on 2026-10-20 ahead of the rest of Phase 2. The game has no way to spend what the pickaxe yields: the only placing path is the F1 editor brush, which is free and stops mouse look. Owner decision, extending SAD §8.1/§8.2: add EditOp::Place(MaterialId), appended after the existing variants so earlier encodings are unchanged. Place is valid only with Shape::Cell, only on a non-Solid target cell (air, or a Phase 2 non-solid such as water), and only for a Solid material (filter on phase/tags, never a material id). The host rejects the whole command with a reason when the issuer's inventory has 0 of that material; skips the cell under the F086 player-box rule (then nothing is spent); otherwise sets the cell, decrements the issuer's inventory by 1 and sends the usual Inventory message. EditOp::Set stays the free editor op. Client: outside the editor, right mouse places the HUD's selected material at hit.cell + hit.face_normal within the pickaxe reach (3.0 m), repeating at the pickaxe swing interval while held; the mouse wheel (and Q/E as keys) cycles the selection over the materials with count > 0, in inventory order. HudState gains `selected: Option<MaterialId>`, and the inventory line marks the selected entry. With the editor open, right mouse does nothing new. Add the bindings to docs/CONTROLS.md and any controls overlay. dig_carry_place: dig three topsoil cells, select topsoil, place three cells into a gap; assert the host world has them and the topsoil count is back to its start, and that a fourth right click changes nothing (hash unchanged, a Rejected result seen)."
+    },
+    {
+      "id": "F094",
+      "milestone": "M9",
+      "title": "Narrower player box: 0.45 m wide so the player drops into a one-cell hole and fits a one-cell shaft",
+      "sad": "§11.4",
+      "tests": [
+        "cargo:rmc_client:controller::tests::player_drops_into_one_cell_hole",
+        "cargo:rmc_client:controller::tests::player_fits_one_cell_shaft",
+        "e2e:dig_straight_down"
+      ],
+      "blockedBy": [
+        "F093"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Playability, from the M7/M8 playtests (docs/PLAYTEST.md, 2026-10-20); added by the owner on 2026-10-20 ahead of the rest of Phase 2. Owner decision, overriding SAD §11.4's 0.6 m width: PLAYER_WIDTH_M becomes 0.45 (height 1.7 m and eye 1.55 m unchanged). With 0.6 m the box always rests on the rims of a 0.5 m (CELL_SIZE_M) hole, so digging straight down needs a two-cell-wide shaft; F084 recorded this as designed, and the owner now changes the design. Use the constant everywhere (controller collision, the F086 host box skip, step-up checks, bots, spawn search); search non-test code for literal 0.6 / 0.3 half-widths and replace them. Tests that hard-code the 0.6 m box are fixed under the test-fix procedure in one commit, reason 'owner changed the player width (F094)'. Keep the no-penetration proptest and the soak green. dig_straight_down: stand on flat ground, swing straight down for several cells; assert the feet follow the shaft floor down (feet y drops by at least 3 cells) with zero penetration frames, then that the player can climb out of a one-cell-wide stair by step-up and jump. Record the override in PROGRESS.md Decisions; docs/SAD.md is owner-maintained and is not edited."
+    },
+    {
+      "id": "F095",
+      "milestone": "M9",
+      "title": "Horizon without a box edge: the world shell and fog blend into the sky; the fly camera never sees a blank grey",
+      "sad": "§11.3, §11.6",
+      "tests": [
+        "cargo:rmc_client:render::tests::shell_above_surface_is_not_drawn_as_a_wall",
+        "cargo:rmc_client:render::tests::fog_thins_with_camera_height",
+        "cargo:rmc_client:flycam::tests::fly_camera_clamped_to_bounds_plus_margin",
+        "e2e:horizon_no_box_edge"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Playability, from the M7/M8 playtests (docs/PLAYTEST.md, 2026-10-20); added by the owner on 2026-10-20 ahead of the rest of Phase 2. Look-and-feel feature: CLAUDE.md rule 21 applies (semantic assertion plus a committed screenshot via scripts/screens.sh; no luminance or color thresholds). The fog band has a hard straight top edge that tilts when looking along a diagonal (pt-864, horizon_readable-*, boot_renders-123): it is the top of the bedrock shell walls at the world bounds, fogged to the horizon color but standing above the skybox's horizon line, so the world reads as a grey box. Small test worlds also show a black shell slab (walk_and_jump-190, dig_tunnel-1747). Make the world edge fade into the sky, for example: do not mesh the outward faces of the bounds shell above the surface, or lower the shell walls to the surface, or raise the skybox's pale horizon band to cover the shell top, and fog the shell the same way in every world size. Pick the simplest change that removes the edge and record why. Fly camera (A2 in the M8 report): above the world and beyond the fog distance the view is one uniform grey; clamp the fly camera to the world bounds plus a margin (a named const) and/or thin the fog with camera height so the ground stays visible. Semantic tests assert the setup (no shell quads above the surface in the mesh, or the chosen equivalent; the fog parameter as a function of camera height; the clamp), not pixels; rename a listed test to match the chosen approach only via the test-fix procedure if it cannot apply. horizon_no_box_edge: re-shoot the four horizon_readable directions, one diagonal, and a fly-camera view from high up; assert only that frames are not blank and the high frame is not a flat fill (a coarse check); commit the screenshots."
+    },
+    {
+      "id": "F096",
+      "milestone": "M9",
+      "title": "Solid break chips and depth-tested hit feedback; damage shows on the cell face",
+      "sad": "§11.5",
+      "tests": [
+        "cargo:rmc_client:hud::tests::break_chips_are_depth_tested_meshes",
+        "cargo:rmc_client:hud::tests::target_outline_is_depth_tested",
+        "cargo:rmc_client:hud::tests::damaged_cell_gets_crack_tint",
+        "e2e:hit_feedback_close"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Playability, from the M7/M8 playtests (docs/PLAYTEST.md, 2026-10-20); added by the owner on 2026-10-20 ahead of the rest of Phase 2. Look-and-feel feature: CLAUDE.md rule 21 applies (semantic assertion plus a committed screenshot via scripts/screens.sh; no luminance or color thresholds). The break effect's chips (BREAK_CHIPS in hud.rs) are gizmo wireframe cubes that read as a debug overlay and, like the outline and flash, draw through walls at close range (pt-725, dig_cell_visible-68). Draw the chips as small solid cube meshes in the cell's material color with depth test on (a shared mesh and a handful of entities with a lifetime), keep their motion constants, and despawn them when the effect ends. Make the target outline and flash depth-tested (a gizmo config group with depth testing / depth_bias, or a mesh) so nearer geometry hides them. Show damage on the face-on cell itself: a crack or darkening overlay on the targeted cell's visible faces whose strength follows HudState's damage fraction, removed when the damage clears. Semantic tests: chip entities carry Mesh3d and a material and no gizmo draw; the outline gizmo group has depth testing on; the overlay strength equals the damage fraction. hit_feedback_close: swing at basalt at 0.4 m and 1.5 m, screenshot mid-damage and on break; commit the shots."
+    },
+    {
+      "id": "F097",
+      "milestone": "M9",
+      "title": "Surface variation: per-cell color jitter so walls read as rock and soil, not flat paint",
+      "sad": "§11.2",
+      "tests": [
+        "cargo:rmc_client:material::tests::cell_jitter_is_deterministic_and_bounded",
+        "cargo:rmc_client:material::tests::jitter_does_not_change_mesh_merging",
+        "e2e:surface_variation"
+      ],
+      "blockedBy": [
+        "F077"
+      ],
+      "e2e": true,
+      "review": true,
+      "passes": false,
+      "notes": "Playability, from the M7/M8 playtests (docs/PLAYTEST.md, 2026-10-20); added by the owner on 2026-10-20 ahead of the rest of Phase 2. Look-and-feel feature: CLAUDE.md rule 21 applies (semantic assertion plus a committed screenshot via scripts/screens.sh; no luminance or color thresholds). Large faces are one flat color (lantern_close_wall-*, pt-536, the shaft wall at pt-670), and the close-range outline collapses into a line on a featureless face. Owner decision, extending SAD §11.2: vary brightness per cell by a few percent in the fragment shader, from a hash of floor(world_position / CELL_SIZE_M) taken a hair inside the face along the normal, so the mesh and greedy merging are unchanged. Keep the amplitude in a named const (a few percent) and apply it in the same material path as EmissiveFromAlpha so emissive still works. Mirror the hash as a plain Rust function for the tests. Semantic tests: the hash is deterministic, bounded by the amplitude, and differs between some adjacent cells; a flat wall meshes to the same quad_count as before. surface_variation: shoot a face-on basalt wall at 1.5 m, a topsoil field looking down, and a tunnel; commit the shots."
+    },
+    {
       "id": "F110",
       "milestone": "E1",
       "title": "Freeze-thaw season bitset",

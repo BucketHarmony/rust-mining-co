@@ -1963,3 +1963,14 @@ Decisions:
 - Active set: `WaterPass::holds` covers porous cells only above their seepage threshold, because at or below it their visit moves nothing. `World` still activates any cell whose moisture is set (> 0). Such a cell is visited once and then leaves the set. Results are identical to visiting every porous cell, and the oracle confirms it. This keeps an at-capacity water table (F126) out of every sweep only when it sits at or below the threshold. Cells at field capacity are above the threshold, so they stay active.
 Next: F123.
 Blockers: none.
+
+## 2026-10-20 11:30 — Owner: playability batch F093–F097 (milestone M9) — added
+Done: merged `features-p1d.json` with `scripts/merge-features.sh --before F110`, so these are picked before the remaining Phase 2 features.
+- F093 place from inventory (`EditOp::Place`, right mouse, wheel/Q/E selection, spends one).
+- F094 player box 0.45 m wide, so a one-cell hole and shaft work.
+- F095 horizon without the shell's box edge; fly camera clamp or height fog.
+- F096 solid, depth-tested break chips and outline; damage tint on the cell.
+- F097 per-cell brightness jitter in the shader.
+Decisions (owner): F093 extends SAD §8.1/§8.2 (new `Place` op; `Set` stays the free editor op). F094 overrides SAD §11.4's 0.6 m width; tests that hard-code 0.6 m are fixed under `test-fix:`. F095–F097 are look-and-feel features under rule 21. docs/SAD.md is not edited; the feature notes are the record.
+Next: F093.
+Blockers: none.
