@@ -1726,9 +1726,10 @@ mod tests {
         };
         // Chunk (1, 1, 0) is air over the stone chunk (1, 0, 0), whose top
         // cell row is y = 31 (top face at 16.0 m). Feet on that floor at
-        // (20.0, 16.0, 5.0) m: the 0.6 × 1.7 m box spans x 19.7..20.3,
-        // y 16.0..17.7, z 4.7..5.3 m, which is cells x 39..=40, y 32..=35,
-        // z 9..=10. The floor row only touches it.
+        // (20.0, 16.0, 5.0) m: the box (PLAYER_WIDTH_M, less than two
+        // cells, × 1.7 m) is centered on a cell edge in x and z and spans
+        // y 16.0..17.7 m, which is cells x 39..=40, y 32..=35, z 9..=10.
+        // The floor row only touches it.
         let box_a = cells_of((39, 32, 9), (40, 35, 10));
         assert_eq!(box_a.len(), 16);
         assert!(air(&host, &box_a));

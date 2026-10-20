@@ -24,8 +24,8 @@ const FLOOR_M: f32 = 101.0 * CELL_SIZE_M;
 /// The wall: 16 cells thick along Z, its near (+Z) face at z = 18 m.
 const WALL_MIN: CellPos = CellPos::new(26, 101, 20);
 const WALL_MAX: CellPos = CellPos::new(42, 112, 35);
-/// The player's feet: 1.95 m in front of the wall's face, a quarter cell
-/// off the tunnel's middle (the bot centers itself).
+/// The player's feet: 1.95 m in front of the wall's face, in the middle of
+/// cell column x = 34.
 const FEET: Vec3 = Vec3::new(17.25, FLOOR_M, 20.25);
 
 /// Half the side of the sampled pixel block around the image center.
@@ -206,7 +206,8 @@ fn dig(t: &mut TestApp) {
             })
         })
         .collect();
-    assert_eq!(tunnel.len(), LENGTH as usize * 2 * 4, "2 wide, 4 high");
+    assert_eq!(height, 4, "4 high");
+    assert_eq!(tunnel.len(), LENGTH as usize * (width * height) as usize);
     let mut dug = report.cells.clone();
     dug.sort_by_key(|c| c.0.to_array());
     let mut want = tunnel.clone();

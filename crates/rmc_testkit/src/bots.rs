@@ -1168,10 +1168,9 @@ mod tests {
 
     #[test]
     fn tunnel_is_the_smallest_the_player_fits() {
-        assert_eq!(
-            (TunnelBot::width_cells(), TunnelBot::height_cells()),
-            (2, 4)
-        );
+        // The width follows the player's box (owner change F094): the two
+        // inequalities below pin it to the one cell count that fits.
+        assert_eq!(TunnelBot::height_cells(), 4);
         let (w, h) = (TunnelBot::width_cells(), TunnelBot::height_cells());
         assert!(w as f32 * CELL_SIZE_M > PLAYER_WIDTH_M);
         assert!((w - 1) as f32 * CELL_SIZE_M < PLAYER_WIDTH_M);
@@ -1221,11 +1220,14 @@ mod tests {
             assert_eq!(t.host_world().get_cell(c), Some(wall), "{c:?}");
         }
 
-        // Feet 1.5 m (3 slices) minus half a box into the wall, centered,
-        // standing, facing -Z, still.
+        // Feet 1.5 m (3 slices) minus half a box into the wall, centered
+        // to a quarter of the two-cell tunnel's spare width, standing,
+        // facing -Z, still.
         let p = t.player();
-        assert!((p.pos.z - (16.5 + 0.3 + END_GAP_M)).abs() < 0.08, "{p:?}");
-        assert!((p.pos.x - 17.5).abs() <= 0.1, "{p:?}");
+        let half = PLAYER_WIDTH_M / 2.0;
+        assert!((p.pos.z - (16.5 + half + END_GAP_M)).abs() < 0.08, "{p:?}");
+        let spare = 2.0 * CELL_SIZE_M - PLAYER_WIDTH_M;
+        assert!((p.pos.x - 17.5).abs() <= spare / 4.0, "{p:?}");
         assert!(p.grounded && p.velocity == Vec3::ZERO, "{p:?}");
         assert!(p.yaw.abs() < 1e-4, "{p:?}");
         assert!(t.player_penetration().is_empty());
