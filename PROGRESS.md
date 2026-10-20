@@ -1723,3 +1723,24 @@ Decisions:
 - Environment: drive E: filled up (839 MB free; 324 GB in `target/debug`, mostly 1.7 GB PDBs of stale e2e and app test binaries). The linker then failed with `LNK1318: Unexpected PDB error; LIMIT (12)`, which blocked the commit gate. `cargo clean -p rmc_e2e -p rmc_app` freed 250 GB; the rebuild and the gate then passed. Builds still run with `-j 4`.
 Next: F105.
 Blockers: none. Owner note: `target/` grows by about 1.7 GB per relinked e2e binary; run `cargo clean -p rmc_e2e -p rmc_app` periodically.
+
+## 2026-10-20 02:50 — F105 Activity tracking: quiet counters, skip, reactivation by edits and neighbors — passed
+Done:
+- `rmc_eco::activity`:
+  - `JacobiKind` (Temperature, Transitions, Weathering, Reactions, PlantGrowth; `N_JACOBI` = 5) indexes per-chunk `quiet` counters.
+  - `Activity::new(eco.quiet_skip)` tracks them per chunk.
+  - `Activity::run(world, kind, pass, exec, ledger) -> ActivityReport { jacobi, computed, skipped }` skips chunks with `quiet ≥ quiet_skip`. A computed chunk that changed nothing gets +1; a change resets every counter of the chunk and its 6 neighbors.
+  - `touch(pos)` (an edit) resets a chunk and its neighbors. `season_boundary(world)` resets the temperature counter of chunks that contain a surface or sky-open cell (`y ≥ surface_y`). `sync(world)` detects outside changes.
+Tests added: the listed tests activity::tests::{quiet_chunk_skipped_after_threshold, edit_reactivates_neighbors, season_boundary_reactivates_surface_chunks, skipping_changes_no_result_on_constant_fixture}.
+Decisions:
+- Change detection is by revision. `Activity` remembers each chunk's `(revision, eco_revision)` and compares before and after every tracked run. Any difference, whatever caused it (sweeps, edits, inserted chunks), resets the chunk and its neighbors. Edits between seasons therefore reactivate chunks without host plumbing; `touch` is there for explicit use. A ledger-only output resets through `JacobiReport.changed`.
+- A material change (`revision`) also resets every chunk in its chunk column. `surface_y`, which a pass may read for any cell of a column, can drop through chunks whose own cells did not change. This goes beyond SAD-P2 §7.9; it costs only extra computation and is needed for skipping to be result-neutral.
+- A change resets all `N_JACOBI` counters, not only the pass that made it: a temperature change can enable a transition in the same chunk.
+- Only temperature counters reset at a season boundary, as the SAD says. Season-dependent state (plant ages, freeze-thaw) changes revisions and resets through the revision check. A future pass that reads anything outside the world state must have the caller reset it.
+- `quiet_skip` must be ≥ 1 (the table validator already rejects 0). "Skipping off" is plain `run_jacobi`.
+- Mutation checks:
+  - dropping the neighbor reset fails the constant-fixture test (its hot block is 4 cells from a chunk face, so its heat arrives after the chunk beyond has gone quiet) and two others;
+  - dropping the column reset fails `edit_reactivates_neighbors`.
+- No host wiring yet: `season_tick` (F107) will own an `Activity`.
+Next: F106 (temperature pass).
+Blockers: none.
