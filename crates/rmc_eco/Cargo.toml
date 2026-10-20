@@ -1,0 +1,16 @@
+[package]
+name = "rmc_eco"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmc_world.workspace = true
+postcard.workspace = true
+ron.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true

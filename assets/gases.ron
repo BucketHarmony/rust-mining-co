@@ -1,0 +1,16 @@
+// Phase 2 gases (SAD-P2 §7.4): concentration layers on air cells. Row order is
+// the layer index: LayerId::Gas(i) is row i. At most 4 rows.
+// density: negative rises, positive sinks; drift moves |density| << drift_shift.
+// diffusion: share (>> diff_shift) of a concentration difference moved per visit.
+// Flammable gases ignite at ignite_min next to a heat source or magma; the blast
+// radius is (c / 64) * ignite_radius_per_64 cells.
+[
+    (key: "steam", density: -2, diffusion: 32, flammable: false,
+     ignite_min: 0, ignite_radius_per_64: 0, visible: true),
+    (key: "firedamp", density: -1, diffusion: 24, flammable: true,
+     ignite_min: 64, ignite_radius_per_64: 2, visible: false),
+    (key: "chokedamp", density: 2, diffusion: 16, flammable: false,
+     ignite_min: 0, ignite_radius_per_64: 0, visible: false),
+    (key: "smoke", density: -1, diffusion: 24, flammable: false,
+     ignite_min: 0, ignite_radius_per_64: 0, visible: true),
+]

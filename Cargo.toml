@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/rmc_world",
     "crates/rmc_worldgen",
+    "crates/rmc_eco",
     "crates/rmc_protocol",
     "crates/rmc_host",
     "crates/rmc_client",
@@ -49,6 +50,7 @@ criterion = "=0.8.2"
 # Internal
 rmc_world = { path = "crates/rmc_world" }
 rmc_worldgen = { path = "crates/rmc_worldgen" }
+rmc_eco = { path = "crates/rmc_eco" }
 rmc_protocol = { path = "crates/rmc_protocol" }
 rmc_host = { path = "crates/rmc_host" }
 rmc_client = { path = "crates/rmc_client" }

@@ -89,6 +89,14 @@ impl World {
             .is_some_and(|def| def.is_solid())
     }
 
+    /// Whether `cell` holds a `Solid` or `Liquid` material: what raycasts
+    /// hit (SAD-P2 §5). Same out-of-bounds rules as [`World::is_solid`].
+    pub fn is_solid_or_liquid(&self, cell: CellPos) -> bool {
+        self.get_cell(cell)
+            .and_then(|id| self.materials.get(id))
+            .is_some_and(|def| def.is_solid_or_liquid())
+    }
+
     /// The resident chunk at `pos`.
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)

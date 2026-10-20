@@ -1,0 +1,30 @@
+// Pioneer plant species (SAD-P2 §7.8). Row order is the species index.
+// needs: light and temp at the plant cell (temp is an inclusive 0.1 °C range);
+// moisture (minimum) and substance_min / substance_max at the anchor cell.
+// uptake: amount taken from the anchor per sub-step; `holds` keeps it in the
+// plant (hyperaccumulation) instead of sinking it. `tall` plants occupy the
+// cell above once growth passes 192.
+[
+    (key: "moss", material: "moss", anchor_tags: ["stone", "soil"],
+     needs: (light: 16, moisture: 8, temp: (0, 300),
+             substance_max: [("cu", 24), ("acid", 32)]),
+     growth_per_substep: 8, spread_chance: 32, spread_radius: 2, litter: 8,
+     lifespan_seasons: 12, uptake: [("n", 1)]),
+    (key: "grass", material: "grass", anchor_tags: ["soil"],
+     needs: (light: 64, moisture: 16, temp: (20, 350),
+             substance_min: [("n", 2)],
+             substance_max: [("cu", 16), ("acid", 24), ("salt", 48)]),
+     growth_per_substep: 16, spread_chance: 48, spread_radius: 2, litter: 16,
+     lifespan_seasons: 6, uptake: [("n", 1), ("p", 1)]),
+    (key: "fireweed", material: "fireweed", anchor_tags: ["soil"],
+     needs: (light: 96, moisture: 8, temp: (30, 350),
+             substance_max: [("acid", 96)]),
+     growth_per_substep: 12, spread_chance: 24, spread_radius: 3, litter: 12,
+     lifespan_seasons: 8, uptake: [("cu", 2), ("n", 1)], holds: true),
+    (key: "shrub", material: "shrub", anchor_tags: ["soil"],
+     needs: (light: 96, moisture: 24, temp: (10, 320),
+             substance_min: [("n", 4), ("p", 2)],
+             substance_max: [("cu", 32), ("acid", 48)]),
+     growth_per_substep: 4, spread_chance: 8, spread_radius: 3, litter: 32,
+     lifespan_seasons: 40, uptake: [("n", 1), ("p", 1), ("k", 1)], tall: true),
+]

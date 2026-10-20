@@ -1,0 +1,74 @@
+// Season-tick constants and roles (SAD-P2 §3, §7, §8). Every rate, threshold,
+// shift and constant a pass uses lives here under its SAD name (rule 19).
+// Temperatures in 0.1 °C. `x_shift` divides by 2^x.
+(
+    params: (
+        // §7.1 temperature; §8 profile(y) = geothermal_base + (bottom_y - y) * gradient
+        heat_shift: 7,
+        geothermal_base: 400,
+        gradient: 5,
+        // §7.2 / §8: magma placed by worldgen and the brush
+        magma_init_temp: 12000,
+        // §7.3 water
+        flow_iters: 8,
+        flow_cap: 64,
+        infil_shift: 2,
+        infil_side_shift: 3,
+        seep_num: 192,          // seep above field_capacity * seep_num / 256
+        seep_shift: 3,
+        condense_temp: 900,
+        // evaporation per sub-step by temperature bucket; bucket = T / evap_bucket,
+        // T < 0 uses bucket 0, past the end uses the last entry
+        evap_table: [1, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32],
+        evap_bucket: 100,
+        // §7.4 gases
+        drift_shift: 2,
+        diff_shift: 6,
+        // §7.5 weathering: above this regolith the pickaxe needs hardness / 2
+        soft_regolith: 128,
+        // §7.6 chemistry: pH = clamp(7 + (lime - acid) / 2^ph_shift, 0, 14)
+        ph_shift: 4,
+        acid_ph: 5,
+        evap_low_fill: 32,
+        crust_threshold: 64,
+        // §7.7 light
+        light_lateral_iters: 6,
+        light_falloff: 32,
+        // §7.8 plants: sub-steps of unmet needs before death
+        stress_death: 16,
+        harvest_shift: 3,
+        // §7.9 activity: quiet Jacobi passes before a chunk is skipped
+        quiet_skip: 2,
+    ),
+    // Code names roles, never keys (rule 18). Material roles may name
+    // materials a later feature adds; they resolve once materials.ron has them.
+    roles: (
+        materials: {
+            "air": "air",
+            "water": "water",
+            "ice": "ice",
+            "magma": "magma",
+            "obsidian": "obsidian",
+            "basalt": "basalt",
+            "copper_dust": "copper_dust",
+            "iron_dust": "iron_dust",
+            "salt_dust": "salt_dust",
+        },
+        gases: {
+            "steam": "steam",
+            "smoke": "smoke",
+            "firedamp": "firedamp",
+            "chokedamp": "chokedamp",
+        },
+        substances: {
+            "organic": "c",
+            "acid": "acid",
+            "lime": "lime",
+        },
+    ),
+    // Thresholds read by E2E scenarios and budget tests.
+    eco_test: (
+        swale_min: 8,
+        quiet_tick_dev_ms: 60000,
+    ),
+)

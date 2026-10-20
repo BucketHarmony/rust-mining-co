@@ -1,0 +1,10 @@
+#![enable(implicit_some)]
+// Phase transitions (SAD-P2 §7.2), temperature rules only. Table order,
+// first match per cell. Temperatures in 0.1 °C.
+[
+    (from: Key("water"), to: "ice",    when: TempBelow(0)),
+    (from: Key("ice"),   to: "water",  when: TempAbove(50)),      // 5.0 °C hysteresis
+    (from: Key("water"), to: "air",    when: TempAbove(1000), effect: BoilAll),
+    (from: Key("magma"), to: "basalt", when: TempBelow(9000)),
+    (from: Tag("stone"), to: "magma",  when: TempAbove(12500)),
+]

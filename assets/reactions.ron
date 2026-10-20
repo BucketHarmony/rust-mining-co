@@ -1,0 +1,11 @@
+#![enable(implicit_some)]
+// Reactions (SAD-P2 §7.6). Table order, first match per cell; a reaction fires
+// once per cell per sub-step when every consumed amount is available.
+[
+    (id: "oxidize",            consume: [("s", 4)],                 where: [Exposed, Tag("sulfide")],      produce: [("acid", 4)]),
+    (id: "neutralize",         consume: [("acid", 2), ("lime", 2)], where: [],                            produce: [("salt", 2)]),
+    (id: "dissolve_carbonate", consume: [("acid", 1)],              where: [PhBelow(4), Tag("carbonate")], produce: [("lime", 2)], side: WeatherBoost(16)),
+    (id: "ochre",              consume: [("fe", 8)],                where: [Submerged, PhAbove(5)],        side: Coat(Floor, "ochre_crust", "fe", 8)),
+    (id: "salt_crust",         consume: [("salt", 16)],             where: [Evaporating],                  side: Coat(Floor, "salt_crust", "salt", 16)),
+    (id: "decompose",          consume: [("c", 4)],                 where: [Tag("soil")],                  produce: [("n", 1)], side: EmitGas("chokedamp", 2)),
+]

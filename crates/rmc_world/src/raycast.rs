@@ -21,8 +21,8 @@ pub struct Hit {
 }
 
 /// Casts a ray from `origin` (meters) along `dir` (any length) and returns
-/// the first cell whose material phase is `Solid` (see [`World::is_solid`]),
-/// entered within `max_dist` meters (inclusive).
+/// the first cell whose material phase is `Solid` or `Liquid` (see
+/// [`World::is_solid_or_liquid`]; SAD-P2 §5 lets tools target liquids), entered within `max_dist` meters (inclusive).
 ///
 /// - A ray that starts in a solid cell hits it at distance 0 with a zero
 ///   normal. Cells span `[c·0.5, (c+1)·0.5)`, as in [`CellPos::from_meters`].
@@ -99,7 +99,7 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
     loop {
         if cell.cmpge(min).all() && cell.cmple(max).all() {
             let pos = CellPos(cell.as_ivec3());
-            if world.is_solid(pos) {
+            if world.is_solid_or_liquid(pos) {
                 return Some(Hit {
                     cell: pos,
                     face_normal: normal,
@@ -200,6 +200,41 @@ mod tests {
             (hit.distance - distance).abs() < 1e-4,
             "distance to {cell:?}: got {}, want {distance}",
             hit.distance
+        );
+    }
+
+    #[test]
+    fn liquid_cells_are_hit() {
+        // SAD-P2 §5: raycasts hit Liquid cells so tools can target water and
+        // magma; collision (`is_solid`) still passes through them.
+        let base = phase1();
+        let mut defs: Vec<_> = base.iter().cloned().collect();
+        let liquid = MaterialId(u16::try_from(defs.len()).unwrap());
+        defs.push(crate::materials::MaterialDef {
+            id: liquid,
+            key: "test_liquid".into(),
+            phase: crate::materials::Phase::Liquid,
+            ..defs[0].clone()
+        });
+        let table = Arc::new(MaterialTable::from_defs(defs).unwrap());
+        let bounds = two_chunks();
+        let mut w = World::new(table, bounds);
+        for pos in bounds.chunks() {
+            w.insert_chunk(pos, Chunk::uniform(MaterialId::AIR))
+                .unwrap();
+        }
+        let target = c(20, 16, 16);
+        let (cpos, local) = target.split();
+        let mut chunk = w.chunk(cpos).unwrap().clone();
+        chunk.storage.set(local, liquid);
+        w.insert_chunk(cpos, chunk).unwrap();
+        assert!(!w.is_solid(target));
+        assert!(w.is_solid_or_liquid(target));
+        assert_hit(
+            raycast(&w, c(16, 16, 16).center_m(), Vec3::X, 10.0),
+            target,
+            IVec3::NEG_X,
+            1.75,
         );
     }
 

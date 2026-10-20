@@ -1,0 +1,25 @@
+#![enable(implicit_some)]
+// Phase 2 substances (SAD-P2 §7.6). Row order is the layer index:
+// LayerId::Substance(i) is row i. At most 10 rows.
+// Amounts are adsorbed in a solid or dissolved in water, 0..255 per cell.
+// mobility / mobility_acid: share (/256) of a cell's amount carried with each
+// unit of moving water; mobility_acid applies when the donor's pH < acid_ph.
+// tox_plant / tox_player: amount at or above which the cell is spoil for that
+// profile (absent = never toxic). yield_material: what a harvest of held
+// amounts yields. `c` doubles as organic carbon (role `organic` in eco.ron).
+[
+    (key: "cu", mobility: 8, mobility_acid: 96, plant_nutrient: false,
+     tox_plant: 40, tox_player: 80, yield_material: "copper_dust"),
+    (key: "fe", mobility: 4, mobility_acid: 48, plant_nutrient: false,
+     yield_material: "iron_dust"),
+    (key: "s", mobility: 16, mobility_acid: 32, plant_nutrient: false),
+    (key: "acid", mobility: 192, mobility_acid: 192, plant_nutrient: false,
+     tox_plant: 64, tox_player: 128),
+    (key: "lime", mobility: 32, mobility_acid: 64, plant_nutrient: false),
+    (key: "salt", mobility: 160, mobility_acid: 160, plant_nutrient: false,
+     tox_plant: 96, tox_player: 192, yield_material: "salt_dust"),
+    (key: "n", mobility: 96, mobility_acid: 96, plant_nutrient: true),
+    (key: "p", mobility: 8, mobility_acid: 16, plant_nutrient: true),
+    (key: "k", mobility: 48, mobility_acid: 64, plant_nutrient: true),
+    (key: "c", mobility: 2, mobility_acid: 2, plant_nutrient: false),
+]

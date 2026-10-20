@@ -1210,8 +1210,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Add rmc_eco to scripts/check-no-bevy.sh. New MaterialDef fields have serde defaults (per SAD-P2 §5: conductivity default 16, rejected above 64; heat_capacity default 16, rejected unless a power of two in 8..=128). Create substances.ron, gases.ron, transitions.ron, reactions.ron, plants.ron, seasons.ron, eco.ron (incl. roles and every named constant in SAD-P2 §7). Add Phase::Liquid to rmc_world::materials and handle it in every exhaustive match per SAD-P2 §5 (collision: not solid; raycast: hit; meshing: opaque pass until F127); Air and Solid behavior unchanged. Keep scripts/check-no-bevy.sh's hardened checks; rmc_eco is already listed there as optional-until-created, make it required once the crate exists."
+      "passes": true,
+      "notes": "Add rmc_eco to scripts/check-no-bevy.sh. New MaterialDef fields have serde defaults (per SAD-P2 §5: conductivity default 16, rejected above 64; heat_capacity default 16, rejected unless a power of two in 8..=128). Create substances.ron, gases.ron, transitions.ron, reactions.ron, plants.ron, seasons.ron, eco.ron (incl. roles and every named constant in SAD-P2 §7). Add Phase::Liquid to rmc_world::materials and handle it in every exhaustive match per SAD-P2 §5 (collision: not solid; raycast: hit; meshing: opaque pass until F127); Air and Solid behavior unchanged. Keep scripts/check-no-bevy.sh's hardened checks; rmc_eco is already listed there as optional-until-created, make it required once the crate exists.",
+      "passedAt": "2026-10-20T00:29:05Z"
     },
     {
       "id": "F101",

@@ -194,7 +194,8 @@ impl ChunkMesher for GreedyMesher {
         let solid: Vec<bool> = input
             .cells
             .iter()
-            .map(|&id| table.get(id).is_some_and(|d| d.is_solid()))
+            // Liquids mesh in the opaque pass until the liquid pass exists (SAD-P2 §5).
+            .map(|&id| table.get(id).is_some_and(|d| d.is_solid_or_liquid()))
             .collect();
         let is_solid = |p: IVec3| solid[MeshInput::index(p.x, p.y, p.z)];
         let base_colors: Vec<[f32; 4]> = table

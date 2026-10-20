@@ -5922,6 +5922,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmc_eco"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "rmc_world",
+ "ron",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "rmc_host"
 version = "0.1.0"
 dependencies = [
