@@ -1974,3 +1974,43 @@ Done: merged `features-p1d.json` with `scripts/merge-features.sh --before F110`,
 Decisions (owner): F093 extends SAD §8.1/§8.2 (new `Place` op; `Set` stays the free editor op). F094 overrides SAD §11.4's 0.6 m width; tests that hard-code 0.6 m are fixed under `test-fix:`. F095–F097 are look-and-feel features under rule 21. docs/SAD.md is not edited; the feature notes are the record.
 Next: F093.
 Blockers: none.
+
+## 2026-10-20 13:40 — F093 Place from inventory: right mouse places the selected material against the targeted face and spends one — passed
+Done:
+- `EditOp::Place(MaterialId)` (rmc_world), appended after `SetLayer`, so earlier encodings are unchanged.
+  - `World::validate` rejects it whole in three cases:
+    - the material is not `Solid` (`PlaceNotSolid`);
+    - the shape is not `Shape::Cell`, even a one-cell box (`PlaceNeedsCell`);
+    - the target cell is `Solid` (`PlaceOnSolid`).
+  - Like `Set`, it skips a cell inside a player's box, it clears damage, and its displacement counts as a brush fill (`brush_fills`).
+  - New `RejectReason` variants: `PlaceNeedsCell`, `PlaceNotSolid`, `PlaceOnSolid`, `NotInInventory`. `EditResult::rejected` is now `pub`.
+- `Inventory::remove(id, n)` takes at most what is held and drops an emptied material.
+- Host (`Host::edit`):
+  - The world's own checks come first. Then a `Place` of a material the issuer holds none of is rejected with `NotInInventory`, to the issuer only.
+  - Otherwise the host takes one when the result carries a `Cells`/`Full` delta and sends the issuer its `Inventory`. A skipped cell (a player's box, or a chunk the host does not hold) costs nothing.
+- Client:
+  - `hud.rs`: `SelectedMaterial` and `HudState.selected`. The mouse wheel (down: next, up: previous) and `E`/`Q` step through held materials in inventory order, wrapping (`step_selection`). Not while the editor is open. `Welcome` clears the selection. The selected inventory line is prefixed `> `.
+  - `pickaxe.rs`: while `PLACE_BUTTON` (right mouse) is held, a `place` system sends `Place(selected)` at `hit.cell + face_normal`. It repeats at most once per swing interval, on its own clock (`PlaceState`). It sends nothing with no selection, no target or a zero face normal, with the fly camera on or the editor open, or with the cursor released.
+- `TestApp::scroll(notches)` (rmc_testkit) writes `MouseWheel` messages.
+- docs/CONTROLS.md lists Right mouse, Mouse wheel and E / Q. The controls-doc test now checks those rows too.
+Tests added:
+- The 5 listed unit tests, and the E2E `dig_carry_place` (screenshot `docs/screens/dig_carry_place-215.png`).
+- Also `inventory::tests::remove_takes_at_most_what_is_held` and `input::tests::scroll_accumulates_mouse_wheel`.
+- The codec round-trip samples gained the `Place` op and the four new reject reasons.
+- `hudstate_reflects_target` gained `selected: None` in its full `HudState` literal. That adds an assertion and loosens nothing.
+- TDD: the host tests failed first (no spend, no rejection). The world and client tests were written with the code, so each was mutation-checked instead, and each fails under its mutation:
+  - placing on `hit.cell`;
+  - reversing the wheel;
+  - dropping the `PlaceOnSolid` check.
+- Reviewer: PASS. Its one test gap (no cursor-released case) now has a test, through a `#[cfg(test)] CursorGrab::released()`.
+Decisions:
+- A solid target rejects the whole command rather than skipping. A `Place` is always one cell, so the only difference is that the client gets a reason. A cell that is out of bounds is `OutsideBounds`. A cell in a non-resident chunk is skipped: the edit applies, and nothing is spent.
+- Selection starts empty: there is no automatic selection when the first material arrives. `inventory_count_updates_on_applied` pins the inventory text to unmarked lines, and the F093 note says "select topsoil". A selected material that runs out stays selected, so the next right click goes to the host, which rejects it (the E2E sees that). The next wheel step or key goes to the held material after it.
+- One wheel step per frame, whatever the scroll amount. Reading `AccumulatedMouseScroll` follows SAD §11.4's rule that game code reads only Bevy's accumulated input, never winit.
+- Placing needs the cursor grabbed (`look_allowed`), not `swing_allowed`. Only the left button grabs the cursor.
+- `PROTOCOL_VERSION` stays 2. The variants are appended, client and host ship together, and `codec.rs` pins the version at 2.
+- A placed water/ice cell would be full, like a brush `Set` (`brush_fills`). No placeable material is non-solid today, so this only matters if ice becomes a Solid yield (F125).
+- No in-game controls overlay exists, so docs/CONTROLS.md is the only place the bindings are listed.
+- The first smoke run failed `meshpipe::tests::{nearest_chunk_first, in_flight_budget_respected}` under machine load: one mesh job took 2.4 s, and the rmc_client lib took 116 s. Run alone they passed, the lib in 0.65 s, and a second full smoke run was SMOKE_OK. No fix: the failure was load, not code.
+Next: F094 (narrower player box, 0.45 m).
+Blockers: none.
