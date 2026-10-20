@@ -199,6 +199,11 @@ impl ChunkLayers {
         self.map.entry(id).or_insert_with(|| LayerData::zeroed(id))
     }
 
+    /// The values of `id` for the whole chunk, if materialized.
+    pub fn data(&self, id: LayerId) -> Option<&LayerData> {
+        self.map.get(&id)
+    }
+
     /// Whether `id` is materialized.
     pub fn contains(&self, id: LayerId) -> bool {
         self.map.contains_key(&id)
@@ -429,6 +434,14 @@ impl CellSet {
         self.words
             .as_ref()
             .map_or(0, |w| w.iter().map(|x| x.count_ones() as usize).sum())
+    }
+
+    /// Word `i` of the bitset (cells `64·i .. 64·i + 64`, bit `j` for cell
+    /// `64·i + j`); 0 when unallocated. Panics if `i` is not below
+    /// `CHUNK_VOLUME / 64`.
+    pub fn word(&self, i: usize) -> u64 {
+        assert!(i < BITSET_WORDS, "bitset word {i} out of range");
+        self.words.as_ref().map_or(0, |w| w[i])
     }
 
     /// Cells in ascending local index order.

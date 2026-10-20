@@ -186,6 +186,72 @@ impl World {
         self.finish_effects(&fx);
     }
 
+    /// Season-pass layer write (rule 14). Host-only, called only by
+    /// `rmc_eco` inside `season_tick`.
+    ///
+    /// Sets layer `id` at `cell` to `v` and returns whether it changed. On a
+    /// change it bumps the chunk's `eco_revision` and, like
+    /// [`World::eco_set`], adds the cell to the water sweep when it holds
+    /// moisture and to gas sweep `g` when it holds gas `g`. A cell outside
+    /// the bounds or in a non-resident chunk changes nothing. Panics if `id`
+    /// is out of range or `v` does not fit the layer's type.
+    pub fn eco_put_layer(&mut self, cell: CellPos, id: LayerId, v: i32) -> bool {
+        assert!(id.is_valid(), "layer {id:?} index out of range");
+        assert!(layer_value_fits(id, v), "value {v} does not fit {id:?}");
+        let mut fx = Effects::default();
+        self.put_layer(cell, id, v, &mut fx);
+        self.finish_effects(&fx);
+        !fx.layers.is_empty()
+    }
+
+    /// Season-pass plant write (rule 14). Host-only, called only by
+    /// `rmc_eco` inside `season_tick`.
+    ///
+    /// Replaces the plant state at `cell` (`None` removes it) and returns
+    /// whether it changed; a change bumps the chunk's `eco_revision`. A
+    /// cell outside the bounds or in a non-resident chunk changes nothing.
+    pub fn eco_put_plant(&mut self, cell: CellPos, plant: Option<PlantState>) -> bool {
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        let (pos, local) = cell.split();
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return false;
+        };
+        let old = match plant {
+            Some(p) => chunk.plants.insert(local.index(), p),
+            None => chunk.plants.remove(&local.index()),
+        };
+        if old == plant {
+            return false;
+        }
+        chunk.eco_revision += 1;
+        true
+    }
+
+    /// Adds `cell` to the active set of sweep `sweep` (SAD-P2 §3); returns
+    /// whether it was absent. Host-only, for `rmc_eco`'s sweep runner. A
+    /// cell outside the bounds or in a non-resident chunk is never active.
+    /// Panics if `sweep` is not below `N_SWEEPS`.
+    pub fn eco_activate(&mut self, cell: CellPos, sweep: usize) -> bool {
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        let (pos, local) = cell.split();
+        self.chunks
+            .get_mut(&pos)
+            .is_some_and(|c| c.active[sweep].insert(local))
+    }
+
+    /// Removes `cell` from the active set of sweep `sweep`; returns whether
+    /// it was present. Panics if `sweep` is not below `N_SWEEPS`.
+    pub fn eco_deactivate(&mut self, cell: CellPos, sweep: usize) -> bool {
+        let (pos, local) = cell.split();
+        self.chunks
+            .get_mut(&pos)
+            .is_some_and(|c| c.active[sweep].remove(local))
+    }
+
     fn class(&self, id: MaterialId) -> Class {
         let r = &self.rules;
         if Some(id) == r.water {
@@ -334,9 +400,9 @@ impl World {
             self.put_layer(cell, LayerId::Moisture, 0, fx);
             let added = self.deposit(cell, LayerId::Gas(steam), fill, fx);
             ledger.boil_to_steam += i64::from(added);
-            let lost = i64::from(fill - added);
-            ledger.gas_saturation_loss[usize::from(steam)] += lost;
-            ledger.water_saturation_loss += lost;
+            // Fill that found no room as steam never became gas: it is
+            // water lost, not steam lost.
+            ledger.water_saturation_loss += i64::from(fill - added);
         }
 
         // Air becoming anything else pushes its gases out.

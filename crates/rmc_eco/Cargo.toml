@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 rmc_world.workspace = true
 postcard.workspace = true
+rayon.workspace = true
 ron.workspace = true
 serde.workspace = true
 thiserror.workspace = true

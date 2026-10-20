@@ -5927,6 +5927,7 @@ name = "rmc_eco"
 version = "0.1.0"
 dependencies = [
  "postcard",
+ "rayon",
  "rmc_world",
  "ron",
  "serde",

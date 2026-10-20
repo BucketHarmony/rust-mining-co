@@ -1012,7 +1012,9 @@ mod tests {
 
     use crate::coords::CHUNK_VOLUME;
     use crate::displace::EcoRules;
-    use crate::layers::{LayerId, N_GASES, N_SUBSTANCES, PlantState, SWEEP_GAS, SWEEP_WATER};
+    use crate::layers::{
+        LayerId, N_GASES, N_SUBSTANCES, PlantState, SWEEP_GAS, SWEEP_TRANSPORT, SWEEP_WATER,
+    };
     use crate::ledger::SeasonLedger;
     use crate::world::DeltaError;
 
@@ -1910,5 +1912,55 @@ mod tests {
         assert_eq!(l, SeasonLedger::default());
         assert_eq!(w.hash(), hash);
         assert_eq!([c0, c1].map(|p| chunk_revs(&w, p)).to_vec(), revs);
+    }
+
+    #[test]
+    fn eco_put_layer_and_plant_bump_eco_revision_only() {
+        let mut w = eco_world();
+        let c0 = ChunkPos::new(0, 0, 0);
+        let a = at(4, 20, 4);
+        let (rev, eco, modified) = chunk_revs(&w, c0);
+        assert!(w.eco_put_layer(a, LayerId::Moisture, 9));
+        assert!(!w.eco_put_layer(a, LayerId::Moisture, 9), "unchanged");
+        assert_eq!(chunk_revs(&w, c0), (rev, eco + 1, modified));
+        assert!(active(&w, a, SWEEP_WATER), "moisture joins the water sweep");
+        assert!(w.eco_put_layer(a, LayerId::Gas(FIREDAMP), 3));
+        assert!(active(&w, a, SWEEP_GAS + usize::from(FIREDAMP)));
+        assert!(w.eco_put_layer(a, LayerId::Temperature, -40));
+        assert_eq!(w.layer(a, LayerId::Temperature), -40);
+
+        let plant = crate::layers::PlantState {
+            species: 1,
+            ..Default::default()
+        };
+        assert!(w.eco_put_plant(a, Some(plant)));
+        assert!(!w.eco_put_plant(a, Some(plant)));
+        assert_eq!(w.plant(a), Some(&plant));
+        assert!(w.eco_put_plant(a, None));
+        assert_eq!(w.plant(a), None);
+        assert_eq!(chunk_revs(&w, c0), (rev, eco + 5, modified));
+
+        // Activation is explicit and per kind; out of bounds never activates.
+        assert!(w.eco_activate(a, SWEEP_TRANSPORT));
+        assert!(!w.eco_activate(a, SWEEP_TRANSPORT));
+        assert!(w.eco_deactivate(a, SWEEP_TRANSPORT));
+        assert!(!w.eco_deactivate(a, SWEEP_TRANSPORT));
+        assert!(!w.eco_activate(at(-1, 0, 0), SWEEP_TRANSPORT));
+        assert!(!w.eco_put_layer(at(-1, 0, 0), LayerId::Moisture, 1));
+    }
+
+    #[test]
+    fn boil_without_steam_room_loses_water_not_steam() {
+        let mut w = eco_world();
+        let a = at(10, 10, 10);
+        set_at(&mut w, 1, "water", &[a]);
+        layer_at(&mut w, 2, a, LayerId::Moisture, 200);
+        // Steam already on the cell leaves room for 155 of the fill.
+        assert!(w.eco_put_layer(a, LayerId::Gas(STEAM), 100));
+        let l = eco_checked(&mut w, a, MaterialId::AIR);
+        assert_eq!(l.boil_to_steam, 155);
+        assert_eq!(l.water_saturation_loss, 45);
+        assert_eq!(l.gas_saturation_loss, [0; N_GASES]);
+        assert_eq!(w.layer(a, LayerId::Gas(STEAM)), 255);
     }
 }
