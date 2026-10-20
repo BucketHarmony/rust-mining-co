@@ -1940,3 +1940,26 @@ Decisions:
   The test itself is unchanged.
 Next: F122 (infiltration into porous solids, field capacity, seepage).
 Blockers: none.
+
+## 2026-10-20 09:40 — F122 Infiltration into porous solids, field capacity, seepage threshold — passed
+Done:
+- `WaterPass` (rmc_eco) runs the porous halves of §7.3 B2–B3 and step B4:
+  - B2, down into porous with room: `min(fill, perm / 2^infil_shift, cap_left)`.
+  - B3, sideways into porous with room, in the same sorted loop as the open neighbors: `min(perm / 2^infil_side_shift, cap_left)`, capped by the donor's fill.
+  - B4, seepage: a porous cell above `field_capacity · seep_num / 256` sheds `min(moisture − threshold, perm / 2^seep_shift)` to the first neighbor (below, then the 4 horizontal ones in sorted order) that is air or water with room, or porous with room. The amount is also capped by that receiver's room. Air receivers become water through `eco_set`.
+  - A porous solid is a `Solid` tagged `porous`. Per-material constants are precomputed into a table indexed by material id. `cap_left = max(field_capacity − moisture, 0)`.
+  - The `/ 256` is `tables::SEEP_DEN`. Shifts are applied on `u32`, never on signed values.
+- `reference::flat_sweep_water` models B1–B5, porous included. `WaterRef` gains the shifts, `seep_num` and the porous list, and is now `Clone` rather than `Copy`; `flat_sweep_water` takes `&WaterRef`.
+Tests added:
+- The 3 listed: `water::tests::{porous_column_fills_to_capacity_and_stops, seepage_into_pit_below_table, impermeable_blocks_infiltration}`.
+- The water test fixture appends two porous rows to the shipped material table: `test_loam` (perm 64, field_capacity 48) and `test_hardpan` (perm 0).
+- The random proptest worlds of `invariant_exact_after_every_sweep_proptest` and `oracle_equivalence_flat_sweep_proptest` now include loam below and above capacity, plus hardpan. Cases 0–9 map as before, so these tests are stronger, not weaker.
+- TDD: the column and seepage tests failed on "no infiltration" / "no seepage" first. The impermeable test guards existing behavior, so it passed before and after.
+- Mutation check: putting "below" last in the pass's seepage order makes the oracle fail at seed 0.
+Decisions:
+- The shipped `materials.ron` gets no porous material in this feature. The tests use their own rows. Limestone and crushed_sulfide come in F140. Whether soils become porous is left to the feature that needs it (F126 water table, F160s anchors). Until then, in-game water does not infiltrate anything.
+- Seepage never goes up: the "below first" order covers below plus the 4 horizontal neighbors. With "above" included, a saturated cell would push water up into a pond that immediately infiltrates back down.
+- The seepage receiver's permeability does not matter, since §7.3 B4 uses the donor's `perm`. A porous cell with perm 0 can still receive seepage, but it never sheds or takes infiltration.
+- Active set: `WaterPass::holds` covers porous cells only above their seepage threshold, because at or below it their visit moves nothing. `World` still activates any cell whose moisture is set (> 0). Such a cell is visited once and then leaves the set. Results are identical to visiting every porous cell, and the oracle confirms it. This keeps an at-capacity water table (F126) out of every sweep only when it sits at or below the threshold. Cells at field capacity are above the threshold, so they stay active.
+Next: F123.
+Blockers: none.
