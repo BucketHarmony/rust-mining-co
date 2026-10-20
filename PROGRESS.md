@@ -1904,3 +1904,39 @@ Decisions:
 - `ice` is not added here; F125 adds it along with its transitions.
 Next: F121 (water sweep: down and sideways, invariant proptest).
 Blockers: none.
+
+## 2026-10-20 08:40 — F121 Water sweep: down and sideways with donor/receiver checks; invariant proptest — passed
+Done:
+- `WaterPass::visit` (rmc_eco) runs §7.3 B steps 1, 2, 3 and 5:
+  - Step 2: water moves down into air or water, as much as fits.
+  - Step 3: water moves sideways to the 4 horizontal neighbors in sorted (y, z, x) order (z−1, x−1, x+1, z+1) that are air or water with lower fill. The amount is `min(flow_cap, (fill − fill_n) / 2, 255 − fill_n)`.
+  - Each move reads the receiver's fill and room just before it applies. An air receiver becomes water through `World::eco_set` first, so gases leave it. The donor's fill is carried through the visit, since only its own moves change it.
+  - `/ 2` is the named const `SIDE_SPLIT`, and 255 is `u8::MAX`.
+- `reference::flat_sweep_water` and `WaterRef`: the flat-array oracle for steps 1, 2, 3 and 5. It visits every cell in global order, with no active sets.
+- `World::eco_put_layer` (rmc_world) now writes its single cell directly. The semantics are unchanged: same return value, `eco_revision` bump and active-set rule. Before, it went through `put_layer` + `finish_effects` and their BTreeMaps. `finish_effects` now uses an array for its per-gas flags instead of a Vec.
+Tests added:
+- The 5 listed tests: `water::tests::{invariant_exact_after_every_sweep_proptest, oracle_equivalence_flat_sweep_proptest, pit_fills_before_overflow, sideways_halves_difference_with_cap, receiver_never_exceeds_255}`.
+- `edit::tests::eco_put_layer_activates_like_any_touched_cell` (rmc_world) guards the rewritten write path:
+  - an emptied water cell stays in the water sweep;
+  - a dried air cell leaves it;
+  - gas sweeps follow the gases still on the cell.
+- TDD: the unit tests and the oracle failed on "no move" before steps 2 and 3 existed. The invariant proptest held before and after, as it should.
+- Mutation check: swapping x−1 and x+1 in the pass's sideways order makes the oracle fail on its first sweep.
+- `proptest-regressions/water.txt` (from the pre-implementation oracle failure) is committed, so it replays.
+- Reviewer: PASS. It noted the pit test checked only the bottom layer cell by cell, so the test now also bounds each top-layer cell.
+Decisions:
+- Down into moist air moves `min(fill, 255 − moisture_below)`, not "all fill" (§7.3 B2 says "Below is air: move all fill"). The receiver-room check (§3, rule 15) takes precedence. For dry air the two are the same.
+- An air neighbor is converted to water only when an amount > 0 moves into it. Full moist air below is left alone until its own visit (step 1).
+- Porous receivers (the porous halves of B2–B3, and B4) are F122. The MoveLog of B2–B4 is left to the chemistry transport feature, which is its only reader. Water moves inside the water total need no ledger entry.
+- `pit_fills_before_overflow`:
+  - Water is poured 8 units per sweep onto the cell above a 3×3×2 pit's center.
+  - At first spill, the test asserts: the bottom layer is exactly full; the pit holds at least capacity − 1 per cell; and every top-layer cell is within 3 (the pit's width) of full.
+  - Exactly full before spilling is not reachable under §7.3: halving leaves differences of 1 standing, and water standing over a full column spreads sideways onto the rim.
+  - A faster pour (64 per sweep) heaps a mound and spills at about 97 %. That is the behavior of a flow-capped sweep, not a defect.
+- The random proptest world is 8×8×8 around a chunk corner: 8 chunks, every kind of chunk face, negative coordinates. That keeps each proptest at about 3 s with 256 cases. A 16×12×16 world took 16–19 s.
+- Performance: flow made `replica::tests::equivalence_after_three_seasons_with_edits_between` (rmc_host) take 21 s, up from 5 s. Its random Set(water) edits make about 2.7 M visits and 2–5 M moves per season. Two changes brought it to 9.7 s:
+  - the visit reads each cell once;
+  - the `eco_put_layer` fast path.
+  The test itself is unchanged.
+Next: F122 (infiltration into porous solids, field capacity, seepage).
+Blockers: none.
