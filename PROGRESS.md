@@ -1835,3 +1835,46 @@ Decisions:
 - Could not take a timing for the real binary: `cargo run -p rmc_app -- --headless --seasons 2` was denied by the session's permission layer. The 8-chunk test run (3 seasons, two runs) takes about 0.4 s in the test profile.
 Next: F109 (testkit additions).
 Blockers: none.
+
+## 2026-10-20 06:10 — F109 Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button — passed
+Done:
+- Editor (rmc_client):
+  - `EditorAction::AdvanceSeason` on F6 ("Advance one season", listed in `docs/CONTROLS.md`).
+  - `EditorState::season_requested`. The `request_season` system takes it and sends one `ClientMsg::AdvanceSeason`.
+  - The panel has a Season section with an "Advance season" button (`ADVANCE_SEASON_LABEL`). The report summary is left to F169.
+- rmc_eco: `SeasonOverride { rain, air_temp }` and `EcoTables::with_season_override`. It replaces the given field in every season row and recomputes the hash. The golden hash is unchanged.
+- rmc_host: `Host::eco_tables()` and `Host::set_eco_tables(tables)`. The latter swaps the tables and keeps the season count, the activity and the between-seasons ledger.
+- Testkit:
+  - The host now runs `with_eco` (the assets' tables), and worldgen writes the temperature layer, as in the game.
+  - New module `rmc_testkit::eco`:
+    - `advance_season` raises the editor's action, the same path as F6, and steps until `SeasonDone`. Also `seasons(n)`.
+    - `season_log` / `last_season`: per season, the `SeasonFrames` with the chunk and layer snapshots, report and changed count. `ledger()` returns the last season's ledger.
+    - Readers: `layer_u8`, `temp`, `count(tag_or_role, box)`, `sum_layer`.
+    - Edits as the local player: `set_layer` and `apply_edits`. They wait for results and panic on a rejection.
+    - `set_season_params(SeasonOverride)`.
+    - `fixture(Fixture) -> FixtureSite` for Slope, Pit, Trench, Swale(contour), Pile(m), SealedCave, Channel(m), Pool, Patch(m, substance, amount).
+Tests added:
+- The 4 listed tests.
+- Also `eco::tests::other_fixtures_build_their_features` (testkit) and `tables::tests::season_override_replaces_given_fields_of_every_row` (rmc_eco).
+- TDD: the editor test first failed to compile (no action, field or label). The testkit tests failed on `todo!()` stubs.
+- E2E `save_load_roundtrip` and `dig_cell_visible` still pass with the testkit host change.
+Decisions:
+- Fixture geometry (SAD-P2 §11 gives only the names):
+  - Every fixture rebuilds one 32×32 site in the middle of the world.
+  - Ground level `g` is the generated surface at the site's center, clamped so there are 10 cells of fixture ground below and 15 free cells above.
+  - Everything above `g` is cleared. Below it: stone, with 2 cells of soil on top (first materials tagged `stone` / `soil`).
+  - Slopes rise 1 cell per 4 columns toward -x (7 cells).
+  - Feature sizes: pit 8×8×6; trench across the slope, 2 wide and 3 deep; swale dug 2 deep along the contour, with a 1-cell soil berm downhill; pile 7×7 stepped, 4 high; cave 8×4×8 under a 4-cell roof; channel down the slope, 2×2 open, floor and walls lined with the material; patch 8×8×2 of material plus a substance layer.
+  - `fixture` returns a `FixtureSite { site, ground_y, sloped, feature }`. SAD's signature returns nothing, but scenarios need the regions. A control region is not included; later E2E features add what they need.
+- `Pool` resolves the `water` role and panics until F120 adds water.
+- `ph`, `spoil_cells` and `harvest` are not added: pH derivation, toxicity profiles and plants arrive in F142, F145 and F167.
+- `count` takes a material role from `eco.ron` first, otherwise a tag. A role with no material yet counts 0; a name that is neither a role nor a tag panics.
+- The readers read the host world.
+- A season override applies to every season row from the next tick on. Each call replaces the previous one, and `SeasonOverride::default()` restores the tables. The testkit keeps the unmodified tables; the host gets the overridden copy via `set_eco_tables`.
+- `advance_season_applies_both_snapshot_kinds`:
+  - LayerSnapshots come from a real season tick.
+  - No pass changes materials before F125/F130, so the host cannot yet send a ChunkSnapshot in a season. The test writes one season frame (SeasonStarted, ChunkSnapshot, LayerSnapshot, SeasonDone) into the client's inbox, checks that the log and replica take both kinds, then resyncs from host snapshots and runs 2 more real seasons.
+  - When a material-changing pass lands, add a real-tick ChunkSnapshot check.
+- TestApp worlds now carry a temperature layer, so their hashes differ from before. No E2E test pins a hash.
+Next: F120 (water material with fill).
+Blockers: none.
