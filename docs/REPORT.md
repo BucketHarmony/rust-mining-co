@@ -1,10 +1,10 @@
 # Rust Mining Co — overnight build report
 
-Generated 2026-10-20T00:10:52Z at commit 0433f7b
+Generated 2026-10-20T06:06:39Z at commit 096336c
 
-**68 / 128 features passing, 0 skipped, 60 not passing.**
+**81 / 128 features passing, 0 skipped, 47 not passing.**
 - Phase 1: 68 / 68 passing, 0 skipped
-- Phase 2: 0 / 60 passing, 0 skipped
+- Phase 2: 13 / 60 passing, 0 skipped
 
 ## How to play (Windows)
 
@@ -29,9 +29,9 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 | M6 | 8 / 8 | 0 |  |
 | M7 | 15 / 15 | 0 |  |
 | M8 | 6 / 6 | 0 |  |
-| E0 | 0 / 10 | 0 | F100, F101, F102, F103, F104, F105, F106, F107, F108, F109 |
+| E0 | 10 / 10 | 0 |  |
 | E1 | 0 / 5 | 0 | F110, F111, F112, F113, F114 |
-| E2 | 0 / 11 | 0 | F120, F121, F122, F123, F124, F125, F126, F127, F128, F129, F150 |
+| E2 | 3 / 11 | 0 | F123, F124, F125, F126, F127, F128, F129, F150 |
 | E2b | 0 / 5 | 0 | F130, F131, F132, F133, F134 |
 | E3 | 0 / 9 | 0 | F140, F141, F142, F143, F144, F145, F146, F147, F148 |
 | E3b | 0 / 6 | 0 | F151, F152, F153, F154, F155, F156 |
@@ -110,24 +110,24 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 | F083 | M8 | CI: Linux tests+E2E on lavapipe, Windows build+E2E on WARP, windows-release artifact | passed | `cargo:rmc_world:coords::tests::smoke_compiles` |
 | F084 | M8 | Playtester report and screenshot gallery | passed | `cargo:rmc_world:coords::tests::smoke_compiles` |
 | F085 | M8 | docs/REPORT.md via scripts/report.sh | passed | `cargo:rmc_world:coords::tests::smoke_compiles` |
-| F100 | E0 | rmc_eco crate (Bevy-free) and Phase 2 data files loading with hashes | **no** | `cargo:rmc_eco:tables::tests::loads_all_phase2_tables`<br>`cargo:rmc_eco:tables::tests::tables_hash_is_stable`<br>`cargo:rmc_world:materials::tests::phase1_table_loads_with_phase2_defaults` |
-| F101 | E0 | Chunk layers, PlantState map, eco_revision, surface_y column cache (i16) | **no** | `cargo:rmc_world:layers::tests::absent_layer_reads_zero`<br>`cargo:rmc_world:layers::tests::compact_drops_zero_keeps_temperature_and_light`<br>`cargo:rmc_world:layers::tests::chunk_hash_covers_layers_and_plants`<br>`cargo:rmc_world:columns::tests::surface_y_matches_brute_force_proptest` |
-| F102 | E0 | Save format v2 with layers and plant state; v1 rejected | **no** | `cargo:rmc_world:save::tests::v2_roundtrip_with_layers_and_plants_hash_identical`<br>`cargo:rmc_world:save::tests::v1_rejected_with_version_message`<br>`cargo:rmc_world:save::tests::tables_hash_mismatch_fails` |
-| F103 | E0 | Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger in rmc_world; displacement rules shared by World::apply and World::eco_set | **no** | `cargo:rmc_protocol:codec::tests::roundtrip_phase2_variants`<br>`cargo:rmc_world:edit::tests::set_layer_emits_layers_delta_and_bumps_eco_revision`<br>`cargo:rmc_world:edit::tests::displacement_rules_every_case_ledgered`<br>`cargo:rmc_world:edit::tests::brush_set_water_fill_255_set_magma_init_temp`<br>`cargo:rmc_world:edit::tests::eco_set_displaces_bumps_revision_no_delta` |
-| F104 | E0 | Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference | **no** | `cargo:rmc_eco:runner::tests::jacobi_parallel_equals_serial_hash`<br>`cargo:rmc_eco:runner::tests::apply_in_sorted_chunk_order`<br>`cargo:rmc_eco:runner::tests::sweep_visits_global_y_cz_cx_lz_lx_order`<br>`cargo:rmc_eco:runner::tests::active_set_includes_receivers`<br>`cargo:rmc_eco:invariants::tests::checker_detects_created_water` |
-| F105 | E0 | Activity tracking: quiet counters, skip, reactivation by edits and neighbors | **no** | `cargo:rmc_eco:activity::tests::quiet_chunk_skipped_after_threshold`<br>`cargo:rmc_eco:activity::tests::edit_reactivates_neighbors`<br>`cargo:rmc_eco:activity::tests::season_boundary_reactivates_surface_chunks`<br>`cargo:rmc_eco:activity::tests::skipping_changes_no_result_on_constant_fixture` |
-| F106 | E0 | Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer | **no** | `cargo:rmc_eco:temperature::tests::energy_nonincreasing_without_sources`<br>`cargo:rmc_eco:temperature::tests::unequal_capacity_edge_conserves_energy`<br>`cargo:rmc_eco:temperature::tests::maximum_principle_proptest`<br>`cargo:rmc_eco:temperature::tests::spread_nonincreasing`<br>`cargo:rmc_eco:temperature::tests::linear_profile_is_fixed_point`<br>`cargo:rmc_eco:temperature::tests::flux_antisymmetric_proptest`<br>`cargo:rmc_eco:temperature::tests::heat_source_stays_clamped`<br>`cargo:rmc_eco:temperature::tests::surface_clamp_pond_top_and_open_air_not_under_overhang`<br>`cargo:rmc_eco:temperature::tests::surface_cell_follows_seasonal_swing`<br>`cargo:rmc_eco:temperature::tests::deep_profile_cell_quiet_20_substeps`<br>`cargo:rmc_eco:temperature::tests::two_chunk_equals_one_chunk`<br>`cargo:rmc_worldgen:temperature::tests::profile_bottom_equals_profile_fn` |
-| F107 | E0 | season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone | **no** | `cargo:rmc_host:season::tests::advance_season_roundtrip`<br>`cargo:rmc_host:replica::tests::equivalence_after_three_seasons_with_edits_between`<br>`cargo:rmc_eco:tick::tests::whole_tick_deterministic_100`<br>`cargo:rmc_host:season::tests::layer_snapshot_sent_for_eco_only_changes`<br>`cargo:rmc_host:season::tests::between_seasons_ledger_merged` |
-| F108 | E0 | Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2 | **no** | `cargo:rmc_app:cli::tests::headless_seasons_writes_report`<br>`cargo:rmc_app:cli::tests::default_world_size_is_32_chunks` |
-| F109 | E0 | Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button | **no** | `cargo:rmc_testkit:eco::tests::advance_season_applies_both_snapshot_kinds`<br>`cargo:rmc_testkit:eco::tests::fixture_pit_builds_expected_cells`<br>`cargo:rmc_testkit:eco::tests::set_season_params_overrides_rain`<br>`cargo:rmc_client:editor::tests::season_button_sends_advance_season` |
+| F100 | E0 | rmc_eco crate (Bevy-free) and Phase 2 data files loading with hashes | passed | `cargo:rmc_eco:tables::tests::loads_all_phase2_tables`<br>`cargo:rmc_eco:tables::tests::tables_hash_is_stable`<br>`cargo:rmc_world:materials::tests::phase1_table_loads_with_phase2_defaults` |
+| F101 | E0 | Chunk layers, PlantState map, eco_revision, surface_y column cache (i16) | passed | `cargo:rmc_world:layers::tests::absent_layer_reads_zero`<br>`cargo:rmc_world:layers::tests::compact_drops_zero_keeps_temperature_and_light`<br>`cargo:rmc_world:layers::tests::chunk_hash_covers_layers_and_plants`<br>`cargo:rmc_world:columns::tests::surface_y_matches_brute_force_proptest` |
+| F102 | E0 | Save format v2 with layers and plant state; v1 rejected | passed | `cargo:rmc_world:save::tests::v2_roundtrip_with_layers_and_plants_hash_identical`<br>`cargo:rmc_world:save::tests::v1_rejected_with_version_message`<br>`cargo:rmc_world:save::tests::tables_hash_mismatch_fails` |
+| F103 | E0 | Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger in rmc_world; displacement rules shared by World::apply and World::eco_set | passed | `cargo:rmc_protocol:codec::tests::roundtrip_phase2_variants`<br>`cargo:rmc_world:edit::tests::set_layer_emits_layers_delta_and_bumps_eco_revision`<br>`cargo:rmc_world:edit::tests::displacement_rules_every_case_ledgered`<br>`cargo:rmc_world:edit::tests::brush_set_water_fill_255_set_magma_init_temp`<br>`cargo:rmc_world:edit::tests::eco_set_displaces_bumps_revision_no_delta` |
+| F104 | E0 | Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference | passed | `cargo:rmc_eco:runner::tests::jacobi_parallel_equals_serial_hash`<br>`cargo:rmc_eco:runner::tests::apply_in_sorted_chunk_order`<br>`cargo:rmc_eco:runner::tests::sweep_visits_global_y_cz_cx_lz_lx_order`<br>`cargo:rmc_eco:runner::tests::active_set_includes_receivers`<br>`cargo:rmc_eco:invariants::tests::checker_detects_created_water` |
+| F105 | E0 | Activity tracking: quiet counters, skip, reactivation by edits and neighbors | passed | `cargo:rmc_eco:activity::tests::quiet_chunk_skipped_after_threshold`<br>`cargo:rmc_eco:activity::tests::edit_reactivates_neighbors`<br>`cargo:rmc_eco:activity::tests::season_boundary_reactivates_surface_chunks`<br>`cargo:rmc_eco:activity::tests::skipping_changes_no_result_on_constant_fixture` |
+| F106 | E0 | Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer | passed | `cargo:rmc_eco:temperature::tests::energy_nonincreasing_without_sources`<br>`cargo:rmc_eco:temperature::tests::unequal_capacity_edge_conserves_energy`<br>`cargo:rmc_eco:temperature::tests::maximum_principle_proptest`<br>`cargo:rmc_eco:temperature::tests::spread_nonincreasing`<br>`cargo:rmc_eco:temperature::tests::linear_profile_is_fixed_point`<br>`cargo:rmc_eco:temperature::tests::flux_antisymmetric_proptest`<br>`cargo:rmc_eco:temperature::tests::heat_source_stays_clamped`<br>`cargo:rmc_eco:temperature::tests::surface_clamp_pond_top_and_open_air_not_under_overhang`<br>`cargo:rmc_eco:temperature::tests::surface_cell_follows_seasonal_swing`<br>`cargo:rmc_eco:temperature::tests::deep_profile_cell_quiet_20_substeps`<br>`cargo:rmc_eco:temperature::tests::two_chunk_equals_one_chunk`<br>`cargo:rmc_worldgen:temperature::tests::profile_bottom_equals_profile_fn` |
+| F107 | E0 | season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone | passed | `cargo:rmc_host:season::tests::advance_season_roundtrip`<br>`cargo:rmc_host:replica::tests::equivalence_after_three_seasons_with_edits_between`<br>`cargo:rmc_eco:tick::tests::whole_tick_deterministic_100`<br>`cargo:rmc_host:season::tests::layer_snapshot_sent_for_eco_only_changes`<br>`cargo:rmc_host:season::tests::between_seasons_ledger_merged` |
+| F108 | E0 | Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2 | passed | `cargo:rmc_app:cli::tests::headless_seasons_writes_report`<br>`cargo:rmc_app:cli::tests::default_world_size_is_32_chunks` |
+| F109 | E0 | Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button | passed | `cargo:rmc_testkit:eco::tests::advance_season_applies_both_snapshot_kinds`<br>`cargo:rmc_testkit:eco::tests::fixture_pit_builds_expected_cells`<br>`cargo:rmc_testkit:eco::tests::set_season_params_overrides_rain`<br>`cargo:rmc_client:editor::tests::season_button_sends_advance_season` |
 | F110 | E1 | Freeze-thaw season bitset | **no** | `cargo:rmc_eco:weathering::tests::freeze_thaw_bit_set_on_zero_crossing`<br>`cargo:rmc_eco:weathering::tests::freeze_thaw_bit_cleared_at_season_start` |
 | F111 | E1 | Weathering pass: regolith growth when exposed and moist, freeze-thaw doubling | **no** | `cargo:rmc_eco:weathering::tests::regolith_only_when_exposed_and_moist`<br>`cargo:rmc_eco:weathering::tests::freeze_thaw_doubles_rate`<br>`cargo:rmc_eco:weathering::tests::unexposed_control_unchanged` |
 | F112 | E1 | Gradual composition release during weathering; conversion at 255 | **no** | `cargo:rmc_eco:weathering::tests::release_proportional_to_actual_delta`<br>`cargo:rmc_eco:weathering::tests::release_complete_within_rounding`<br>`cargo:rmc_eco:weathering::tests::converts_at_255`<br>`cargo:rmc_eco:weathering::tests::ledger_weather_in_and_saturation_loss` |
 | F113 | E1 | Regolith halves pickaxe hardness; yield_material | **no** | `cargo:rmc_world:damage::tests::regolith_halves_hardness`<br>`cargo:rmc_world:damage::tests::yield_material_overrides_self` |
 | F114 | E1 | E2E: freeze_thaw_weathers_cut | **no** | `e2e:freeze_thaw_weathers_cut` |
-| F120 | E2 | Water material with fill; air↔water via delta | **no** | `cargo:rmc_eco:water::tests::air_with_moisture_becomes_water`<br>`cargo:rmc_eco:water::tests::water_at_zero_fill_becomes_air` |
-| F121 | E2 | Water sweep: down and sideways with donor/receiver checks; invariant proptest | **no** | `cargo:rmc_eco:water::tests::invariant_exact_after_every_sweep_proptest`<br>`cargo:rmc_eco:water::tests::oracle_equivalence_flat_sweep_proptest`<br>`cargo:rmc_eco:water::tests::pit_fills_before_overflow`<br>`cargo:rmc_eco:water::tests::sideways_halves_difference_with_cap`<br>`cargo:rmc_eco:water::tests::receiver_never_exceeds_255` |
-| F122 | E2 | Infiltration into porous solids, field capacity, seepage threshold | **no** | `cargo:rmc_eco:water::tests::porous_column_fills_to_capacity_and_stops`<br>`cargo:rmc_eco:water::tests::seepage_into_pit_below_table`<br>`cargo:rmc_eco:water::tests::impermeable_blocks_infiltration` |
+| F120 | E2 | Water material with fill; air↔water via delta | passed | `cargo:rmc_eco:water::tests::air_with_moisture_becomes_water`<br>`cargo:rmc_eco:water::tests::water_at_zero_fill_becomes_air` |
+| F121 | E2 | Water sweep: down and sideways with donor/receiver checks; invariant proptest | passed | `cargo:rmc_eco:water::tests::invariant_exact_after_every_sweep_proptest`<br>`cargo:rmc_eco:water::tests::oracle_equivalence_flat_sweep_proptest`<br>`cargo:rmc_eco:water::tests::pit_fills_before_overflow`<br>`cargo:rmc_eco:water::tests::sideways_halves_difference_with_cap`<br>`cargo:rmc_eco:water::tests::receiver_never_exceeds_255` |
+| F122 | E2 | Infiltration into porous solids, field capacity, seepage threshold | passed | `cargo:rmc_eco:water::tests::porous_column_fills_to_capacity_and_stops`<br>`cargo:rmc_eco:water::tests::seepage_into_pit_below_table`<br>`cargo:rmc_eco:water::tests::impermeable_blocks_infiltration` |
 | F123 | E2 | Condensation (start of pass), evaporation to steam (actual amounts), rain at surface_y+1 or into the anchor under a plant | **no** | `cargo:rmc_eco:water::tests::evaporation_limited_by_steam_room_ledger_actual`<br>`cargo:rmc_eco:water::tests::condensation_below_temp_returns_steam`<br>`cargo:rmc_eco:water::tests::steam_above_sky_open_pond_vents_not_condenses`<br>`cargo:rmc_eco:water::tests::rain_targets_surface_plus_one_or_anchor_never_overhang`<br>`cargo:rmc_eco:water::tests::rain_ledger_records_actual`<br>`cargo:rmc_eco:water::tests::rain_pattern_is_seeded` |
 | F124 | E2 | Whole-tick invariants on random worlds and sweep oracle on multi-chunk worlds | **no** | `cargo:rmc_eco:water::tests::oracle_equivalence_multi_chunk_world`<br>`cargo:rmc_eco:tick::tests::invariants_hold_after_each_pass_20_worlds` |
 | F125 | E2 | Ice: transitions water↔ice with hysteresis, moisture preserved | **no** | `cargo:rmc_eco:transitions::tests::water_freezes_below_zero`<br>`cargo:rmc_eco:transitions::tests::ice_melts_above_hysteresis`<br>`cargo:rmc_eco:transitions::tests::moisture_preserved_across_freeze`<br>`cargo:rmc_eco:transitions::tests::table_order_precedence` |
@@ -1008,9 +1008,270 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - REPORT.md is a generated file and is committed as generated. Its "at commit" line names the HEAD it was built from, which is the commit before the one that adds it.
 - Phase 2 features (E0–E5) appear in the report as not passing. The report covers all of features.json rather than hiding unstarted work.
 
+### 2026-10-20 00:40 — F085 follow-up: M8 playtester run — passed
+
+**Decisions:**
+
+- The F005 CRLF blocker the playtester flagged as open was closed by the owner's hook and script fixes (PROGRESS.md, the Phase 2 handoff block). The report keeps it because it is history.
+- Left for the owner (presentation choices, not §16.6 gaps):
+  - a "read this first" summary of open blockers, CI status and playtest items;
+  - collapsing the roughly 700-line decisions section;
+  - captions for the screenshots, or a curated subset of them;
+  - the private-repo clone line, which needs the reader's own GitHub credentials.
+- REPORT.md always names the commit before the one that adds it. It is regenerated by the driver at the end of a run (§16.6).
+
+### 2026-10-20 01:30 — F100 rmc_eco crate (Bevy-free) and Phase 2 data files loading with hashes — passed
+
+**Decisions:**
+
+- Material hash: the Phase 2 fields are appended as a second section only when some definition sets one away from its default. The Phase 1 table and the `hash_is_stable` golden value therefore stay unchanged (no test-fix needed). Any non-default Phase 2 field changes the hash.
+- `light_attenuation` is `Option<u8>` in the def, read through `MaterialDef::light_attenuation()`. The SAD default depends on phase and `passable` (0 for Air and passable solids, 255 otherwise), which a serde default cannot express.
+- materials.ron is unchanged. The new materials (water, ice, magma, sulfide_ore, plants, dusts, ...) belong to F120/F130/F140/F165 and so on; adding them now would break `loads_phase1_table`.
+  - The eco files may already name those materials. `EcoTables` lists such keys in `unresolved_materials()` and resolves them to `None`.
+  - The test asserts every unresolved key is one of the SAD-P2 §5 materials, which catches typos.
+  - Substance, gas and tag references, and gas and substance roles, must be valid now.
+  - Role `air` must resolve and must be the only Phase::Air material.
+- eco.ron has three sections: `params` (every SAD-P2 §7/§8 constant under its SAD name), `roles` (`materials`, `gases` and `substances` maps) and `eco_test` (`swale_min`, `quiet_tick_dev_ms` = 60000).
+  - `gradient` keeps the bare SAD §8 name.
+  - `temp_bucket` is not defined in the SAD. It became `evap_bucket` (bucket width in 0.1 °C from 0 °C; below 0 uses bucket 0, past the end uses the last entry).
+  - `chamber_max_y` and the water table are worldgen (§8) and are left to F126/F132.
+  - The water tint `eco.tint` (§10) is left to F146.
+  - Required roles: materials air, water, ice, magma, obsidian, basalt; gases steam, smoke, firedamp, chokedamp; substances organic (= c), acid, lime. The dust materials are listed as optional roles.
+- Gas `density` is an i8 where negative rises and positive sinks. A flammable gas must have `ignite_min > 0`.
+- transitions.ron and reactions.ron match SAD §7.2 and §7.6 verbatim, using RON `#![enable(implicit_some)]` so `effect: BoilAll` and `side: ...` read as written. The plant, substance and season numbers are first tuning values for later features to adjust.
+- `tables_hash` is xxh3 over the material hash plus the postcard encoding of every parsed table, including `eco_test`. The golden value is pinned on a small inline fixture, so tuning the shipped assets does not move it.
+- `N_SUBSTANCES` = 10 and `N_GASES` = 4 live in rmc_eco::tables for now. F103 may move them to rmc_world for the ledger arrays.
+
+### 2026-10-19 20:52 — F101 Chunk layers, PlantState map, eco_revision, surface_y column cache (i16) — passed
+
+**Decisions:**
+
+- A chunk with no nonzero layer and no plants hashes exactly as `ChunkStorage::hash`. Otherwise the hash is xxh3 over a prefix plus the storage, layer and plant hashes. So Phase 1 chunk, world and worldgen golden hashes are unchanged and no test-fix was needed.
+- Layer hash and equality go by what the layers read: an all-zero layer equals an absent one, so `compact` never moves the hash. `CellSet` equality is by content too.
+- `freeze_thaw` and the active sets are `CellSet`s that allocate on first insert, not eagerly boxed `[u64; 512]` as the SAD struct sketch shows. Eager boxes would cost 32 KB per chunk (8 MB for the Phase 1 world) and break `memory_256_chunks_under_budget` ("uniform chunks own no cell data"). The bits are the same; only the allocation is lazy.
+- Reading or writing a layer with the wrong type (u8 vs i16), or with a substance or gas index out of range, panics. It is a programming error.
+- `set_*` always materializes the layer, even for a 0 value ("materialize on set", SAD-P2 §12).
+- A `Full` delta onto a resident chunk replaces only its cells and keeps its layers, plants and `eco_revision`. Material deltas and layer state replicate separately (`LayerSnapshot` and `ChunkDelta::Layers`, F103). A non-resident chunk arrives with no layers.
+- `surface_y` counts only in-bounds cells of resident chunks, so the brute-force oracle is a top-down `get_cell` scan. `World::new` asserts that the bounds' y range fits `i16` above `NO_SURFACE`.
+- `ChunkDelta::Layers` does not exist yet (F103). Layer deltas never change materials, so they cannot move `surface_y`. The proptest covers Set, Remove, Paint, Damage, Cells, Full and insert_chunk.
+- No `World` API mutates layers or bumps `eco_revision` yet. `SetLayer`, `eco_set` and the passes (F103+) will own that.
+- The proptest takes about 5 s at 256 cases and 20 s at CI's 1000.
+
+### 2026-10-19 22:10 — F102 Save format v2 with layers and plant state; v1 rejected — passed
+
+**Decisions:**
+
+- test-fix (commit 8176772, before the feature): `only_modified_chunks_written` and `corrupt_chunks_fail` hand-decoded and hand-wrote chunks.bin as the v1 tuple `(ChunkPos, u64, ChunkStorage)`. They now go through `SavedChunk` helpers (`raw_chunk`, `decode_raw_chunks`), which passed unchanged on v1. No assertion changed. The feature commit adapts only those helpers (and one `.storage` read) to `Option<ChunkStorage>` with `.expect("cells saved")`, which is stricter.
+- A version mismatch stays a `HeaderMismatch { FormatVersion }`, not a new error variant, so `header_mismatch_fails` (which writes version 0) and the testkit's mismatch checks hold. Only the Display text is version-specific.
+- "Saved" means `modified || eco_revision != 0`. This relies on worldgen (F106/F126/...) leaving `eco_revision` at 0 for generated layers. If worldgen bumps it, every chunk is saved: correct, only larger. A chunk changed and changed back is still saved, as in Phase 1.
+- With `storage: None`, the saved `revision` is informational and load keeps the generated revision. An unmodified chunk's revision is always the generated one.
+- `apply_eco_snapshot` is the snapshot-application path under rule 14. F103's `LayerSnapshot` can reuse it.
+- `tables_hash` is opaque to rmc_world (it cannot depend on rmc_eco). The world check (`check_world`) still covers only bounds and material hash.
+
+### 2026-10-19 23:55 — F103 Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger; displacement rules — passed
+
+**Decisions:**
+
+- The implementation was written before the listed tests (the context was lost mid-session). The tests were mutation-checked instead. Each of these fails a listed test:
+  - removing the boil exception;
+  - removing the brush fill;
+  - not emitting the Layers delta;
+  - letting every substance follow moisture and skipping the eco_revision bump.
+- Two ledger terms are added beyond the SAD sketch:
+  - `water_saturation_loss`: moisture with nowhere to go during a pass;
+  - `gas_edit_in`: gas added by `SetLayer`.
+  - Losses during edits go to `*_edit_out`; losses during passes go to `*saturation_loss`. Lost steam is mirrored into the water terms. The edit tests' invariant checker counts moisture on every cell as water.
+- An eco-revision gap in `ChunkDelta::Layers` reuses `DeltaError::RevisionGap`. Replicas repair it with `RequestChunk`, whose v2 snapshot carries the layers.
+- Delta order in an `EditResult`: per chunk, ascending, the material delta (Cells/Full) first, then Layers.
+- Moisture and gas pushes use neighbors in sorted (y, z, x) order, with the one below first. Moisture goes to the first air or water neighbor with room; the rest is lost. Gases fill each air neighbor in turn, up to its room.
+- `SetLayer` writes gas layers on air cells only (gas lives in air). Moisture, substance and gas changes are ledgered as edit in/out.
+- Brush `Set(water)` on a cell that is already water is a no-op, as Phase 1 skips unchanged cells, so it does not refill to 255.
+- `eco_set` magma ledger: non-magma → magma is `magma_melt_in`, magma → non-magma is `magma_set`. Edits use `magma_edit` ±1.
+- Harvest yields go through `EcoRules::substance_yields` into `EditResult.yields`. A dead plant's `litter_in` is recorded in full; whatever the cell cannot hold goes to `saturation_loss`.
+- `EditResult.ledger` and `SeasonDone.report` are boxed. Clippy `large_enum_variant`: a ledger is about 1 KB and most results carry an empty one.
+- Deferred to F107:
+  - zstd for snapshots (SAD §9 "postcard+zstd"); snapshots stay plain postcard;
+  - host handling of `AdvanceSeason`;
+  - `between_seasons` merging.
+  - Also deferred: installing `EcoRules` on the game host's world (`set_eco_rules`). Until then the host world's rules are inert, so Phase 1 behavior is unchanged.
+- The codec variant-count tests were extended to the new variants (6 client, 10 server), not weakened. Phase 1 test literals gained the new fields with default values only.
+- Full `scripts/e2e.sh` was not run (the feature has e2e false). `scripts/smoke.sh` passed.
+- rustc crashed with STATUS_STACK_BUFFER_OVERRUN under full parallel builds on this machine. Builds and tests were run with `-j 4`. This is environmental, not a code issue.
+
+### 2026-10-20 00:40 — F104 Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference — passed
+
+**Decisions:**
+
+- Jacobi outputs:
+  - `JacobiOut` layer entries are deltas, applied after the material changes (which go through `eco_set`, so the displacement rules run).
+  - A delta that overflows the layer range is clamped, and the excess is charged to the matching `*saturation_loss` term (steam also counts as water).
+  - A delta that removes more than a conserved layer holds panics. That is a pass bug, not a loss.
+  - Plants are written as absolute states.
+- Sweep active sets:
+  - The sweep re-reads each word of the active set after every visit. A receiver later in the global order is visited in the same sweep, and an earlier one in the next sweep. This matches a full flat scan, which the oracle test checks.
+  - Cells that hold nothing after their visit are cleared.
+- Seeding and activation:
+  - Worldgen, load and snapshots do not keep active sets, so `activate_holders` seeds them before a sweep.
+  - `eco_put_layer` activates the water and gas sweeps, as `eco_set` does. Substance transport receivers must call `ctx.receive`.
+  - Each pass write bumps `eco_revision`.
+- `Totals` counts magma through the `EcoRules` magma role. The magma material arrives with F130, so the test uses dirt in that role.
+- Review fix to F103 code: boiling with no steam room had booked the lost fill to both `water_saturation_loss` and the steam `gas_saturation_loss`, which double-counted it. It now books water only, and a mutation-checked test covers it.
+- rayon is used through the existing workspace pin (`=1.12.0`); no new crate.
+- Environment: drive E: filled up (839 MB free; 324 GB in `target/debug`, mostly 1.7 GB PDBs of stale e2e and app test binaries). The linker then failed with `LNK1318: Unexpected PDB error; LIMIT (12)`, which blocked the commit gate. `cargo clean -p rmc_e2e -p rmc_app` freed 250 GB; the rebuild and the gate then passed. Builds still run with `-j 4`.
+
+### 2026-10-20 02:50 — F105 Activity tracking: quiet counters, skip, reactivation by edits and neighbors — passed
+
+**Decisions:**
+
+- Change detection is by revision. `Activity` remembers each chunk's `(revision, eco_revision)` and compares before and after every tracked run. Any difference, whatever caused it (sweeps, edits, inserted chunks), resets the chunk and its neighbors. Edits between seasons therefore reactivate chunks without host plumbing; `touch` is there for explicit use. A ledger-only output resets through `JacobiReport.changed`.
+- A material change (`revision`) also resets every chunk in its chunk column. `surface_y`, which a pass may read for any cell of a column, can drop through chunks whose own cells did not change. This goes beyond SAD-P2 §7.9; it costs only extra computation and is needed for skipping to be result-neutral.
+- A change resets all `N_JACOBI` counters, not only the pass that made it: a temperature change can enable a transition in the same chunk.
+- Only temperature counters reset at a season boundary, as the SAD says. Season-dependent state (plant ages, freeze-thaw) changes revisions and resets through the revision check. A future pass that reads anything outside the world state must have the caller reset it.
+- `quiet_skip` must be ≥ 1 (the table validator already rejects 0). "Skipping off" is plain `run_jacobi`.
+- Mutation checks:
+  - dropping the neighbor reset fails the constant-fixture test (its hot block is 4 cells from a chunk face, so its heat arrives after the chunk beyond has gone quiet) and two others;
+  - dropping the column reset fails `edit_reactivates_neighbors`.
+- No host wiring yet: `season_tick` (F107) will own an `Activity`.
+
+### 2026-10-20 04:10 — F106 Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer — passed
+
+**Decisions:**
+
+- Clamped cells keep their clamp value after the pass. They are reservoirs; only unclamped cells sum edge terms. This keeps `heat_source_stays_clamped` exact and makes the pond top read `air_temp`.
+- `surface_cell_follows_seasonal_swing`: with SAD-P2's own constants (heat_shift 7, k 64, C 8), a floor cell gains at most 1/16 of the gap to the clamped pond per sub-step, about 40% per 8-sub-step season, and the warm ground below pulls it back. From the worldgen profile the floor (10.5 °C) needs about 7 consecutive winters to drop below 0 °C. In the alternating cycle it never does: it bottoms out at about +1 to +3.5 °C at the end of each winter. The test therefore asserts:
+  - the pond crosses 0 °C with every season;
+  - the floor freezes within 8 consecutive winters;
+  - then a single summer thaws it.
+  - Owner note: the §7.1 sentence "pond and floor cross 0 °C between a winter and a summer season" does not hold with §7.1's constants. If the floor should follow a single season, a constant or rule has to change (owner decision).
+- Worldgen's temperature layer is opt-in, so Phase 1 worlds, snapshots and hashes are unchanged until the host installs it with `set_eco_rules` (deferred to F107). Worldgen uses the step-1 heightmap as the surface, so bedrock wall columns above ground start at `air_temp`.
+- The tests use an extended material table (water, ice, a heat-source material) because those materials arrive with F120 and F130.
+- test-fix commit 38c201f: `materials::tests::phase1_table_loads_with_phase2_defaults` asserted that the shipped `materials.ron` has only Phase 2 defaults. SAD-P2 §4 and §7.1 tune that file, so the same assertions now run on the Phase 1 `FIXTURE` text.
+- freeze_thaw is not set (F110).
+
+### 2026-10-20 00:25 — F107 season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone — passed
+
+**Decisions:**
+
+- "Edits are paused": the host handles messages one at a time on its thread, so edits queued behind `AdvanceSeason` are applied after `SeasonDone`. The roundtrip test checks this ordering within one batch.
+- Seasons count from 0. The first tick runs row 0, the row worldgen starts from. The counter is not saved: a reloaded save restarts at season 0, and `replace_world` keeps the in-process count. Persisting it (save header or report) is for F108/F109 or the owner to decide.
+- A host without the Phase 2 tables ignores `AdvanceSeason` (warn log, nothing sent). `rmc_app` and the testkit do not call `with_eco` yet (F108/F109). Phase 1 behavior and hashes are unchanged until they do.
+- `with_eco` and `replace_world` assert that the tables were built on the world's material table. A mismatch is a programming error, since save loading already checks the material hash. The reviewer suggested a logged refusal instead; I kept the assert.
+- Snapshots travel as values over `ChannelTransport`, and the wire codec is unchanged (postcard; no zstd). Zstd compression is left for when a real network transport exists.
+- `whole_tick_deterministic_100`:
+  - 100 random 2-chunk worlds (seeded surface, overhangs, random temperatures), run Parallel vs Serial; world hash, chunk revisions and reports (minus timing) must be equal, and the tick must change the world.
+  - Every 10th seed runs two seasons (across a season boundary) and checks that the next season row gives a different world. The other seeds run one season, to stay under 10 s (about 7 s in dev).
+- Review (reviewer: PASS). Remaining test gaps: no real tick changes materials yet, so the ChunkSnapshot path is tested by calling `season_snapshots` directly after `eco_set`. Add an end-to-end ChunkSnapshot check when transitions land (F125).
+
+### 2026-10-20 04:20 — F108 Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2 — passed
+
+**Decisions:**
+
+- The surface of a lower world: `worldgen.ron` has `base_height` 96 for a 128-high world, which leaves no surface in a 64-high world. `fit_to` scales it to 48, so the surface ranges over 38..58 (amplitude 10). Ground keeps its 3:1 share of the height, so the underground stays deep enough for strata, ores and later magma chambers and the water table. The headroom above the highest hills is 5 cells; the world top is not a ceiling. `--world-size 256x128x256` gives `worldgen.ron` exactly (same params hash): the Phase 1 world.
+- `--world-size` follows `--seed`'s rule. Given: it is used, and a mismatch with an existing save fails the header check. Absent: the save's bounds are used, else 128x64x128. The default applies to the windowed game too (SAD-P2 §2: "Default Phase 2 world"). The testkit keeps its own `world_bounds` (F109's concern).
+- Phase 2 is now on in the app, game included: temperature layer at worldgen, `with_eco` on the host. F107 deferred this to F108/F109. Without it, a headless save loaded by the game would regenerate its unsaved chunks without temperature.
+- `report.json` lives in the save directory next to the save. The run writes the save and the report even when an invariant fails, then exits with an error naming the seasons.
+- A headless run on an existing save continues it, but the season count restarts at 0 (as F107 decided: the counter is not saved).
+- Two `test-fix:` commits (d43725d, 8bf4219): `cli::tests::parses_seed_and_save_path` and `app::tests::game_app_builds_headless` built `Cli` struct literals, which stop compiling when `Cli` gains fields. They now compare the same fields, or parse the same arguments. No assertion was dropped.
+- Could not take a timing for the real binary: `cargo run -p rmc_app -- --headless --seasons 2` was denied by the session's permission layer. The 8-chunk test run (3 seasons, two runs) takes about 0.4 s in the test profile.
+
+### 2026-10-20 06:10 — F109 Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button — passed
+
+**Decisions:**
+
+- Fixture geometry (SAD-P2 §11 gives only the names):
+  - Every fixture rebuilds one 32×32 site in the middle of the world.
+  - Ground level `g` is the generated surface at the site's center, clamped so there are 10 cells of fixture ground below and 15 free cells above.
+  - Everything above `g` is cleared. Below it: stone, with 2 cells of soil on top (first materials tagged `stone` / `soil`).
+  - Slopes rise 1 cell per 4 columns toward -x (7 cells).
+  - Feature sizes: pit 8×8×6; trench across the slope, 2 wide and 3 deep; swale dug 2 deep along the contour, with a 1-cell soil berm downhill; pile 7×7 stepped, 4 high; cave 8×4×8 under a 4-cell roof; channel down the slope, 2×2 open, floor and walls lined with the material; patch 8×8×2 of material plus a substance layer.
+  - `fixture` returns a `FixtureSite { site, ground_y, sloped, feature }`. SAD's signature returns nothing, but scenarios need the regions. A control region is not included; later E2E features add what they need.
+- `Pool` resolves the `water` role and panics until F120 adds water.
+- `ph`, `spoil_cells` and `harvest` are not added: pH derivation, toxicity profiles and plants arrive in F142, F145 and F167.
+- `count` takes a material role from `eco.ron` first, otherwise a tag. A role with no material yet counts 0; a name that is neither a role nor a tag panics.
+- The readers read the host world.
+- A season override applies to every season row from the next tick on. Each call replaces the previous one, and `SeasonOverride::default()` restores the tables. The testkit keeps the unmodified tables; the host gets the overridden copy via `set_eco_tables`.
+- `advance_season_applies_both_snapshot_kinds`:
+  - LayerSnapshots come from a real season tick.
+  - No pass changes materials before F125/F130, so the host cannot yet send a ChunkSnapshot in a season. The test writes one season frame (SeasonStarted, ChunkSnapshot, LayerSnapshot, SeasonDone) into the client's inbox, checks that the log and replica take both kinds, then resyncs from host snapshots and runs 2 more real seasons.
+  - When a material-changing pass lands, add a real-tick ChunkSnapshot check.
+- TestApp worlds now carry a temperature layer, so their hashes differ from before. No E2E test pins a hash.
+
+### 2026-10-20 07:30 — F120 Water material with fill; air↔water via delta — passed
+
+**Decisions:**
+
+- `WaterPass::holds` covers water cells and moist air. Ice keeps its moisture in place, so it leaves the set. Porous solids join when seepage lands (F122).
+- The water tests use one-cell pockets in a stone slab, so later flow, seepage and evaporation do not change what they assert. The host test uses a sealed cavity in stone for the same reason.
+- Two `test-fix:` commits:
+  - 1a12e97: the temperature tests' extra-material fixture skips keys the shipped table already has. It defined its own `water`, which would now be a duplicate.
+  - d620bef: `loads_phase1_table` and `determinism_proptest` (rmc_world) assert the shipped table is exactly the 13 Phase 1 rows. Their `phase1()` helpers now take rows 0..13 of the shipped table, and every assertion is unchanged. The proptest regression file from the transient failure was removed; it recorded the table length, not a logic case.
+- `ice` is not added here; F125 adds it along with its transitions.
+
+### 2026-10-20 08:40 — F121 Water sweep: down and sideways with donor/receiver checks; invariant proptest — passed
+
+**Decisions:**
+
+- Down into moist air moves `min(fill, 255 − moisture_below)`, not "all fill" (§7.3 B2 says "Below is air: move all fill"). The receiver-room check (§3, rule 15) takes precedence. For dry air the two are the same.
+- An air neighbor is converted to water only when an amount > 0 moves into it. Full moist air below is left alone until its own visit (step 1).
+- Porous receivers (the porous halves of B2–B3, and B4) are F122. The MoveLog of B2–B4 is left to the chemistry transport feature, which is its only reader. Water moves inside the water total need no ledger entry.
+- `pit_fills_before_overflow`:
+  - Water is poured 8 units per sweep onto the cell above a 3×3×2 pit's center.
+  - At first spill, the test asserts: the bottom layer is exactly full; the pit holds at least capacity − 1 per cell; and every top-layer cell is within 3 (the pit's width) of full.
+  - Exactly full before spilling is not reachable under §7.3: halving leaves differences of 1 standing, and water standing over a full column spreads sideways onto the rim.
+  - A faster pour (64 per sweep) heaps a mound and spills at about 97 %. That is the behavior of a flow-capped sweep, not a defect.
+- The random proptest world is 8×8×8 around a chunk corner: 8 chunks, every kind of chunk face, negative coordinates. That keeps each proptest at about 3 s with 256 cases. A 16×12×16 world took 16–19 s.
+- Performance: flow made `replica::tests::equivalence_after_three_seasons_with_edits_between` (rmc_host) take 21 s, up from 5 s. Its random Set(water) edits make about 2.7 M visits and 2–5 M moves per season. Two changes brought it to 9.7 s:
+  - the visit reads each cell once;
+  - the `eco_put_layer` fast path.
+  The test itself is unchanged.
+
+### 2026-10-20 09:40 — F122 Infiltration into porous solids, field capacity, seepage threshold — passed
+
+**Decisions:**
+
+- The shipped `materials.ron` gets no porous material in this feature. The tests use their own rows. Limestone and crushed_sulfide come in F140. Whether soils become porous is left to the feature that needs it (F126 water table, F160s anchors). Until then, in-game water does not infiltrate anything.
+- Seepage never goes up: the "below first" order covers below plus the 4 horizontal neighbors. With "above" included, a saturated cell would push water up into a pond that immediately infiltrates back down.
+- The seepage receiver's permeability does not matter, since §7.3 B4 uses the donor's `perm`. A porous cell with perm 0 can still receive seepage, but it never sheds or takes infiltration.
+- Active set: `WaterPass::holds` covers porous cells only above their seepage threshold, because at or below it their visit moves nothing. `World` still activates any cell whose moisture is set (> 0). Such a cell is visited once and then leaves the set. Results are identical to visiting every porous cell, and the oracle confirms it. This keeps an at-capacity water table (F126) out of every sweep only when it sits at or below the threshold. Cells at field capacity are above the threshold, so they stay active.
+
 ## Commits
 
 ```
+096336c chore(F122): progress
+6c19499 feat(F122): Infiltration into porous solids, field capacity, seepage threshold
+4d811c4 chore(F121): progress
+5f48c0b feat(F121): Water sweep: down and sideways with donor/receiver checks; invariant proptest
+5ad14c1 chore(F120): progress
+0e23cb3 feat(F120): Water material with fill; air↔water via delta
+d620bef test-fix: Phase 1 material tests read the Phase 1 rows of the shipped table
+1a12e97 test-fix: temperature fixture skips extra materials the shipped table already has
+ca056d8 chore(F109): progress
+d9ed57b feat(F109): Testkit: advance_season, layer readers, ledger, set_layer, fixtures, season overrides; editor Season button
+e29fecd chore(F108): progress
+eb9ec8a feat(F108): Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2
+8bf4219 test-fix: game_app_builds_headless parses its Cli instead of a struct literal
+d43725d test-fix: parses_seed_and_save_path compares seed and save, not the whole Cli
+391d00a chore(F107): progress
+3e46d43 feat(F107): season_tick on the host; AdvanceSeason pauses edits; ChunkSnapshot/LayerSnapshot by revision kind; SeasonDone
+530a96b chore(F106): progress
+66f97be feat(F106): Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer
+38c201f test-fix: phase1_table_loads_with_phase2_defaults checks the Phase 1 fixture
+110e745 chore(F105): progress
+903921b feat(F105): Activity tracking: quiet counters, skip, reactivation by edits and neighbors
+eaddb1c chore(F104): progress
+1c3f3d4 feat(F104): Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference
+e0949ff chore(F103): progress
+c60a613 feat(F103): Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger in rmc_world; displacement rules shared by World::apply and World::eco_set
+7db9c4a chore(F102): progress
+e0a7b81 feat(F102): Save format v2 with layers and plant state; v1 rejected
+8176772 test-fix: save tests encode and decode raw chunks through SavedChunk
+d381ba1 chore(F101): progress
+22b5b3c feat(F101): Chunk layers, PlantState map, eco_revision, surface_y column cache (i16)
+7a0d22b chore(F100): progress
+83e7f4d feat(F100): rmc_eco crate (Bevy-free) and Phase 2 data files loading with hashes
+95513f3 chore(M8): playtester follow-up progress
+655adb9 chore(M8): playtester report
+35f2ced fix: report.sh keeps multi-line Blockers and splits counts by phase
 0433f7b chore(F085): progress
 2a43a74 feat(F085): docs/REPORT.md via scripts/report.sh
 1bd70d0 chore(F084): progress
@@ -1036,39 +1297,4 @@ bd39c20 chore(F092): progress
 25abcb5 chore(F090): progress
 987450e feat(F090): Hit feedback: every swing and every break gives visible feedback, mirrored in HudState
 90fc3c0 test-fix: hudstate_reflects_target spells out the feedback fields HudState gains
-4ee69f2 chore(F089): progress
-a1d6229 feat(F089): Terrain depth cues: per-face directional shading baked into vertex colors
-a6cea6d test-fix: mesher color tests expect the per-normal face shade
-2b1621d chore(F088): progress
-7560ec5 feat(F088): Readable horizon: distance fog, a sky with a sun direction, a world shell that does not read as a black void
-9d9406d test-fix: captures_nonblack_image removes the game's skybox from its scene
-c05114d chore(F087): progress
-523b008 feat(F087): Lantern falloff: close rock is not blown out; dark materials stay dark at every distance
-8b623d9 chore(F086): progress
-0e5b04e feat(F086): Player-overlap safety: host skips Set cells inside a player's box; controller pushes an embedded player out
-1531853 test-fix: headless_game_joins_and_receives_chunks accepts the push-out spot
-7c0b13c chore(F077): progress
-a445cfa feat(F077): rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run
-8dbc031 chore(F076): progress
-bdf6578 feat(F076): E2E: save_load_roundtrip
-97d0785 chore(F075): progress
-8c33b0f feat(F075): Save/load from the app: autosave timer, quit save, SaveRequest, CLI --save path, load on start
-9476968 chore(F074): progress
-7144f6d feat(F074): E2E: place_and_climb and editor_brush_sphere
-d81c1f3 chore(F073): progress
-3d76acc feat(F073): Gizmos: chunk bounds, targeted cell, mesh-queue state
-fdd365d chore: M7 polish features F086-F092 from the M6 playtest; F077 first; e2e/screens/merge script fixes
-d68645f chore(F072): progress
-dd140f6 feat(F072): egui panel (bevy_egui + inspector): brush, stats, gizmos toggles, seed, save/load buttons
-debd462 chore(F071): progress
-4f8ec93 feat(F071): Brush ops through EditCommand: Set on face-normal side, Remove/Paint on hit, Box and Sphere
-7c6fb87 chore(F070): progress
-fb0b359 feat(F070): EditorState resource with keyboard bindings and docs/CONTROLS.md
-38eaf03 chore: M6 playtester report (docs/PLAYTEST.md) and its playtest_20261018 scenario
-78df49b chore(F067): progress
-4679444 feat(F067): E2E: dig_tunnel with TunnelBot; host/replica hash equality
-5ddb606 chore(F066): progress
-45ec465 chore: refresh walk_and_jump screenshot (now shows the F065 crosshair)
-74cbbf6 feat(F066): E2E: dig_cell_visible and latency_dig
-3d153c4 chore(F065): progress
 ```
