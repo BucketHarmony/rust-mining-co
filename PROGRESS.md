@@ -1744,3 +1744,37 @@ Decisions:
 - No host wiring yet: `season_tick` (F107) will own an `Activity`.
 Next: F106 (temperature pass).
 Blockers: none.
+
+## 2026-10-20 04:10 — F106 Temperature pass: surface/sky clamps, pair-symmetric truncating i32 flux, energy update; worldgen temperature profile layer — passed
+Done:
+- `rmc_eco::temperature`:
+  - `TemperaturePass::new(tables, season)` is a `JacobiPass`. It reads a 34³ box, the chunk plus its 1-cell border, and applies the clamps first, in SAD-P2 §7.1 order:
+    - `Phase::Air` and roles `water`/`ice` with `y ≥ surface_y` take the season's `air_temp`;
+    - `heat_source` materials take their value;
+    - the bottom cell layer takes `profile(bottom_y)`.
+  - Unclamped cells add `edge_delta` over their six faces. `flux = (min k · ΔT) / 2^heat_shift` (truncating `i32`), `q = (f / max C) · max C`, `ΔT_i = q / C_i`. The result is saturated to `i16`.
+  - `Profile { geothermal_base, gradient }::at(bottom_y, y)` is the §8 profile, shared with worldgen. `flux`, `edge_delta` and `HeatCell` are public.
+- `ChunkView::bounds()`.
+- `rmc_worldgen::temperature::TemperatureInit` writes the initial layer: heat source → its value, magma role → `magma_init_temp`, `y ≥ surface_height` → season 0 `air_temp`, otherwise `profile(y)`. `Generator::with_temperature(init)` turns it on. `rmc_worldgen` now depends on `rmc_eco`, which is Bevy-free and has no reverse dependency.
+- `assets/materials.ron` heat values per §7.1: air, topsoil, dirt and clay k 64 / C 8; stone, granite and basalt k 16 / C 32. Ores, crystal, bedrock and brass keep the default 16 / 16.
+Tests added:
+- The 12 listed tests.
+- Also `temperature::tests::bottom_layer_clamped_to_profile` (rmc_eco) and `temperature::tests::sources_then_magma_then_surface_then_profile` (rmc_worldgen), both from review gaps.
+- The proptest regression seed `crates/rmc_eco/proptest-regressions/temperature.txt` came from a mutation run (per-cell truncation with unequal capacities). It is kept as a useful case.
+- Mutation checks:
+  - per-cell truncation instead of the per-edge quantum fails the energy, unequal-capacity and antisymmetry tests;
+  - diffusing clamped cells fails the source, surface-clamp and fixed-point tests;
+  - dropping the border fails two_chunk_equals_one_chunk.
+Decisions:
+- Clamped cells keep their clamp value after the pass. They are reservoirs; only unclamped cells sum edge terms. This keeps `heat_source_stays_clamped` exact and makes the pond top read `air_temp`.
+- `surface_cell_follows_seasonal_swing`: with SAD-P2's own constants (heat_shift 7, k 64, C 8), a floor cell gains at most 1/16 of the gap to the clamped pond per sub-step, about 40% per 8-sub-step season, and the warm ground below pulls it back. From the worldgen profile the floor (10.5 °C) needs about 7 consecutive winters to drop below 0 °C. In the alternating cycle it never does: it bottoms out at about +1 to +3.5 °C at the end of each winter. The test therefore asserts:
+  - the pond crosses 0 °C with every season;
+  - the floor freezes within 8 consecutive winters;
+  - then a single summer thaws it.
+  - Owner note: the §7.1 sentence "pond and floor cross 0 °C between a winter and a summer season" does not hold with §7.1's constants. If the floor should follow a single season, a constant or rule has to change (owner decision).
+- Worldgen's temperature layer is opt-in, so Phase 1 worlds, snapshots and hashes are unchanged until the host installs it with `set_eco_rules` (deferred to F107). Worldgen uses the step-1 heightmap as the surface, so bedrock wall columns above ground start at `air_temp`.
+- The tests use an extended material table (water, ice, a heat-source material) because those materials arrive with F120 and F130.
+- test-fix commit 38c201f: `materials::tests::phase1_table_loads_with_phase2_defaults` asserted that the shipped `materials.ron` has only Phase 2 defaults. SAD-P2 §4 and §7.1 tune that file, so the same assertions now run on the Phase 1 `FIXTURE` text.
+- freeze_thaw is not set (F110).
+Next: F107 (season_tick on the host).
+Blockers: none.
