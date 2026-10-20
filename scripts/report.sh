@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Write docs/REPORT.md: feature status, decisions, perf, screenshots, how to play.
+# Write docs/REPORT.md (SAD §16.6): features passed/failed with test names,
+# PROGRESS.md decisions and blockers, perf numbers, screenshots inline, and the
+# exact commands to play.
 set -u
 # jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
 jq() { command jq "$@" | tr -d '\r'; }
@@ -11,36 +13,64 @@ out=docs/REPORT.md
   echo
   echo "Generated $(date -u +%FT%TZ) at commit $(git rev-parse --short HEAD 2>/dev/null)"
   echo
-  echo "## Feature status"
-  echo
-  echo "| id | milestone | title | passes |"
-  echo "|---|---|---|---|"
-  jq -r '.features[] | "| \(.id) | \(.milestone) | \(.title) | \(if .passes then "yes" else "**no**" end) |"' features.json
-  echo
-  total=$(jq '.features | length' features.json); passed=$(jq '[.features[] | select(.passes)] | length' features.json)
-  echo "**$passed / $total features passing.**"
+  total=$(jq '.features | length' features.json)
+  passed=$(jq '[.features[] | select(.passes)] | length' features.json)
+  skipped=$(jq '[.features[] | select((.passes | not) and .skipped)] | length' features.json)
+  echo "**$passed / $total features passing, $skipped skipped, $((total - passed - skipped)) not passing.**"
   echo
   echo "## How to play (Windows)"
   echo
   echo '```'
-  echo "git clone $(git remote get-url origin 2>/dev/null || echo '<repo>') C:\\src\\rust-mining-co"
+  # Drop any user@ from the remote URL so the clone command works for anyone.
+  repo=$(git remote get-url origin 2>/dev/null | sed -E 's#^(https?://)[^@/]*@#\1#')
+  echo "git clone ${repo:-<repo>} C:\\src\\rust-mining-co   (or download the CI \"windows-release\" artifact)"
   echo "cd C:\\src\\rust-mining-co"
   echo "cargo run --release -p rmc_app -- --seed 42"
   echo '```'
   echo
-  echo "Or download the \`windows-release\` artifact from the latest CI run on main. Controls: see \`docs/CONTROLS.md\`."
+  echo "The \`windows-release\` artifact from the latest CI run on main holds \`rust-mining-co.exe\`, \`assets/\` and \`CONTROLS.md\`; run the exe from that folder. Controls: see [docs/CONTROLS.md](CONTROLS.md). Playtester reports: [docs/PLAYTEST.md](PLAYTEST.md)."
+  echo
+  echo "## Milestones"
+  echo
+  echo "| milestone | passing | skipped | not passing |"
+  echo "|---|---|---|---|"
+  jq -r '.features | group_by(.milestone) | sort_by(.[0].id) | .[]
+    | "| \(.[0].milestone) | \([.[] | select(.passes)] | length) / \(length) | \([.[] | select((.passes | not) and .skipped)] | length) | \([.[] | select((.passes | not) and (.skipped | not)) | .id] | join(", ")) |"' features.json
+  echo
+  echo "## Feature status"
+  echo
+  echo "| id | milestone | title | status | tests |"
+  echo "|---|---|---|---|---|"
+  jq -r '.features[]
+    | "| \(.id) | \(.milestone) | \(.title | gsub("\\|"; "\\|")) | \(if .passes then "passed" elif .skipped then "skipped: \(.skipReason // .skippedReason // "see PROGRESS.md")" else "**no**" end) | \([.tests[] | "`\(.)`"] | join("<br>")) |"' features.json
   echo
   echo "## Screenshots"
   echo
   for f in docs/screens/*.png; do [ -f "$f" ] && echo "![${f##*/}](screens/${f##*/})"; done
   echo
-  echo "## Performance"
-  echo
-  [ -f docs/perf.md ] && cat docs/perf.md || echo "(docs/perf.md not written)"
+  # perf.md's own title becomes this section's heading; its subsections nest under it.
+  if [ -f docs/perf.md ]; then sed -e 's/^#/##/' docs/perf.md; else printf '## Performance\n\n(docs/perf.md not written)\n'; fi
   echo
   echo "## Decisions and blockers (from PROGRESS.md)"
   echo
-  grep -E -A3 '^(Decisions|Blockers):' PROGRESS.md 2>/dev/null | grep -vE '^(Decisions|Blockers): *(none|-)?$' || echo "(none recorded)"
+  # Each session block's full Decisions section, and its Blockers unless "none",
+  # under that block's heading.
+  awk '
+    /^## / { head = substr($0, 4); shown = 0; mode = ""; next }
+    /^(Done|Tests added|Next):/ { mode = ""; next }
+    /^Decisions:/ { mode = "Decisions"; rest = substr($0, 11) }
+    /^Blockers:/ {
+      mode = "Blockers"; rest = substr($0, 10)
+      if (rest ~ /^[[:space:]]*(none\.?|-)?[[:space:]]*$/) { mode = ""; next }
+    }
+    mode == "" { next }
+    /^(Decisions|Blockers):/ {
+      if (!shown) { if (any) print ""; print "### " head; print ""; shown = 1; any = 1 }
+      print "**" mode ":**" rest
+      next
+    }
+    { print }
+  ' PROGRESS.md || echo "(none recorded)"
   echo
   echo "## Commits"
   echo
