@@ -214,11 +214,13 @@ pub fn spawn_feet(world: &CellWorld) -> Option<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::path::Path;
     use std::time::{Duration, Instant};
 
     use bevy::app::PluginsState;
     use bevy::winit::WinitPlugin;
+    use clap::Parser;
     use rmc_client::controller::SKIN_M;
     use rmc_client::{
         ClientMaterials, ControllerPlugin, EditorPlugin, EditorState, FlyCamPlugin,
@@ -366,11 +368,13 @@ mod tests {
         let mut bad = small_config(Some(7), &dir.0);
         bad.assets.worldgen.surface.base_height += 1;
         assert!(build_game_app(bad, false).is_err());
-        let from_cli = GameConfig::from_cli(&Cli {
-            seed: None,
-            save: dir.0.clone(),
-        })
-        .expect("assets_dir() holds the tables");
+        let args = [
+            OsStr::new("rmc_app"),
+            OsStr::new("--save"),
+            dir.0.as_os_str(),
+        ];
+        let from_cli = GameConfig::from_cli(&Cli::try_parse_from(args).unwrap())
+            .expect("assets_dir() holds the tables");
         assert_eq!(from_cli.save_dir, dir.0);
         assert_eq!(from_cli.seed, None);
     }
