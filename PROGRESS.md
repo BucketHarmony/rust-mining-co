@@ -1804,3 +1804,34 @@ Decisions:
 - Review (reviewer: PASS). Remaining test gaps: no real tick changes materials yet, so the ChunkSnapshot path is tested by calling `season_snapshots` directly after `eco_set`. Add an end-to-end ChunkSnapshot check when transitions land (F125).
 Next: F108 (headless --seasons CLI).
 Blockers: none.
+
+## 2026-10-20 04:20 — F108 Headless --seasons N CLI with --world-size; default 128x64x128 for Phase 2 — passed
+Done:
+- `rmc_app` CLI: `--world-size WxHxD`, `--headless`, `--seasons N`.
+  - `--headless` and `--seasons` each require the other.
+  - `WorldSize` parses `WxHxD`. Each side must be a positive multiple of 32 that fits `i32`.
+- `rmc_app::headless::run_headless(config, seasons, on_season) -> HeadlessReport`:
+  - starts the world like the game (`start_world`: the save in `--save`, else generated) and builds a host with no players over a `ChannelTransport`;
+  - for each season: advances it, then checks `InvariantChecker` against the season's ledger;
+  - saves, then writes `<save dir>/report.json` (serde_json, pretty).
+  - `main` prints one line per season and a summary.
+  - The report holds seed, world size, chunks, loaded-or-generated, world hash, saved chunk count and `invariants_ok`. Per season it holds the number, changed chunks, `Totals` before/after, violations and the full `SeasonReport`.
+- `rmc_worldgen::GenParams::fit_to(bounds)`: replaces the bounds and moves `surface.base_height` to the same fraction of the world height, measured from the floor (truncating). It validates, and refuses a surface that reaches the top cell. The same height gives the params unchanged.
+- `GameAssets` keeps `eco: Arc<EcoTables>` and gains `with_world_bounds`. `generate_world` writes the temperature layer (`Generator::with_temperature`). `StartWorld::into_host` calls `Host::with_eco`, so the windowed game's host also runs seasons on `AdvanceSeason`.
+- `GameConfig::from_cli` fits the tables to `app::world_bounds`.
+- `Totals`, `Quantity` and `Violation` (rmc_eco) derive serde. Workspace pins `serde_json = "=1.0.154"`: confirmed on crates.io as the latest, already in the lock as a transitive dependency, no Bevy dependency.
+Tests added:
+- cli::tests::{headless_seasons_writes_report, default_world_size_is_32_chunks} (the listed two).
+- params::tests::fit_to_scales_the_surface_to_the_height (rmc_worldgen).
+- Mutation checks: dropping the temperature layer from `generate_world` fails `default_world_size_is_32_chunks`; dropping the height scaling in `fit_to` fails both listed tests.
+- TDD order slip: the implementation came before the two tests this session, so the mutation checks stand in for watching them fail first.
+Decisions:
+- The surface of a lower world: `worldgen.ron` has `base_height` 96 for a 128-high world, which leaves no surface in a 64-high world. `fit_to` scales it to 48, so the surface ranges over 38..58 (amplitude 10). Ground keeps its 3:1 share of the height, so the underground stays deep enough for strata, ores and later magma chambers and the water table. The headroom above the highest hills is 5 cells; the world top is not a ceiling. `--world-size 256x128x256` gives `worldgen.ron` exactly (same params hash): the Phase 1 world.
+- `--world-size` follows `--seed`'s rule. Given: it is used, and a mismatch with an existing save fails the header check. Absent: the save's bounds are used, else 128x64x128. The default applies to the windowed game too (SAD-P2 §2: "Default Phase 2 world"). The testkit keeps its own `world_bounds` (F109's concern).
+- Phase 2 is now on in the app, game included: temperature layer at worldgen, `with_eco` on the host. F107 deferred this to F108/F109. Without it, a headless save loaded by the game would regenerate its unsaved chunks without temperature.
+- `report.json` lives in the save directory next to the save. The run writes the save and the report even when an invariant fails, then exits with an error naming the seasons.
+- A headless run on an existing save continues it, but the season count restarts at 0 (as F107 decided: the counter is not saved).
+- Two `test-fix:` commits (d43725d, 8bf4219): `cli::tests::parses_seed_and_save_path` and `app::tests::game_app_builds_headless` built `Cli` struct literals, which stop compiling when `Cli` gains fields. They now compare the same fields, or parse the same arguments. No assertion was dropped.
+- Could not take a timing for the real binary: `cargo run -p rmc_app -- --headless --seasons 2` was denied by the session's permission layer. The 8-chunk test run (3 seasons, two runs) takes about 0.4 s in the test profile.
+Next: F109 (testkit additions).
+Blockers: none.
