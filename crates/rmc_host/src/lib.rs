@@ -3,6 +3,7 @@
 
 pub mod host;
 pub mod replica;
+pub mod season;
 pub mod thread;
 pub mod transport;
 

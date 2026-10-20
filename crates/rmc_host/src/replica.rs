@@ -259,6 +259,7 @@ mod tests {
     use rmc_world::edit::{
         ChunkDelta, CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS, RejectReason,
     };
+    use rmc_world::layers::LayerId;
     use rmc_world::shape::Shape;
 
     use crate::host::{Host, HostConfig};
@@ -1312,5 +1313,118 @@ mod tests {
             }),
             Err(ReplicaError::LayerSnapshot(DeltaError::NotResident(b)))
         );
+    }
+
+    /// Random `SetLayer` edits for the season test: temperature, moisture
+    /// or a gas, in small boxes near the bounds.
+    fn random_set_layer(rng: &mut Rng, gas: LayerId) -> (EditOp, Shape) {
+        let (layer, value) = match rng.below(3) {
+            0 => (LayerId::Temperature, rng.range(-500, 1500)),
+            1 => (LayerId::Moisture, rng.range(0, 255)),
+            _ => (gas, rng.range(0, 255)),
+        };
+        let min = rng.cell_near_bounds();
+        let ext = IVec3::new(rng.range(0, 4), rng.range(0, 4), rng.range(0, 4));
+        let shape = Shape::Box {
+            min,
+            max: CellPos(min.0 + ext),
+        };
+        (EditOp::SetLayer { layer, value }, shape)
+    }
+
+    #[test]
+    fn equivalence_after_three_seasons_with_edits_between() {
+        /// Edits sent before each season.
+        const EDITS_PER_SEASON: u32 = 400;
+        const SEASONS: u32 = 3;
+
+        let tables = Arc::new(
+            rmc_eco::EcoTables::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"))
+                .expect("Phase 2 tables load"),
+        );
+        let gas = LayerId::Gas(tables.gas_index("firedamp").unwrap());
+        let world = initial_world();
+        let table = Arc::clone(world.materials());
+        let ids: Vec<MaterialId> = table.iter().map(|d| d.id).collect();
+        let unknown = MaterialId(1000);
+
+        let mut transport = ChannelTransport::new();
+        // A typed, B through the wire codec, C (typed) joins after the
+        // first season.
+        let mut clients: Vec<Client> = [false, true, false]
+            .into_iter()
+            .map(|wire| Client::new(transport.connect(), wire))
+            .collect();
+        let mut host = Host::new(world, CONFIG, Box::new(transport)).with_eco(tables);
+        clients[0].join();
+        clients[1].join();
+        host.tick();
+
+        let mut rng = Rng(0x0F10_7000_5EA5_0115);
+        let mut stats = Stats::default();
+        for season in 0..SEASONS {
+            if season == 1 {
+                clients[2].join();
+            }
+            let mut sent = 0;
+            while sent < EDITS_PER_SEASON {
+                let batch = (1 + rng.below(16) as u32).min(EDITS_PER_SEASON - sent);
+                for _ in 0..batch {
+                    let joined: Vec<usize> =
+                        (0..clients.len()).filter(|&i| clients[i].joined).collect();
+                    let who = joined[rng.below(joined.len() as u64) as usize];
+                    let (op, shape) = if rng.below(4) == 0 {
+                        random_set_layer(&mut rng, gas)
+                    } else {
+                        random_edit(&mut rng, &ids, unknown)
+                    };
+                    clients[who].send_edit(op, shape);
+                    sent += 1;
+                }
+                host.tick();
+                for c in clients.iter_mut().filter(|c| c.joined) {
+                    c.pump(&mut stats);
+                }
+            }
+            for c in clients.iter().filter(|c| c.joined) {
+                assert_identical(host.world(), c);
+            }
+
+            // Any joined player may ask for the season.
+            let before = host.world().hash();
+            let joined: Vec<usize> = (0..clients.len()).filter(|&i| clients[i].joined).collect();
+            let who = joined[rng.below(joined.len() as u64) as usize];
+            clients[who].ep.send(ClientMsg::AdvanceSeason).unwrap();
+            host.tick();
+            assert_ne!(
+                host.world().hash(),
+                before,
+                "season {season} changed nothing"
+            );
+            for c in clients.iter_mut().filter(|c| c.joined) {
+                let msgs = c.pump_lossy(|_| true);
+                let layer_snapshots = msgs
+                    .iter()
+                    .filter(|m| matches!(m, ServerMsg::LayerSnapshot { .. }))
+                    .count();
+                assert!(layer_snapshots > 0, "season {season}");
+                assert!(matches!(
+                    msgs.last(),
+                    Some(ServerMsg::SeasonDone { season: s, changed_chunks, .. })
+                        if *s == season && *changed_chunks as usize == msgs.len() - 2
+                ));
+            }
+            for c in clients.iter().filter(|c| c.joined) {
+                assert_identical(host.world(), c);
+                for (pos, chunk) in host.world().iter_chunks_sorted() {
+                    let got = c.world().chunk(pos).unwrap();
+                    assert_eq!(got.eco_revision, chunk.eco_revision, "{pos:?}");
+                }
+            }
+        }
+        assert_eq!(host.season(), Some(SEASONS));
+        assert!(stats.layers_deltas >= 100, "{stats:?}");
+        assert!(stats.applied >= 1_000, "{stats:?}");
+        println!("{stats:?}");
     }
 }

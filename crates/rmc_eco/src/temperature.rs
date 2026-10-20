@@ -166,9 +166,15 @@ impl JacobiPass for TemperaturePass {
         // cell (out of bounds or not resident). `fixed` marks clamped cells.
         let mut cells: Vec<Option<HeatCell>> = vec![None; SPAN_CELLS];
         let mut fixed = vec![false; SPAN_CELLS];
-        for y in -1..=CHUNK_SIZE {
-            for z in -1..=CHUNK_SIZE {
-                for x in -1..=CHUNK_SIZE {
+        // The box clipped to the bounds; cells outside stay `None`.
+        let b = view.bounds();
+        let span = |o: i32, min: i32, max: i32| (min - o).max(-1)..=(max - o).min(CHUNK_SIZE);
+        let ys = span(origin.y, b.min.0.y, b.max.0.y);
+        let zs = span(origin.z, b.min.0.z, b.max.0.z);
+        let xs = span(origin.x, b.min.0.x, b.max.0.x);
+        for y in ys {
+            for z in zs.clone() {
+                for x in xs.clone() {
                     let cell = CellPos::new(origin.x + x, origin.y + y, origin.z + z);
                     let Some(m) = view.material(cell) else {
                         continue;

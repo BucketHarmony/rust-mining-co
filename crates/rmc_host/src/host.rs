@@ -31,6 +31,10 @@
 //!
 //! [`Host::replace_world`] swaps in another world (a loaded save) and sends
 //! every joined player `Welcome`, the snapshots and its inventory again.
+//!
+//! A host given the Phase 2 tables ([`Host::with_eco`]) runs a season tick
+//! on `AdvanceSeason` and keeps the ledger of the edits between seasons
+//! (see [`crate::season`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -44,6 +48,7 @@ use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World;
 use tracing::{debug, info, warn};
 
+use crate::season::Seasons;
 use crate::transport::{Recipient, Transport};
 
 /// World facts the host reports in `Welcome` that the [`World`] itself does
@@ -79,11 +84,11 @@ pub enum HostSaveError {
 
 /// The authoritative world and its connection to the clients.
 pub struct Host {
-    world: World,
+    pub(crate) world: World,
     config: HostConfig,
-    transport: Box<dyn Transport>,
+    pub(crate) transport: Box<dyn Transport>,
     /// Players that sent a matching `Hello`, ascending.
-    joined: BTreeSet<PlayerId>,
+    pub(crate) joined: BTreeSet<PlayerId>,
     /// What each joined player has collected.
     inventories: BTreeMap<PlayerId, Inventory>,
     /// Where `SaveRequest` writes; `None` refuses every save.
@@ -91,6 +96,8 @@ pub struct Host {
     /// The cells each joined player's box overlapped at its last
     /// `PlayerState`.
     player_cells: BTreeMap<PlayerId, CellAabb>,
+    /// The season state; `None` without the Phase 2 tables.
+    pub(crate) eco: Option<Seasons>,
 }
 
 impl Host {
@@ -103,6 +110,7 @@ impl Host {
             inventories: BTreeMap::new(),
             save: None,
             player_cells: BTreeMap::new(),
+            eco: None,
         }
     }
 
@@ -163,6 +171,9 @@ impl Host {
     pub fn replace_world(&mut self, world: World, config: HostConfig) {
         self.world = world;
         self.config = config;
+        if let Some(eco) = &mut self.eco {
+            eco.install(&mut self.world);
+        }
         let joined: Vec<PlayerId> = self.joined.iter().copied().collect();
         for &player in &joined {
             self.send_world(player);
@@ -213,12 +224,9 @@ impl Host {
             ClientMsg::PlayerState { pos, .. } => self.player_state(player, pos),
             ClientMsg::RequestChunk(pos) => self.request_chunk(player, pos),
             ClientMsg::SaveRequest => self.save_request(player),
-            // The season tick arrives with F107.
             ClientMsg::AdvanceSeason => {
-                debug!(
-                    player = player.0,
-                    "AdvanceSeason ignored: no season tick yet"
-                );
+                debug!(player = player.0, "AdvanceSeason");
+                self.advance_season();
             }
         }
     }
@@ -294,6 +302,9 @@ impl Host {
         }
         // Players that have not joined hold no snapshots to apply deltas to,
         // so the result goes to joined players only, not Recipient::All.
+        if let Some(eco) = &mut self.eco {
+            eco.edited(&result.ledger);
+        }
         let yields = result.yields.clone();
         let msg = ServerMsg::Applied(result);
         for &p in &self.joined {

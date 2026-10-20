@@ -5944,6 +5944,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "glam",
+ "rmc_eco",
  "rmc_protocol",
  "rmc_world",
  "rmc_worldgen",

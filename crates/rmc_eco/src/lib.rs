@@ -9,6 +9,7 @@ pub mod reference;
 pub mod runner;
 pub mod tables;
 pub mod temperature;
+pub mod tick;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
@@ -18,3 +19,4 @@ pub use runner::{
 };
 pub use tables::{EcoTableError, EcoTables};
 pub use temperature::{Profile, TemperaturePass};
+pub use tick::{TickReport, season_tick};
