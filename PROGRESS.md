@@ -1682,3 +1682,44 @@ Decisions:
 - rustc crashed with STATUS_STACK_BUFFER_OVERRUN under full parallel builds on this machine. Builds and tests were run with `-j 4`. This is environmental, not a code issue.
 Next: F104 (first `"passes": false` feature after F103).
 Blockers: none.
+
+## 2026-10-20 00:40 — F104 Invariant checker over rmc_world's SeasonLedger, Jacobi runner (parallel, 1-cell border), sweep runner (global order), active sets, flat-array reference — passed
+Done:
+- `rmc_eco::invariants`:
+  - `Totals::measure(&World)` sums water (moisture plus the steam gas), each substance (layers plus plant `held`), each gas, and the magma cells.
+  - `Totals::expected(&before, &ledger, steam)` applies the SAD-P2 §7 invariant formulas.
+  - `InvariantChecker::new(world).check(world, ledger) -> Result<(), Violations>` reports each quantity whose total is off.
+- `rmc_eco::runner`:
+  - `JacobiPass::compute(&ChunkView) -> JacobiOut`. `ChunkView` panics on reads outside the chunk plus its 1-cell border.
+  - `run_jacobi` / `run_jacobi_on` sort the chunks, compute serially or in parallel with rayon, then apply in sorted chunk order. `JacobiReport.changed` lists only chunks that really changed.
+  - `SweepPass` / `run_sweep` walk the active set of the pass's kind in global (y, cz, cx, lz, lx) order and skip idle chunk planes. `SweepCtx::receive` activates a receiver. `activate_holders` seeds an active set from the world.
+- `rmc_eco::reference`: `global_order`, `order_key`, `FlatWorld` (flat arrays, `first_difference`) and `flat_sweep`, the oracle for sweeps.
+- `rmc_eco::ledger::merge`.
+- `rmc_world` gains the host-only `World::eco_put_layer`, `eco_put_plant`, `eco_activate` and `eco_deactivate`, plus `ChunkLayers::data` and `CellSet::word`.
+Tests added:
+- The listed tests: invariants::tests::checker_detects_created_water, runner::tests::{jacobi_parallel_equals_serial_hash, apply_in_sorted_chunk_order, sweep_visits_global_y_cz_cx_lz_lx_order, active_set_includes_receivers}.
+- Also in rmc_eco:
+  - invariants::tests::{checker_counts_substances_held_by_plants_gases_and_magma, expected_applies_steam_terms_to_the_steam_gas}
+  - runner::tests::{jacobi_matches_flat_reference_across_chunk_faces, jacobi_reads_only_the_1_cell_border, jacobi_layer_overflow_is_clamped_and_charged, jacobi_report_omits_outputs_that_change_nothing}
+  - reference::tests::global_order_is_y_cz_cx_lz_lx_and_covers_bounds
+  - ledger::tests::merge_adds_every_term_and_combines_transition_pairs
+- Also in rmc_world: edit::tests::{eco_put_layer_and_plant_bump_eco_revision_only, boil_without_steam_room_loses_water_not_steam}.
+Decisions:
+- Jacobi outputs:
+  - `JacobiOut` layer entries are deltas, applied after the material changes (which go through `eco_set`, so the displacement rules run).
+  - A delta that overflows the layer range is clamped, and the excess is charged to the matching `*saturation_loss` term (steam also counts as water).
+  - A delta that removes more than a conserved layer holds panics. That is a pass bug, not a loss.
+  - Plants are written as absolute states.
+- Sweep active sets:
+  - The sweep re-reads each word of the active set after every visit. A receiver later in the global order is visited in the same sweep, and an earlier one in the next sweep. This matches a full flat scan, which the oracle test checks.
+  - Cells that hold nothing after their visit are cleared.
+- Seeding and activation:
+  - Worldgen, load and snapshots do not keep active sets, so `activate_holders` seeds them before a sweep.
+  - `eco_put_layer` activates the water and gas sweeps, as `eco_set` does. Substance transport receivers must call `ctx.receive`.
+  - Each pass write bumps `eco_revision`.
+- `Totals` counts magma through the `EcoRules` magma role. The magma material arrives with F130, so the test uses dirt in that role.
+- Review fix to F103 code: boiling with no steam room had booked the lost fill to both `water_saturation_loss` and the steam `gas_saturation_loss`, which double-counted it. It now books water only, and a mutation-checked test covers it.
+- rayon is used through the existing workspace pin (`=1.12.0`); no new crate.
+- Environment: drive E: filled up (839 MB free; 324 GB in `target/debug`, mostly 1.7 GB PDBs of stale e2e and app test binaries). The linker then failed with `LNK1318: Unexpected PDB error; LIMIT (12)`, which blocked the commit gate. `cargo clean -p rmc_e2e -p rmc_app` freed 250 GB; the rebuild and the gate then passed. Builds still run with `-j 4`.
+Next: F105.
+Blockers: none. Owner note: `target/` grows by about 1.7 GB per relinked e2e binary; run `cargo clean -p rmc_e2e -p rmc_app` periodically.
