@@ -156,7 +156,7 @@ pub fn flat_sweep(flat: &mut FlatWorld, mut visit: impl FnMut(&mut FlatWorld, Ce
 }
 
 /// The materials and constants the water reference reads.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WaterRef {
     /// Role `air` (the one `Phase::Air` material).
     pub air: MaterialId,
@@ -164,22 +164,47 @@ pub struct WaterRef {
     pub water: MaterialId,
     /// `eco.flow_cap`.
     pub flow_cap: i32,
+    /// `eco.infil_shift`.
+    pub infil_shift: u8,
+    /// `eco.infil_side_shift`.
+    pub infil_side_shift: u8,
+    /// `eco.seep_num`.
+    pub seep_num: i32,
+    /// `eco.seep_shift`.
+    pub seep_shift: u8,
+    /// The porous solids: `(material, permeability, field_capacity)`.
+    pub porous: Vec<(MaterialId, i32, i32)>,
 }
 
 /// The sideways divisor of SAD-P2 §7.3 B3: `(fill − fill_n) / 2`.
 const REF_SIDE_SPLIT: i32 = 2;
+/// The seepage threshold's divisor, `field_capacity · seep_num / 256`.
+const REF_SEEP_DEN: i32 = 256;
 /// The most water a cell holds.
 const REF_FULL: i32 = u8::MAX as i32;
 
-/// One water flow sweep (SAD-P2 §7.3 B steps 1, 2, 3 and 5) over every
-/// cell of `flat` in global order, written directly on the flat arrays
-/// for the oracle tests of [`WaterPass`](crate::water::WaterPass).
-/// Porous solids, magma and contact boiling are not modelled.
-pub fn flat_sweep_water(flat: &mut FlatWorld, ids: WaterRef) {
+/// One water flow sweep (SAD-P2 §7.3 B steps 1 to 5) over every cell of
+/// `flat` in global order, written directly on the flat arrays for the
+/// oracle tests of [`WaterPass`](crate::water::WaterPass). Magma and
+/// contact boiling are not modelled.
+pub fn flat_sweep_water(flat: &mut FlatWorld, ids: &WaterRef) {
     let moist = LayerId::Moisture;
-    let holds_water = |flat: &FlatWorld, c: CellPos| {
-        let m = flat.material(c);
-        m == Some(ids.air) || m == Some(ids.water)
+    // (permeability, field_capacity) of a porous cell.
+    let porous = |flat: &FlatWorld, c: CellPos| {
+        let m = flat.material(c)?;
+        ids.porous
+            .iter()
+            .find(|p| p.0 == m)
+            .map(|&(_, perm, cap)| (perm, cap))
+    };
+    // How much more water a cell takes; `None` when water cannot enter it.
+    let room = |flat: &FlatWorld, c: CellPos| {
+        let m = flat.material(c)?;
+        if m == ids.air || m == ids.water {
+            Some(REF_FULL - flat.layer(c, moist))
+        } else {
+            porous(flat, c).map(|(_, cap)| (cap - flat.layer(c, moist)).max(0))
+        }
     };
     let give = |flat: &mut FlatWorld, from: CellPos, to: CellPos, amount: i32| {
         if flat.material(to) == Some(ids.air) {
@@ -189,38 +214,56 @@ pub fn flat_sweep_water(flat: &mut FlatWorld, ids: WaterRef) {
         flat.set_layer(to, moist, flat.layer(to, moist) + amount);
     };
     flat_sweep(flat, |flat, cell| {
+        let c = cell.0;
+        let below = CellPos::new(c.x, c.y - 1, c.z);
+        let sides = [
+            CellPos::new(c.x, c.y, c.z - 1),
+            CellPos::new(c.x - 1, c.y, c.z),
+            CellPos::new(c.x + 1, c.y, c.z),
+            CellPos::new(c.x, c.y, c.z + 1),
+        ];
+        // 4. Seepage out of a porous cell above its threshold.
+        if let Some((perm, cap)) = porous(flat, cell) {
+            let threshold = cap * ids.seep_num / REF_SEEP_DEN;
+            let excess = flat.layer(cell, moist) - threshold;
+            let most = excess.min(perm / (1 << ids.seep_shift));
+            if most <= 0 {
+                return;
+            }
+            let first = std::iter::once(below)
+                .chain(sides)
+                .find_map(|n| room(flat, n).filter(|&r| r > 0).map(|r| (n, r)));
+            if let Some((n, r)) = first {
+                give(flat, cell, n, most.min(r));
+            }
+            return;
+        }
         if flat.material(cell) == Some(ids.air) && flat.layer(cell, moist) > 0 {
             flat.set_material(cell, ids.water);
         }
         if flat.material(cell) != Some(ids.water) {
             return;
         }
-        let c = cell.0;
-        let below = CellPos::new(c.x, c.y - 1, c.z);
-        if holds_water(flat, below) {
-            let room = REF_FULL - flat.layer(below, moist);
-            let amount = flat.layer(cell, moist).min(room);
+        if let Some(r) = room(flat, below) {
+            let fill = flat.layer(cell, moist);
+            let amount = match porous(flat, below) {
+                Some((perm, _)) => fill.min(perm / (1 << ids.infil_shift)).min(r),
+                None => fill.min(r),
+            };
             if amount > 0 {
                 give(flat, cell, below, amount);
             }
         }
-        for n in [
-            CellPos::new(c.x, c.y, c.z - 1),
-            CellPos::new(c.x - 1, c.y, c.z),
-            CellPos::new(c.x + 1, c.y, c.z),
-            CellPos::new(c.x, c.y, c.z + 1),
-        ] {
-            if !holds_water(flat, n) {
+        for n in sides {
+            let Some(r) = room(flat, n) else {
                 continue;
-            }
+            };
             let (fill, fill_n) = (flat.layer(cell, moist), flat.layer(n, moist));
-            if fill_n >= fill {
-                continue;
-            }
-            let amount = ids
-                .flow_cap
-                .min((fill - fill_n) / REF_SIDE_SPLIT)
-                .min(REF_FULL - fill_n);
+            let amount = match porous(flat, n) {
+                Some((perm, _)) => fill.min(perm / (1 << ids.infil_side_shift)).min(r),
+                None if fill_n < fill => ids.flow_cap.min((fill - fill_n) / REF_SIDE_SPLIT).min(r),
+                None => 0,
+            };
             if amount > 0 {
                 give(flat, cell, n, amount);
             }
