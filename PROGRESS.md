@@ -1624,3 +1624,61 @@ Decisions:
 - `tables_hash` is opaque to rmc_world (it cannot depend on rmc_eco). The world check (`check_world`) still covers only bounds and material hash.
 Next: F103 (protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger; displacement rules).
 Blockers: none.
+
+## 2026-10-19 23:55 — F103 Protocol v2: ChunkSnapshot v2, LayerSnapshot, ChunkDelta::Layers, AdvanceSeason, SetLayer; SeasonLedger; displacement rules — passed
+Done:
+- New `rmc_world::ledger::SeasonLedger`: plain serde data. It holds the water, substance (`[i64; N_SUBSTANCES]`), gas (`[i64; N_GASES]`) and magma terms, plus transitions, weathered, born, died and ignitions. `EditResult` gains `ledger: Box<SeasonLedger>`.
+- New `rmc_world::displace` holds the SAD-P2 §7.0 rules, implemented once.
+  - It is used by `World::apply` (effects become `ChunkDelta::Layers`, ledger terms go on the `EditResult`) and by the new `World::eco_set(cell, to, &mut ledger)`.
+  - `eco_set` validates nothing and sends no delta. It sets `modified`, clears damage, updates `surface_y` and the active sets, and bumps `revision` and `eco_revision`.
+  - `EcoRules` holds the roles water, ice, magma, steam and organic, plus `magma_init_temp`, `harvest_shift`, per-species litter and per-substance yield. `World::set_eco_rules` installs it. The default is inert.
+  - `EcoTables::displacement_rules()` builds it from `eco.ron`, plants and substances.
+- The rules, in order:
+  - plant removal: a dig harvests; otherwise `held` goes back to the anchor; a tall top goes too;
+  - magma ledger;
+  - boil exception (pass, water → air: the fill becomes steam);
+  - gas push from air → non-air into air neighbors;
+  - moisture push when the new material cannot hold it, with substances following proportionally;
+  - brush Set/Paint of water or ice fills to 255;
+  - → air zeroes regolith and growth and kills the plant above (litter and held go into the cell).
+  - Every move or loss is ledgered.
+- `EditOp::SetLayer { layer, value }` is validated, and rejected with `RejectReason::InvalidLayerValue`. `ChunkDelta::Layers { pos, eco_revision, changes, plants }`: `apply_delta` requires `eco_revision == local + 1` and validates every change before writing any.
+- Layers in `layers.rs`: `SWEEP_WATER`, `SWEEP_GAS`, `SWEEP_TRANSPORT`, `SWEEP_SPREAD` index the active sets.
+- Protocol:
+  - `PROTOCOL_VERSION` = 2. `ChunkSnapshot` gains `eco_revision`, `layers` and `plants`, plus `ServerMsg::chunk_snapshot(pos, &Chunk)`.
+  - New messages: `LayerSnapshot`, `SeasonStarted`, `SeasonDone { season, report: Box<SeasonReport>, changed_chunks }` and `ClientMsg::AdvanceSeason`.
+  - The codec rejects plant indices ≥ `CHUNK_VOLUME`.
+- Host and client:
+  - Both replicas (rmc_host and rmc_client) take v2 snapshots and apply `LayerSnapshot` through `apply_eco_snapshot`. A snapshot for a chunk they are waiting on is skipped. Layer deltas mark no mesh dirty.
+  - The host answers joins and `RequestChunk` with v2 snapshots, and ignores `AdvanceSeason` with a debug log.
+Tests added:
+- The listed tests: codec::tests::roundtrip_phase2_variants, edit::tests::{set_layer_emits_layers_delta_and_bumps_eco_revision, displacement_rules_every_case_ledgered, brush_set_water_fill_255_set_magma_init_temp, eco_set_displaces_bumps_revision_no_delta}.
+- Also: rmc_eco tables::tests::displacement_rules_come_from_roles_and_params, rmc_host replica::tests::layers_replicate_by_snapshot_and_delta.
+Decisions:
+- The implementation was written before the listed tests (the context was lost mid-session). The tests were mutation-checked instead. Each of these fails a listed test:
+  - removing the boil exception;
+  - removing the brush fill;
+  - not emitting the Layers delta;
+  - letting every substance follow moisture and skipping the eco_revision bump.
+- Two ledger terms are added beyond the SAD sketch:
+  - `water_saturation_loss`: moisture with nowhere to go during a pass;
+  - `gas_edit_in`: gas added by `SetLayer`.
+  - Losses during edits go to `*_edit_out`; losses during passes go to `*saturation_loss`. Lost steam is mirrored into the water terms. The edit tests' invariant checker counts moisture on every cell as water.
+- An eco-revision gap in `ChunkDelta::Layers` reuses `DeltaError::RevisionGap`. Replicas repair it with `RequestChunk`, whose v2 snapshot carries the layers.
+- Delta order in an `EditResult`: per chunk, ascending, the material delta (Cells/Full) first, then Layers.
+- Moisture and gas pushes use neighbors in sorted (y, z, x) order, with the one below first. Moisture goes to the first air or water neighbor with room; the rest is lost. Gases fill each air neighbor in turn, up to its room.
+- `SetLayer` writes gas layers on air cells only (gas lives in air). Moisture, substance and gas changes are ledgered as edit in/out.
+- Brush `Set(water)` on a cell that is already water is a no-op, as Phase 1 skips unchanged cells, so it does not refill to 255.
+- `eco_set` magma ledger: non-magma → magma is `magma_melt_in`, magma → non-magma is `magma_set`. Edits use `magma_edit` ±1.
+- Harvest yields go through `EcoRules::substance_yields` into `EditResult.yields`. A dead plant's `litter_in` is recorded in full; whatever the cell cannot hold goes to `saturation_loss`.
+- `EditResult.ledger` and `SeasonDone.report` are boxed. Clippy `large_enum_variant`: a ledger is about 1 KB and most results carry an empty one.
+- Deferred to F107:
+  - zstd for snapshots (SAD §9 "postcard+zstd"); snapshots stay plain postcard;
+  - host handling of `AdvanceSeason`;
+  - `between_seasons` merging.
+  - Also deferred: installing `EcoRules` on the game host's world (`set_eco_rules`). Until then the host world's rules are inert, so Phase 1 behavior is unchanged.
+- The codec variant-count tests were extended to the new variants (6 client, 10 server), not weakened. Phase 1 test literals gained the new fields with default values only.
+- Full `scripts/e2e.sh` was not run (the feature has e2e false). `scripts/smoke.sh` passed.
+- rustc crashed with STATUS_STACK_BUFFER_OVERRUN under full parallel builds on this machine. Builds and tests were run with `-j 4`. This is environmental, not a code issue.
+Next: F104 (first `"passes": false` feature after F103).
+Blockers: none.
