@@ -17,6 +17,6 @@ pub use ledger::SeasonLedger;
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };
-pub use tables::{EcoTableError, EcoTables};
+pub use tables::{EcoTableError, EcoTables, SeasonOverride};
 pub use temperature::{Profile, TemperaturePass};
 pub use tick::{TickReport, season_tick};

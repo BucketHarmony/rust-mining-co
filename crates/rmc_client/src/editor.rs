@@ -2,7 +2,7 @@
 //!
 //! [`EditorState`] holds everything the editor's controls set: whether the
 //! editor is open, the brush (op, shape, size, material), the gizmo toggles
-//! and the one-shot Save / Load requests. The egui panel (F072) edits the
+//! and the one-shot Save / Load / Advance-season requests. The egui panel (F072) edits the
 //! same resource, and every action also has a key in [`EDITOR_BINDINGS`],
 //! which `docs/CONTROLS.md` lists. Tests drive the editor through those keys
 //! and the resource, never through egui widgets.
@@ -46,6 +46,9 @@ use crate::replica::Replica;
 
 /// Opens and closes the editor.
 pub const TOGGLE_EDITOR_KEY: KeyCode = KeyCode::F1;
+
+/// The text of the panel's button that advances one season.
+pub const ADVANCE_SEASON_LABEL: &str = "Advance season";
 
 /// Largest brush size. A [`BrushShape::Box`] of this size, `2 * size + 1`
 /// cells on a side, still fits in one edit command
@@ -117,6 +120,9 @@ pub struct EditorState {
     /// Set by the Regenerate action; whoever regenerates the world from
     /// [`seed`](Self::seed) takes it (sets it back).
     pub regenerate_requested: bool,
+    /// Set by the Advance-season action; the editor takes it and sends the
+    /// host one `AdvanceSeason` (SAD-P2 §10).
+    pub season_requested: bool,
 }
 
 impl Default for EditorState {
@@ -132,6 +138,7 @@ impl Default for EditorState {
             load_requested: false,
             seed: 0,
             regenerate_requested: false,
+            season_requested: false,
         }
     }
 }
@@ -165,6 +172,7 @@ impl EditorState {
             EditorAction::Save => self.save_requested = true,
             EditorAction::Load => self.load_requested = true,
             EditorAction::Regenerate => self.regenerate_requested = true,
+            EditorAction::AdvanceSeason => self.season_requested = true,
         }
     }
 }
@@ -185,6 +193,7 @@ pub enum EditorAction {
     Save,
     Load,
     Regenerate,
+    AdvanceSeason,
 }
 
 impl EditorAction {
@@ -208,6 +217,7 @@ impl EditorAction {
             EditorAction::Save => "Save the world",
             EditorAction::Load => "Load the saved world",
             EditorAction::Regenerate => "Regenerate the world from the seed",
+            EditorAction::AdvanceSeason => "Advance one season",
         }
     }
 }
@@ -229,6 +239,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F3, EditorAction::ToggleTargetCell),
     (KeyCode::F4, EditorAction::ToggleMeshQueue),
     (KeyCode::F5, EditorAction::Save),
+    (KeyCode::F6, EditorAction::AdvanceSeason),
     (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
@@ -368,6 +379,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F3 => "F3",
         KeyCode::F4 => "F4",
         KeyCode::F5 => "F5",
+        KeyCode::F6 => "F6",
         KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
         KeyCode::Digit1 => "1",
@@ -424,6 +436,7 @@ impl Plugin for EditorPlugin {
                 (
                     follow_welcome_seed.before(editor_keys),
                     editor_keys,
+                    request_season.after(editor_keys),
                     sample_stats,
                     drop_player_after_flying
                         .after(FlyCamSystems)
@@ -462,6 +475,14 @@ fn editor_keys(
         }
         state.apply(action, materials.as_deref().map(|m| &*m.0));
         debug!(?action, "editor key");
+    }
+}
+
+/// Sends the host one `AdvanceSeason` if the editor asked for a season.
+fn request_season(mut state: ResMut<EditorState>, mut out: MessageWriter<ToHost>) {
+    if std::mem::take(&mut state.season_requested) {
+        out.write(ToHost(ClientMsg::AdvanceSeason));
+        info!("season requested");
     }
 }
 
@@ -1074,6 +1095,60 @@ mod tests {
         // And it stays gone on the frames after.
         let (_, texts, _) = draw_panel(&mut app, &ctx);
         assert!(texts.is_empty(), "closed panel draws nothing: {texts:?}");
+    }
+
+    #[test]
+    fn season_button_sends_advance_season() {
+        let mut app = editor_app();
+        app.init_resource::<Sent>().add_systems(Last, record);
+        let ctx = egui::Context::default();
+        let sent = |app: &App| app.world().resource::<Sent>().0.clone();
+        let seasons = |app: &App| {
+            sent(app)
+                .iter()
+                .filter(|m| matches!(m, ClientMsg::AdvanceSeason))
+                .count()
+        };
+        let key = key_of(EditorAction::AdvanceSeason);
+        assert_eq!(key_label(key), "F6");
+
+        // Closed: the key does nothing.
+        tap(&mut app, key);
+        assert_eq!(seasons(&app), 0, "closed editor sends nothing");
+        assert!(!state(&app).season_requested);
+
+        // Open: the panel has a Season section with the button.
+        tap(&mut app, TOGGLE_EDITOR_KEY);
+        let (shown, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(shown);
+        for want in ["Season", ADVANCE_SEASON_LABEL] {
+            assert!(
+                texts.iter().any(|t| t == want),
+                "panel lacks {want:?}: {texts:?}"
+            );
+        }
+
+        // The key sends one AdvanceSeason per press and takes the request.
+        tap(&mut app, key);
+        assert_eq!(seasons(&app), 1, "one AdvanceSeason");
+        assert!(!state(&app).season_requested, "the request is taken");
+        frame(&mut app);
+        frame(&mut app);
+        assert_eq!(seasons(&app), 1, "one per press");
+
+        // The panel's button applies the same action.
+        app.world_mut()
+            .resource_mut::<EditorState>()
+            .apply(EditorAction::AdvanceSeason, None);
+        assert!(state(&app).season_requested);
+        frame(&mut app);
+        assert_eq!(seasons(&app), 2);
+        assert_eq!(
+            sent(&app).len(),
+            2,
+            "nothing else was sent: {:?}",
+            sent(&app)
+        );
     }
 
     // ---- Leaving the fly camera ----

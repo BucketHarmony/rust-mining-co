@@ -86,6 +86,30 @@ impl Host {
         self
     }
 
+    /// The Phase 2 tables the season ticks run with, if any.
+    pub fn eco_tables(&self) -> Option<&Arc<EcoTables>> {
+        self.eco.as_ref().map(|e| &e.tables)
+    }
+
+    /// Runs the next season ticks with `tables` (built on the world's
+    /// material table, like [`Host::with_eco`]'s) instead, keeping the
+    /// season count, the activity and the between-seasons ledger. Tests
+    /// use it to override season rows. Returns `false`, changing nothing,
+    /// without the Phase 2 tables.
+    pub fn set_eco_tables(&mut self, tables: Arc<EcoTables>) -> bool {
+        let Some(eco) = self.eco.as_mut() else {
+            return false;
+        };
+        assert_eq!(
+            self.world.materials().hash(),
+            tables.materials().hash(),
+            "the Phase 2 tables are built on another material table"
+        );
+        self.world.set_eco_rules(tables.displacement_rules());
+        eco.tables = tables;
+        true
+    }
+
     /// The season the next tick runs; `None` without the Phase 2 tables.
     pub fn season(&self) -> Option<u32> {
         self.eco.as_ref().map(|e| e.next)

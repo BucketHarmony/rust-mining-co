@@ -198,6 +198,15 @@ pub struct SeasonTable {
     pub seasons: Vec<SeasonDef>,
 }
 
+/// Values that replace a field of every season row
+/// ([`EcoTables::with_season_override`]); `None` keeps the table's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeasonOverride {
+    pub rain: Option<u8>,
+    /// 0.1 °C.
+    pub air_temp: Option<i16>,
+}
+
 /// Every named constant of SAD-P2 §7 and §8, under its SAD name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -590,21 +599,7 @@ impl EcoTables {
             );
         }
 
-        let hash = tables_hash(
-            materials.hash(),
-            &(
-                &substances,
-                &gases,
-                &transitions,
-                &reactions,
-                &plants,
-                &seasons,
-                &params,
-                &roles,
-                &eco_test,
-            ),
-        );
-        Ok(Self {
+        let mut tables = Self {
             materials,
             substances,
             gases,
@@ -616,8 +611,44 @@ impl EcoTables {
             roles,
             eco_test,
             unresolved,
-            hash,
-        })
+            hash: 0,
+        };
+        tables.hash = tables.compute_hash();
+        Ok(tables)
+    }
+
+    fn compute_hash(&self) -> u64 {
+        tables_hash(
+            self.materials.hash(),
+            &(
+                &self.substances,
+                &self.gases,
+                &self.transitions,
+                &self.reactions,
+                &self.plants,
+                &self.seasons,
+                &self.params,
+                &self.roles,
+                &self.eco_test,
+            ),
+        )
+    }
+
+    /// These tables with every season row's `rain` and `air_temp` replaced
+    /// by the override's given fields (SAD-P2 §11 `set_season_params`).
+    /// The hash covers the result, so it moves with any change.
+    pub fn with_season_override(&self, o: SeasonOverride) -> Self {
+        let mut t = self.clone();
+        for row in &mut t.seasons.seasons {
+            if let Some(rain) = o.rain {
+                row.rain = rain;
+            }
+            if let Some(air_temp) = o.air_temp {
+                row.air_temp = air_temp;
+            }
+        }
+        t.hash = t.compute_hash();
+        t
     }
 
     /// xxh3 over the material table hash and the canonical (postcard)
@@ -840,6 +871,35 @@ mod tests {
         let materials =
             Arc::new(MaterialTable::load(Path::new(ASSETS).join(MATERIALS_FILE)).unwrap());
         (materials, EcoSources::read(ASSETS).unwrap())
+    }
+
+    #[test]
+    fn season_override_replaces_given_fields_of_every_row() {
+        let t = shipped();
+        assert_eq!(t.with_season_override(SeasonOverride::default()), t);
+
+        let rain = t.with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: None,
+        });
+        assert_ne!(rain.hash(), t.hash(), "the hash covers the seasons");
+        assert_eq!(rain.seasons().substeps, t.seasons().substeps);
+        assert_eq!(rain.seasons().seasons.len(), t.seasons().seasons.len());
+        for (a, b) in rain.seasons().seasons.iter().zip(&t.seasons().seasons) {
+            assert_eq!((&a.key, a.air_temp, a.rain), (&b.key, b.air_temp, 0));
+        }
+
+        let both = rain.with_season_override(SeasonOverride {
+            rain: Some(200),
+            air_temp: Some(-150),
+        });
+        assert!(
+            both.seasons()
+                .seasons
+                .iter()
+                .all(|s| (s.rain, s.air_temp) == (200, -150))
+        );
+        assert_eq!(both.params(), t.params(), "only the seasons change");
     }
 
     #[test]

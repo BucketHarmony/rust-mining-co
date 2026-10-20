@@ -69,6 +69,7 @@ settings.
 | `F3` | Toggle targeted-cell gizmo |
 | `F4` | Toggle mesh-queue gizmo |
 | `F5` | Save the world |
+| `F6` | Advance one season |
 | `F8` | Regenerate the world from the seed |
 | `F9` | Load the saved world |
 

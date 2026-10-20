@@ -36,7 +36,9 @@ use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::GenParams;
 use rmc_worldgen::params::WorldBounds;
-use rmc_worldgen::{Generator, NOISE_CRATE_VERSION};
+use rmc_worldgen::{Generator, NOISE_CRATE_VERSION, TemperatureInit};
+
+use crate::eco::SeasonLogPlugin;
 
 /// How many steps [`TestApp::save`] waits for the host's answer. It
 /// normally arrives two steps after the request.
@@ -81,6 +83,10 @@ pub struct RenderFailure(pub String);
 /// The real game with no window, driven one frame at a time, with its host
 /// in-process.
 ///
+/// The host runs seasons with the Phase 2 tables in `assets/` (SAD-P2 §11),
+/// and worldgen writes the temperature layer, as in the game. See
+/// [`crate::eco`] for the season, layer and fixture helpers.
+///
 /// The host is ticked synchronously at the start of every [`TestApp::step`],
 /// before the app's update, so a message the client sent during frame N is
 /// handled at the start of step N + 1 and its result reaches the client in
@@ -92,6 +98,8 @@ pub struct TestApp {
     player: PlayerId,
     config: TestConfig,
     host_ticks: u64,
+    /// The Phase 2 tables from `assets/`, before any season override.
+    eco: Arc<EcoTables>,
 }
 
 impl TestApp {
@@ -104,9 +112,10 @@ impl TestApp {
     /// Panics if the assets do not load or no render adapter is found.
     pub fn new(config: TestConfig) -> Self {
         let materials = load_materials();
+        let eco = load_eco(&materials);
         let params = gen_params(&config);
-        let world = generate_world(&config, &params, &materials);
-        Self::with_world(config, world, host_config(&config, &params), None)
+        let world = generate_world(&config, &params, &eco);
+        Self::with_world(config, world, eco, host_config(&config, &params), None)
     }
 
     /// Like [`TestApp::new`], but the host starts with the save in `dir`
@@ -127,6 +136,7 @@ impl TestApp {
     pub fn try_load(dir: impl AsRef<Path>, config: TestConfig) -> Result<Self, SaveError> {
         let dir = dir.as_ref();
         let materials = load_materials();
+        let eco = load_eco(&materials);
         let params = gen_params(&config);
         let host_config = host_config(&config, &params);
         let header = SaveHeader::new(
@@ -137,12 +147,11 @@ impl TestApp {
             host_config.gen_params_hash,
             NOISE_CRATE_VERSION,
         );
-        let world = save::load(dir, &header, || {
-            generate_world(&config, &params, &materials)
-        })?;
+        let world = save::load(dir, &header, || generate_world(&config, &params, &eco))?;
         Ok(Self::with_world(
             config,
             world,
+            eco,
             host_config,
             Some(save_config(dir)),
         ))
@@ -176,6 +185,7 @@ impl TestApp {
     fn with_world(
         config: TestConfig,
         world: CellWorld,
+        eco: Arc<EcoTables>,
         host_config: HostConfig,
         save: Option<SaveConfig>,
     ) -> Self {
@@ -184,7 +194,7 @@ impl TestApp {
         let mut transport = ChannelTransport::new();
         let endpoint = transport.connect();
         let player = endpoint.player();
-        let mut host = Host::new(world, host_config, Box::new(transport));
+        let mut host = Host::new(world, host_config, Box::new(transport)).with_eco(eco.clone());
         host.set_save(save);
 
         let mut app = App::new();
@@ -209,6 +219,7 @@ impl TestApp {
                 HudPlugin,
                 EditorPlugin,
                 SavePlugin,
+                SeasonLogPlugin,
             ))
             .insert_resource(ClientMaterials(materials))
             .insert_resource(Pickaxe(tools.pickaxe))
@@ -231,6 +242,7 @@ impl TestApp {
             player,
             config,
             host_ticks: 0,
+            eco,
         };
         test_app.step();
         test_app
@@ -283,6 +295,15 @@ impl TestApp {
         &self.host
     }
 
+    pub(crate) fn host_mut(&mut self) -> &mut Host {
+        &mut self.host
+    }
+
+    /// The Phase 2 tables from `assets/`, without any season override.
+    pub fn eco_tables(&self) -> &Arc<EcoTables> {
+        &self.eco
+    }
+
     pub fn host_world(&self) -> &CellWorld {
         self.host.world()
     }
@@ -332,6 +353,14 @@ fn load_materials() -> Arc<MaterialTable> {
     Arc::new(MaterialTable::load(asset_path("materials.ron")).expect("assets/materials.ron loads"))
 }
 
+/// The Phase 2 tables in `assets/`, on `materials`.
+fn load_eco(materials: &Arc<MaterialTable>) -> Arc<EcoTables> {
+    Arc::new(
+        EcoTables::load_with_materials(materials.clone(), asset_path(""))
+            .expect("assets/ Phase 2 tables load"),
+    )
+}
+
 /// [`EcoTables::hash`] of the Phase 2 tables in `assets/`, for the save
 /// header.
 fn tables_hash() -> u64 {
@@ -354,14 +383,12 @@ fn gen_params(config: &TestConfig) -> GenParams {
 }
 
 /// The host's world: every chunk in the bounds of `params`, generated from
-/// `config.seed` and inserted.
-fn generate_world(
-    config: &TestConfig,
-    params: &GenParams,
-    materials: &Arc<MaterialTable>,
-) -> CellWorld {
-    let generator =
-        Generator::new(config.seed, params, materials).expect("worldgen params fit the table");
+/// `config.seed` with its temperature layer (SAD-P2 §8) and inserted.
+fn generate_world(config: &TestConfig, params: &GenParams, eco: &EcoTables) -> CellWorld {
+    let materials = eco.materials();
+    let generator = Generator::new(config.seed, params, materials)
+        .expect("worldgen params fit the table")
+        .with_temperature(TemperatureInit::new(eco));
     let mut world = CellWorld::new(materials.clone(), config.world_bounds);
     for (pos, chunk) in generator.generate_world() {
         world

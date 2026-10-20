@@ -27,9 +27,9 @@ pub use cursor::{
     swing_allowed,
 };
 pub use editor::{
-    BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS, EditorAction, EditorPlugin,
-    EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE, SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY,
-    brush_command, brush_target, free_feet_near,
+    ADVANCE_SEASON_LABEL, BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS,
+    EditorAction, EditorPlugin, EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE,
+    SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY, brush_command, brush_target, free_feet_near,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use gizmo::{

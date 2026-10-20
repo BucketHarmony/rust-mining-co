@@ -3,7 +3,7 @@
 //! [`editor_panel`] draws the panel into an egui context while
 //! [`EditorState::open`] is set: the brush (op, shape, size, material), the
 //! fly camera, the gizmo toggles, the [`EditorStats`], the worldgen seed with
-//! Regenerate, Save / Load, and a `bevy-inspector-egui` world inspector. It
+//! Regenerate, Advance season, Save / Load, and a `bevy-inspector-egui` world inspector. It
 //! edits the same [`EditorState`] the editor keys do; its buttons apply the
 //! same [`EditorAction`]s. F1 opens and closes it.
 //!
@@ -24,7 +24,8 @@ use rmc_world::edit::EditStatus;
 use rmc_world::materials::MaterialTable;
 
 use crate::editor::{
-    BrushOp, BrushShape, EditorAction, EditorState, MAX_BRUSH_SIZE, brush_materials,
+    ADVANCE_SEASON_LABEL, BrushOp, BrushShape, EditorAction, EditorState, MAX_BRUSH_SIZE,
+    brush_materials,
 };
 use crate::flycam::FlyCam;
 use crate::meshpipe::MeshStats;
@@ -219,6 +220,12 @@ fn panel_body(
             actions.push(EditorAction::Regenerate);
         }
     });
+
+    ui.separator();
+    ui.strong("Season");
+    if ui.button(ADVANCE_SEASON_LABEL).clicked() {
+        actions.push(EditorAction::AdvanceSeason);
+    }
 
     ui.separator();
     ui.horizontal(|ui| {
