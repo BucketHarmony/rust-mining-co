@@ -1,8 +1,10 @@
 # Rust Mining Co — overnight build report
 
-Generated 2026-10-20T00:03:30Z at commit 1bd70d0
+Generated 2026-10-20T00:10:52Z at commit 0433f7b
 
 **68 / 128 features passing, 0 skipped, 60 not passing.**
+- Phase 1: 68 / 68 passing, 0 skipped
+- Phase 2: 0 / 60 passing, 0 skipped
 
 ## How to play (Windows)
 
@@ -252,6 +254,7 @@ The initial load ends only when every chunk inside the world's bounds is residen
 ### 2026-10-18 04:15 — F001 Workspace skeleton with pinned Bevy 0.20 and all crates compiling — passed
 
 **Decisions:**
+
 - Bevy 0.20 resolved on the first attempt: bevy =0.20.0, bevy_egui =0.43.1, bevy-inspector-egui =0.38.0 (both declare bevy_* ^0.20.0 on crates.io). The §3 fallback was not needed.
 - glam pinned =0.33.12. bevy_math 0.20.0 requires glam ^0.33.2, so the SAD's "0.32" is out of date. Cargo.lock has one glam, 0.33.12. The core crates use glam directly.
 - Other pins (crates.io latest on 2026-10-17): fastnoise-lite 1.1.1, rayon 1.12.0, serde 1.0.229, postcard 1.1.3, ron 0.12.2, zstd 0.14.3, crossbeam-channel 0.5.17, xxhash-rust 0.8.19 (xxh3), thiserror 2.0.21, anyhow 1.0.104, tracing 0.1.44, clap 4.6.7, image 0.25.10, image-compare 0.5.0, proptest 1.12.0, criterion 0.8.2.
@@ -262,6 +265,7 @@ The initial load ends only when every chunk inside the world's bounds is residen
 ### 2026-10-18 04:40 — F002 No-Bevy dependency check script and CI workflow skeleton — passed
 
 **Decisions:**
+
 - CI "End-to-end" steps (linux lavapipe, windows WARP) got `if: hashFiles('tests/e2e/tests/*.rs') != ''`. Without it, `scripts/e2e.sh` exits 101 ("no test target matches pattern `*`") until the first scenario lands at F056, and CI is red on every push. The guard lifts itself once a scenario exists. scripts/e2e.sh itself is unchanged.
 - The no-Bevy check stays on `-e normal` as the SAD §4 says. Dev-dependencies and build-dependencies are not checked.
 - On native Windows, jq in pass-feature.sh writes features.json with CRLF. Git normalizes it to LF on commit (warning only).
@@ -269,6 +273,7 @@ The initial load ends only when every chunk inside the world's bounds is residen
 ### 2026-10-18 05:00 — F003 Coordinate conversions — passed
 
 **Decisions:**
+
 - CellPos and ChunkPos implement Ord manually (IVec3 has no Ord) as lexicographic (y, z, x), which matches the local linear index and the §8.1 shape order. Every "sorted" output (iter_chunks_sorted, save, damage BTreeMap) uses this order.
 - The meter conversions are the float boundary that rule 3 allows (raycast/client). Integer logic does not call them.
 - SAD §5 says 0.5 m cells, so CELL_SIZE_M = 0.5.
@@ -276,6 +281,7 @@ The initial load ends only when every chunk inside the world's bounds is residen
 ### 2026-10-18 05:20 — F004 MaterialTable loading from materials.ron with tags and hash — passed
 
 **Decisions:**
+
 - materials.ron is a bare RON list of MaterialDef with explicit `id`s. Each id must equal its index, so lookup is a Vec index and ids cannot drift silently.
 - The hash is xxh3_64 over a hand-written canonical encoding: a "rmc.materials.v1" prefix, LE integers, length-prefixed strings, tags in file order, emissive as f32 bits. It does not depend on RON whitespace or comments. hash_is_stable pins a golden value (0x839f6f476eb45041) for an inline 3-material fixture, not for the shipped asset, so tuning materials.ron does not break the test. Changing the encoding on purpose means bumping the v1 prefix and the golden value in a `test-fix:` commit.
 - Tags use only the SAD vocabulary: soil = topsoil/dirt/clay; stone = stone/granite/basalt; ore = coal_seam/copper_ore/iron_ore; crystal = glowcrystal; placeable = brass_plate. Bedrock and air have no tags. Ores are NOT tagged stone, so glowcrystal and ore placement (which filter on stone) never overwrite ores. Worldgen will pick specific strata/ore materials through keys in worldgen.ron (data, not code).
@@ -286,42 +292,45 @@ The initial load ends only when every chunk inside the world's bounds is residen
 ### 2026-10-18 05:40 — F005 Scripts: smoke.sh, e2e.sh, verify-features.sh, pass-feature.sh wired and executable — passed
 
 **Decisions:**
+
 - `--all-targets` in verify-features.sh is safe once criterion benches exist (F081): criterion 0.8.2's CLI accepts `--exact` and `--include-ignored`, and with a non-matching filter in test mode it runs nothing and exits 0.
 - F005's stated criteria (cargo --exact, e2e entries, tested on F003) are met, so the feature was passed. The defect below is in a hook-protected file and is left for the owner rather than bypassing protect-files.sh with sed.
+
+**Blockers:**
+
+- OWNER ACTION (native Windows only; Linux/WSL2/CI unaffected): `scripts/verify-features.sh --quick` and `--all` report "no such feature: F001 / REGRESSION" for every id except the last. jq.exe writes CRLF to pipes, and `for id in $(jq -r ...)` keeps the `\r` (Git Bash's `read` strips it, so the single-id path used by pass-feature.sh works). Fix: add `-b` to the two `for id in $(jq -r ...)` jq calls and the `unpassed=` jq call (`jq -rb`), or pipe them through `tr -d '\r'`. Checked: `jq -rb` emits LF here. Until it is fixed, `--all` cannot print ALL_FEATURES_PASS on this box; per-id `verify-features.sh <id>` is reliable.
 
 ### 2026-10-18 06:00 — F010 ChunkStorage Uniform/Paletted with get/set and bit-width promotion — passed
 
 **Decisions:**
+
 - set returns the previous material, so later edit code (F021) can find changed cells without a second get.
 - Palette lookup on set is a linear scan. Phase 1 palettes are small (the table has 13 materials). Revisit in the F082 perf pass if host_tick_100 shows it.
 - set never demotes and never drops unused palette entries; compact() does that (F011). Revision and modified are not touched by ChunkStorage; World::apply owns them (F021).
 - ChunkStorage PartialEq is structural (Uniform != equivalent Paletted). Content equality is the canonical hash's job (F012).
 - No serde derives yet. Save (F027) and protocol (F030) will choose their wire form and validate bits/data length on decode.
 - Deleted the proptest-regressions/chunk.txt that the deliberate todo!() failure wrote (seed: fill=0, ops=[]). It recorded only the stub panic.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 06:20 — F011 compact() preserves content and demotes bit width — passed
 
 **Decisions:**
+
 - Compacted palette order is first appearance in local linear index order, not sorted by id and not the old palette order. The result depends only on content, so equal contents give a structurally equal ChunkStorage after compact. F012 can use that as the canonical encoding if it wants.
 - A single remaining material demotes to Uniform. The SAD says "demoting bit width"; Uniform is the narrowest form, and it matches how worldgen emits single-material chunks.
 - Deleted the proptest-regressions/chunk.txt seed that the deliberate todo!() failure wrote (fill=0, ops=[], undo=0). It recorded only the stub panic.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 06:40 — F012 Chunk hash canonical across Uniform and equivalent Paletted — passed
 
 **Decisions:**
+
 - The hash covers cell contents only. Chunk.revision and Chunk.modified are not hashed: SAD §7 defines the hash over the canonical paletted encoding, and World::hash (F013) folds in positions, not revisions. Revision agreement between host and replica is apply_delta's job (F025).
 - The canonical encoding reuses compact()'s first-appearance palette order, so it depends only on content. No golden value is pinned: chunk hashes are compared only between worlds in the same build (determinism, replica equivalence) and are never persisted. Changing the encoding on purpose means bumping the v1 prefix.
 - hash() on a Paletted chunk allocates a compacted copy (at most 64 KiB data). That is fine for world hashing at test and handshake rates. Revisit in F082 if profiling shows it.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 07:00 — F013 World with bounds, chunk map, get_cell/is_solid, iter_chunks_sorted, world hash — passed
 
 **Decisions:**
+
 - get_cell returns None when the cell is outside the bounds OR its chunk is not resident (for example a replica before the snapshot arrives). It does not fall back to AIR. is_solid is false for None and for ids the table does not know. A chunk that straddles the bounds is resident, but its out-of-bounds cells read as None.
 - Default bounds start at the origin with y up: cells 0..=255 × 0..=127 × 0..=255. The SAD gives only the size, so the origin is the conservative choice.
 - insert_chunk returns Result<Option<Chunk>, WorldError>: the previous chunk, or ChunkOutOfBounds when no cell of the chunk is inside the bounds (the chunk is then not stored). The SAD lists no return type; rejecting is safer than storing unreachable chunks. It does not touch revision, modified or compaction; the caller's chunk is stored as is.
@@ -329,31 +338,28 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - iter_chunks_sorted collects and sorts the keys on each call (O(n log n), 256 chunks in Phase 1). Revisit in F082 if it matters.
 - The damage map (BTreeMap<CellPos, u16>) is left for F023, where it is first used; adding it now would be dead code under -D warnings.
 - Deleted the proptest-regressions/world.txt seed that the deliberate todo!() stub failure wrote; it recorded only the stub panic.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 07:20 — F014 256 uniform-stone chunks occupy under 64 MB — passed
 
 **Decisions:**
+
 - Memory is accounted, not measured with a counting global allocator. That would need `unsafe impl GlobalAlloc` (rule: deny(unsafe_code)) or a new crate. The table estimate follows std/hashbrown's SwissTable layout: buckets from capacity() (cap+1 below 7, else cap/7*8), one (ChunkPos, Chunk) entry plus one control byte per bucket, plus a 16-byte group. Vecs count capacity, not len. The shared Arc<MaterialTable> is not counted (it is not chunk storage).
 - "64 MB" is read as 64,000,000 bytes, the stricter of MB and MiB.
 - The SAD has no 64 MB row in §13; the budget comes from the feature title. The test also covers the 16-bit worst case, so edits cannot push a full 256-chunk world over the budget either.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 07:40 — F020 Shapes with fixed iteration order and cell counts — passed
 
 **Decisions:**
+
 - An empty Box (min > max on any axis) is allowed and yields nothing: count 0, aabb None. Shape is wire data, so it does not panic like CellAabb::new. F022 can reject it as "entirely outside".
 - Coordinates are i64 inside the iterator. Cells that would leave the i32 range are skipped (they are outside every world). cell_count() and aabb() describe the ideal shape (aabb clamped to i32), so cells().count() <= cell_count(). Validation therefore errs toward rejecting.
 - cell_count() is computed, not iterated: boxes are a saturating product, spheres are a sum of isqrt row spans (O(r²)). For a radius of up to 65535 that is too slow on a hostile command. F022 should reject big radii before counting (r >= 20 already exceeds MAX_EDIT_CELLS: 33,401 > 32,768) or check the aabb volume first.
 - Cell is iterated as a 1×1×1 box.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 08:00 — F021 EditCommand Set/Remove/Paint via World::apply with deltas — passed
 
 **Decisions:**
+
 - Set/Paint with a MaterialId that is not in the table rejects the whole command (RejectReason::UnknownMaterial). The SAD is silent; an unknown id in a replica would break meshing and collision.
 - EditOp::Damage is rejected with RejectReason::Unsupported until F023 adds the damage map. F023 should delete that variant once Damage is implemented.
 - Paint checks only phase (Solid), not diggable, so it repaints bedrock. Set overwrites anything, bedrock included. This follows SAD §8.2 literally: the diggable check is only for Damage/Remove.
@@ -362,23 +368,21 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - `modified` stays true even if a later edit restores the worldgen contents (saving more is the safe side).
 - Whole-command validation (MAX_EDIT_CELLS, entirely outside bounds) is left to F022. Until then a huge Box iterates every cell. Damage clearing on Set/Paint/Remove is left to F023, which adds World.damage.
 - RejectReason derives thiserror::Error so the protocol (F030) can send it as text or as is. Result/delta types have no serde yet, because ChunkStorage has none; F030 picks the wire form.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 08:20 — F022 Validation: oversized and out-of-bounds commands rejected with no partial application — passed
 
 **Decisions:**
+
 - "Exceeds MAX_EDIT_CELLS" means count > 32,768; exactly 32,768 is allowed. The count is the shape's ideal cell count (cell_count semantics), including cells outside the bounds or outside the i32 range. A huge shape that barely touches the world is still rejected.
 - "Entirely outside bounds" is tested per cell (some cell of the shape is inside the bounds), not by AABB overlap, so a sphere whose box clips a corner but whose cells do not is rejected. The scan happens after the size check, so it visits at most 32,768 cells and stops at the first cell inside. An empty Box (min > max) counts as entirely outside. Whether a chunk is resident does not matter.
 - Check order: op, then size, then bounds. Each test command fails only one check, so the order only decides which reason is reported. Size goes before bounds because the bounds scan is only cheap on a bounded shape.
 - Reach validation (SAD §8.2 "a hook returning Ok in Phase 1") needs the issuer's position, which rmc_world does not have. It belongs in rmc_host (F032) as a hook before World::apply, not in World::validate.
 - World::validate is pub so the host can pre-check without applying. apply always re-runs it.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 08:40 — F023 Damage accumulation, break, yields, saturating, cleared by Set — passed
 
 **Decisions:**
+
 - Set/Paint/Remove clear damage on every cell the op applies to (EditOp::target is Some), even when the material does not change. Example: Set(stone) on damaged stone gives no delta but resets the damage. SAD §7 says "on a cell", not "on a changed cell". Cells the op skips (Paint on air, Remove on bedrock) keep their damage; those cells cannot hold damage anyway.
 - Damage applies to cells that are diggable. Phase is not checked, following §8.2 literally. Unknown ids count as not diggable.
 - Hardness 0 breaks on any hit, even Damage(0) (0 >= 0, "0 = instant"). Damage(0) is accepted. On a harder cell it adds nothing and stores no entry; the map never holds a 0 entry.
@@ -386,23 +390,21 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - insert_chunk drops the damage inside the replaced chunk (retain over the map). On the host this happens only at generation/load, where damage is empty. It keeps the invariant that damage entries belong to the current cell contents.
 - Damage is not part of World::hash, save or deltas (SAD §7). F024 determinism compares chunk hashes. Two worlds that diverge only in pending damage hash equal, but they diverge visibly once a cell breaks.
 - Reach and tool profile (tools.ron) are not checked here; they belong to the host (F032) and the pickaxe (F064).
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 09:00 — F024 Determinism: same command sequence yields identical world hash (proptest 1000) — passed
 
 **Decisions:**
+
 - F021–F023 already made apply deterministic (BTreeMap per chunk, fixed shape order, sorted yields, canonical compact), so the test passed on its first run, and no product code changed. Proof that it can fail: temporarily switching World::apply's `changed` map to a HashMap made it fail on the first case (deltas in a different order between a and b). The change was reverted.
 - The replica is compared on hash and revisions, not `modified`. `modified` is host save state and deltas do not carry it. F025's apply_delta will set its own replica rules.
 - Full delta storage can be compared structurally between a and b even though their storage started out structurally different, because compact() is canonical (first-appearance palette, smallest bit width).
 - The world is one chunk layer tall because hashing dominated the cost: each paletted chunk hash compacts a copy, about 0.3 ms at opt-level 1. The test hashes each world once at the end. Per-chunk states leave out the chunk hash, since World::hash already folds it in.
 - An early run failed because of a bug in the test (it compared the replica's `modified` flag). That run wrote proptest-regressions/edit.txt, which was deleted because it recorded only the test bug.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 09:20 — F025 apply_delta with revision check and insert_chunk — passed
 
 **Decisions:**
+
 - Full replaces unconditionally, whatever the local revision (SAD §7: "Full replaces"), including an older revision. In-order transport means a stale Full does not occur; accepting a newer one means a Full delta also repairs a gap.
 - Full on an in-bounds chunk that is not resident inserts it (the delta is the complete chunk). Cells on a non-resident chunk is NotResident, not a gap; the client can treat both by sending RequestChunk.
 - The replica sets modified = true on every applied delta, matching the host (which marks every changed chunk modified). Equivalence tests can therefore compare `modified` too.
@@ -410,24 +412,22 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - Duplicate indices within one Cells delta are allowed (applied in order). The host never sends them (sorted, unique).
 - Check order: bounds, residency, revision, then content, so a delta that is both a gap and malformed reports the gap (the client action is the same: RequestChunk).
 - apply_delta clears damage on overwritten cells, the same invariant insert_chunk keeps. Replicas hold no damage, so it only matters if a host world ever applies deltas.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 09:40 — F026 Voxel raycast (Amanatides–Woo) — passed
 
 **Decisions:**
+
 - Starting inside a solid cell returns that cell with distance 0 and face_normal IVec3::ZERO, even with max_dist 0. The editor's "Set on the face-normal side" then targets the same cell; F071 can ignore Set on a zero normal if it wants to.
 - Reach is inclusive: a cell entered at exactly max_dist is hit.
 - face_normal points out of the entered face (−step on the last stepped axis), so `hit.cell + face_normal` is the cell in front. Distance is meters from the given origin, even when the walk starts at the bounds entry point.
 - Ties (the ray crosses an edge or corner exactly) step x, then y, then z, so a cell that only touches the ray at an edge can block it. This is deterministic and conservative for digging.
 - Invalid input (zero or non-finite dir, non-finite origin, negative or NaN max_dist) returns None instead of panicking, because the host will run this on client-supplied PlayerState values.
 - f64 internally: the floats stay inside this one function (rule 3); the result is integer cell and normal plus an f32 distance.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 10:00 — F027 Save format: header + zstd/postcard chunks; round trip hash identical; mismatch fails — passed
 
 **Decisions:**
+
 - rmc_world cannot depend on rmc_worldgen, so load takes a `generate` closure. The host (F032+) passes `|| generate_world(seed, params, table)`. The noise crate version and gen params hash are plain header values that the caller fills in (worldgen should expose a constant for the fastnoise-lite version).
 - The header must match exactly on every field, format version included; there is no migration in Phase 1. Fields are compared in declaration order and the first difference is reported.
 - Load also checks the generated world against the header (bounds, material hash), and save refuses a header that does not describe the world. Either mismatch would produce a world or save that silently disagrees with its header.
@@ -437,34 +437,31 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - Writes go through a temporary file and a rename: chunks first, then the header. An interrupted save leaves complete files, so a load either fails loudly or sees a consistent pair under an unchanged header. There is no fsync; autosave runs every 5 minutes.
 - SaveError's RON variants are boxed (clippy result_large_err).
 - Autosave timing, SaveRequest and the host-thread snapshot are host features (§8.5/§10). snapshot() and write() are split so the host can snapshot on its tick and write elsewhere.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 10:20 — F030 Protocol messages with postcard round trip for every variant — passed
 
 **Decisions:**
+
 - Server-side storage validation lives in decode_server. World::insert_chunk does not check storage, so without it a malformed ChunkSnapshot would panic later in get/compact on the client. apply_delta still runs its own checks, so Full deltas are checked twice, which is cheap and harmless. decode_client does no semantic checks: the host validates edits (§8.2), and a NaN PlayerState is the host's concern (raycast already returns None on non-finite input).
 - Strict framing: trailing bytes are an error, not ignored. Framing (length prefixes) belongs to the transport; ChannelTransport (F031) passes typed messages and can skip the codec entirely, while a network transport would use it.
 - The wire carries storage exactly as sent, with no compaction on decode. Receivers compact where needed (apply_delta does).
 - PROTOCOL_VERSION = 1 is the value Hello carries; F032 rejects a mismatch.
 - I wrote the codec as a stub first, and both tests failed on "empty encoding" before the real implementation.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 10:40 — F031 Transport trait and ChannelTransport — passed
 
 **Decisions:**
+
 - `Recipient` is not spelled out in the SAD. I used All / One / AllExcept: One for Welcome, Rejected, snapshots on join and Inventory, All for Applied, and AllExcept reserved for the co-op PlayerStates relay.
 - The transport assigns PlayerIds (1, 2, 3, ..., never reused) at connect and tags every inbound message with the endpoint's id, so a client cannot send as another player. PlayerId(0) is never assigned. Host (F032) sends this id in Welcome and should treat it, not EditCommand.issuer, as the sender.
 - Broadcasts go to clients in ascending PlayerId order (BTreeMap, rule 4). All clients share one inbound channel, so recv gives a single global arrival order, which F032's "edits applied in arrival order" needs.
 - A dropped endpoint is found lazily: the first send that fails removes it (debug! log). Sends to unknown players are dropped silently (debug!). Nothing in the trait reports disconnects; that is enough for single player, and co-op can add it later.
 - Connections are made on the ChannelTransport before it is boxed into Host. Late joins through a boxed transport, and the wake-on-arrival signal F035 needs for the host thread, are left to those features. One option for F035: have the endpoint also ping a wake channel, or let the thread select on a cloned inbound Receiver while keeping the transport's own receiver the only one that drains it.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 11:00 — F032 Host::tick: Hello/Welcome, hash mismatch rejection, snapshots on join, edits applied in order — passed
 
 **Decisions:**
+
 - Results and deltas go only to joined players, sent One(p) per joined player in ascending id order, not Recipient::All: a connected client that has not joined (or was rejected) holds no snapshots, so deltas would be meaningless or break its replica.
 - A rejected EditResult goes only to its issuer. Nobody else's replica needs it, and its issuer still learns why (the client can use the CommandId).
 - The sender id from the transport is authoritative: the host overwrites EditCommand.issuer and CommandId.issuer before applying (F031's decision).
@@ -473,23 +470,21 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - Hello does not carry a gen params hash, so the host does not check it; Welcome reports it for the client to show or check.
 - Snapshots carry storage as stored (not compacted); it is always well formed, and chunk hashes are canonical either way.
 - The host holds no inventories yet (F034) and no save path (F035); `Host::new` will gain what those need.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 11:20 — F033 Replica fed only by ServerMsg stays hash-identical over 10,000 random edits — passed
 
 **Decisions:**
+
 - The replica lives in rmc_host (the test path names it there) as a public, Bevy-free type. rmc_client does not depend on rmc_host, so F053's Bevy Replica resource will be separate; it can mirror this logic. The testkit or bots may use this one.
 - No gap repair yet: a refused delta is only reported (ReplicaError::Deltas). F034 adds the SAD §8.5 rule (send RequestChunk, ignore that chunk's deltas until the snapshot) and the host's RequestChunk handler.
 - Snapshot storage is validated (well formed, palette materials known) because insert_chunk trusts its input and a bad palette would panic later. This is the same reasoning F025 and F030 used. Unknown palette entries are refused even when unused, since a correct host with the same table (checked at Hello) never sends them.
 - Replica chunks keep modified = false from snapshots and become true on applied deltas (apply_delta's rule). Nothing reads `modified` on a replica.
 - Reviewer (PASS) raised two minor gaps, both fixed: the palette-material check and ignoring Rejected after join.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 11:40 — F034 RequestChunk repairs a revision gap; inventories tracked per player — passed
 
 **Decisions:**
+
 - Only a forward gap (delta revision > local + 1) is repaired. A stale delta (revision <= local) means a duplicate or old message; the replica already holds a newer chunk, so it is refused and reported as before (ReplicaError::Deltas) with no request. This keeps F033's handle_edge_cases expectations.
 - A gap is not an error: handle returns Ok and the repair runs. NotResident, unknown-material and other delta errors are still reported, not repaired (the SAD names only revision gaps).
 - While a chunk is waited for, Full deltas for it are ignored too, even though Full is not revision-checked. The snapshot follows anyway, and this keeps an older Full from overwriting newer state.
@@ -497,12 +492,11 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - Host inventories are a BTreeMap, not the SAD's HashMap (rule 4; nothing iterates it for output yet, but this rules it out). An inventory is created at join, so a joined player has Some(empty).
 - The host sends the issuer's full totals, not the increment, and only when an applied result has yields. No Inventory goes out at join (it is empty, and that matches a fresh replica). Inventories are not saved; the save format (F027) has no field for them, and Phase 1 does not need them across sessions.
 - test-fix (commit c8e0392): host::tests::edits_applied_in_arrival_order asserted that joined players receive only Applied messages, but its breaking Damage now also sends an Inventory to the issuer. The test-fix commit first left Inventory messages out of the comparison, so it passed on the old code. The feature commit then made it exact again: the expected stream includes the Inventory message after the issuer's yielding result, and the test checks that exactly one result yields.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 12:00 — F035 Host thread wakes on message arrival; SaveRequest handled — passed
 
 **Decisions:**
+
 - The wake path is a provided method on Transport (`wake_signal`, default None) rather than a change to spawn_host_thread's signature, which stays as the SAD gives it. A network transport can offer the same signal later; one without it falls back to timer ticks.
 - The wake channel has capacity 1 and the endpoint sends the token after the message. The thread drains tokens before tick() calls recv(), so a message is never stranded waiting for the timer. At worst a wake finds nothing to do, which is harmless.
 - Save runs synchronously inside the tick, on the host thread, from the world as it is at that point in the message order. Edits that arrive after the request in the same tick are not in it. Moving the file write off the host thread (save::snapshot and save::write are already split) can come later if save time shows up in tick latency.
@@ -510,12 +504,11 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - A SaveRequest from a player that has not joined is ignored, like every other message before join.
 - noise_crate_version is a SaveConfig string that the caller supplies, because worldgen does not expose a version constant yet (F040 should, and the app should pass it in). The test uses "fastnoise-lite 1.1.1".
 - Autosave every 5 minutes and save on quit are F0xx app features ("Save/load from the app"). Host::save() is public for them, and HostHandle::stop() hands the Host back so a final save can run after the thread ends.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 12:20 — F040 GenParams from worldgen.ron, seeded fastnoise-lite layers, surface + strata — passed
 
 **Decisions:**
+
 - `gen` is a reserved keyword in Rust 2024, so the module is `r#gen` and libtest names the tests `r#gen::tests::...`. features.json says `gen::tests::...`; verify-features.sh's substring fallback matches exactly one test for each, and pass-feature accepted them as "(substring match)". features.json was not edited.
 - worldgen.ron names materials by key (data, not code) and Generator::new checks them against the table and the SAD's tags (soil layers "soil", strata "stone"). Code never branches on a key or id.
 - "Depth band" means depth under the surface cell (0 = topmost solid), so strata follow the terrain. Boundaries are perturbed by 2D noise per boundary (one seed each), not 3D noise: it is cheaper (no 3D samples in steps 1–2) and the SAD only asks for noise-perturbed boundaries. If a perturbed boundary rises above the one before it, the band in between thins out to nothing locally.
@@ -523,69 +516,63 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - The named surface test only asserts what later steps keep: the top 4 cells (caves are suppressed there) and that the cell under the dirt is not soil (a cave, ore or stone are all allowed). It also uses interior chunk columns, away from F044's bedrock edge columns. The strict profile check is on base_volume (steps 1–2), which later steps do not change.
 - No golden output hash: retuning worldgen.ron or adding steps (F041–F044) would move it. Cross-machine stability rests on fastnoise-lite being pure f32 arithmetic plus an integer floor.
 - NOISE_CRATE_VERSION is exported for the save header (F035 left it to the caller). generate_chunk does not take bounds. Bedrock edge columns (F044) will need the world bounds, either in GenParams or as a Generator argument; that is for F044 to decide.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 12:45 — F041 Caves and worm tunnels, suppressed near surface — passed
 
 **Decisions:**
+
 - "Suppressed within 4 cells of the surface" means caves never touch depths 0..=4: the surface cell and the 4 cells under it, which is 5 cells. That is the more conservative of the two readings (depth < 4 would leave only 4). It also covers F040's test, which checks the top 4 cells.
 - Depth is measured from the column's step-1 surface, as for the strata. Caves carve soil too where dirt reaches below the margin (dirt can run to depth 6).
 - The suppression is a hard cutoff with no threshold fade, so where a blob reaches the margin it gets a ceiling that follows the terrain 5 cells down. A fade would be another parameter that the SAD does not ask for; worldgen.ron can add one later.
 - One blob noise and one worm pair, not lists. The SAD names a single worm noise made of two thresholded noises. More layers can come later as list fields without changing these layer ids.
 - The float comparisons are at the noise boundary (rule 3): each sample is thresholded to air right away.
 - The worm noises have different frequencies so their sheets are not parallel copies, and so swapping a and b moves the params hash.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 13:15 — F042 Ores only in stone-tagged cells within depth ranges — passed
 
 **Decisions:**
+
 - test-fix commit f31e752 before the feature: no_caves_within_4_of_surface asserted that the full volume differs from base_volume only by air, which ores break. Its cave checks now read cave_volume (steps 1–3) and the chunk is still compared exactly with volume() (all steps). The commit also added cave_volume (then equal to volume) so it compiled and passed on its own.
 - "Depth-ranged" means depth under the surface cell, as for strata (0 = topmost solid cell), so ore bands follow the terrain. Both ends are inclusive.
 - Ores replace only cells whose current material carries the "stone" tag, so they never replace air, soil, or an earlier ore (ores are not stone-tagged). Overlapping ores: the earlier one in the list wins; this is fixed order (rule 4).
 - Ore materials must carry the "ore" tag (GenError::MissingTag otherwise), matching the SAD §6 tag list.
 - Thresholds were tuned from 0.6/0.65 (12.7% of stone) down to 0.7/0.75 (7.6%) so ores stay sparse.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 13:45 — F043 Glowcrystal on cave walls using 34³ border evaluation — passed
 
 **Decisions:**
+
 - Two test-fix commits before the feature, no assertion changes: 70d5c8e points the ore tests at ore_volume (steps 1–4), because crystals replace stone with a non-ore; dc9fa76 points cave_volume_border_matches_neighbors at ore_volume, because step 5 changes only the inner 32³ so volume() borders no longer equal the neighbour's finished cells.
 - volume() holds every step, but its border cells hold steps 1–4 only (step 5 cannot evaluate them without cells beyond the border). ore_volume is the fully consistent 34³ volume.
 - Candidates: stone-tagged after step 4 (so never ore, soil or air) with any of the 6 face neighbours air after step 4. No depth limit: stone is never exposed at the surface (soil is at least 4 cells and slopes are gentle), so in practice these are cave walls, floors and ceilings.
 - The chance is an integer in millionths (rule 3) and the pick is a hash of the world cell and the full seed, so neighbouring chunks agree and generation order does not matter.
 - One crystal entry, not a list: the SAD names a single glowcrystal step. A list could come later at LAYER_CRYSTAL + i.
 - Chunk row 0's bottom cells can see "air" at y = -1 (caves below the world); F044's bedrock bottom 2 layers overwrite them.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 02:50 — F044 Bedrock shell and border continuity across all faces — passed
 
 **Decisions:**
+
 - test-fix commit e889790 before the feature, no assertion changes: it added Generator::shell_volume (then equal to ore_volume) and pointed the crystal tests' oracle (step4_at and the border check) at it, because step 5 now reads the shell.
 - World bounds live in GenParams, so generate_chunk keeps SAD §9's signature (seed, pos, &GenParams, &MaterialTable) and the params hash covers them. They duplicate the World / Welcome / save-header bounds; whoever wires worldgen into the host must build the World from `params.bounds.aabb()` (or check that they agree).
 - Order: the shell is applied before step 5 reads neighbours, and step 5 skips shell cells. The result is the same as SAD's "6 after 5" for every shell cell, and it keeps F043's rule that crystals face air in the finished world (a crystal whose only air was a cave cell later filled by the shell would break it).
 - "World-edge columns" are the full height of the bounds (no ceiling), wall_cells = 1 thick. "Bottom 2 layers" are the 2 lowest y rows inside the bounds. Cells outside the bounds are never touched, so chunks outside the world generate as before.
 - Bedrock needs no tag (SAD §6 gives it none); it must be solid and not diggable. Crystals skip shell cells by position (not by material id), so a stone-tagged bedrock material cannot become crystal (reviewer note).
 - Reviewer verdict: PASS, no SAD violations.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 03:10 — F045 Parallel generation of 256 chunks: under 10 s in dev profile (3 s target measured by bench at M8) — passed
 
 **Decisions:**
+
 - The timed span is Generator::new plus generate_world, but not reading the RON files: "full worldgen" means building the noise layers and all chunks.
 - Parallel generation lives in rmc_worldgen (rayon, as SAD §9 says) and returns `Vec<(ChunkPos, Chunk)>` rather than filling a World. Rule 2 lets cells change only via World::apply/apply_delta/insert_chunk, so whoever builds the host world inserts these in order with insert_chunk, using `params.bounds.aabb()` (or `Generator::bounds()`) as the World's bounds.
 - The test does not assert a speedup over sequential generation. That would be flaky on shared CI runners. Order and thread-count independence are checked instead, and the 3 s release target stays with the criterion `gen_world` bench (F081/F082).
 - No dev-dependency was added: rayon was already a normal dependency of rmc_worldgen.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 03:45 — F050 rmc_testkit TestApp: headless app, manual time, in-process synchronous host, step() — passed
 
 **Decisions:**
+
 - rmc_client must not depend on rmc_host (SAD §4 graph), so the client talks through the HostLink trait. The test kit wraps ClientEndpoint in a private EndpointLink; rmc_app will do the same with spawn_host_thread. F053's Replica resource should read FromHost and write ToHost (e.g. RequestChunk), not touch the link.
 - Latency: a message written in frame N is sent at the end of frame N, the host applies it at the start of step N+1, and the result arrives in step N+1's update. That is 2 steps from writing to visible result, which matches latency_dig (≤ 2). The reviewer noted that SAD §12.1's "within one step" counts from the step that ticks the host.
 - One boot step inside TestApp::new: Bevy's first ManualDuration update has zero delta, so without it the first step() would not advance 1/60 s. After new(), frame 1 has run and Hello has gone out; the first step() joins the player and delivers the world.
@@ -594,66 +581,60 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - TestCamera is a placeholder at a fixed pose. When F056 adds the game camera, the test kit should point that camera at TestRenderTarget and drop TestCamera.
 - Plain `cargo test --workspace` (the commit gate) uses whatever adapter wgpu finds; boots_without_window needs one. The test logs the adapter name.
 - Reviewer verdict: PASS, no SAD violations. Its gaps were that render-mode time was not checked (added: 5 steps = 5/60 s), that no pixels are checked (that is F051's screenshot test), and that the camera pose is fixed (placeholder).
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 04:00 — F051 TestApp screenshot via Screenshot::image and ScreenshotCaptured observer — passed
 
 **Decisions:**
+
 - The device poll is needed on WARP. Bevy's readback maps the buffer and relies on the poll at the next queue submit. On WARP that poll found the copy unfinished every frame, so 60 steps passed without a capture (the callback only ran when the device was dropped: "Failed to send screenshot: sending on a closed channel"). Waiting for submitted work after each step runs the map callback right away. PollError is not re-exported by bevy, and with no submission index it can only be Timeout, so a poll error logs a warning and stepping continues.
 - Screenshots advance the game: they use step(), as SAD §12.1 says, so the host ticks too. Scenarios that count steps should expect a screenshot to use 2 or 3 of them.
 - The test scene is its own cube and clear color, not the world, because no chunks are meshed until F054–F056. The checks are semantic (colors by channel dominance with wide margins), never golden images, so tonemapping and adapter differences do not matter.
 - Saving PNGs to target/e2e/<name>-<step>.png (SAD §12.4) is left to the first E2E scenario that needs it; RgbaImage::save is enough for that.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 04:15 — F052 Input injection: press/release/hold/look/click as Bevy messages — passed
 
 **Decisions:**
+
 - Messages are written into the world immediately rather than buffered in TestApp. That is the same thing as writing them "before each update()" (SAD §12.2), since the next call is the step's update, and Bevy's message double buffer keeps them for that frame's readers.
 - `press` writes one Pressed message; ButtonInput keeps the key held across frames until a Released message. No repeat messages are sent (the game reads `pressed`, not text repeats).
 - `hold(k, n)` = press, n steps, release. The key is held for exactly n updates, and the release arrives in the step after hold returns, so after hold the key still reads as held until the next step. `click(b)` = mouse_down, one step, mouse_up (a press and release in the same frame would show `pressed` false, and a pickaxe reading `pressed` would miss it).
 - Logical keys follow a US layout so `ButtonInput<Key>` and egui text input (F072) see plausible keys; the game itself reads physical `KeyCode` (SAD §11).
 - The window field is `Entity::PLACEHOLDER`: the test kit has no window, and InputPlugin does not read the field.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 07:50 — F053 Replica resource and ServerMsg handlers with dirty-neighbor marking — passed
 
 **Decisions:**
+
 - "Face-adjacent neighbours when a changed cell lies on a chunk border" is implemented as a superset: every chunk whose 34³ MeshInput (SAD §11.2) holds the cell. For a face cell that is exactly the face neighbour. A cell on an edge or corner also marks the edge and corner neighbours, because their meshes read it for AO. Without that they would keep stale AO.
 - Snapshots and Full deltas mark the chunk and all 26 neighbours, because any border cell may have changed. Over-marking only costs a remesh. Only resident chunks are marked; a chunk that becomes resident later is marked by its own snapshot.
 - The Replica resource is absent until Welcome (SAD's `Replica(World)` has no world before then). F055 can detect a rejoin with `Res<Replica>::is_added()` and drop old meshes.
 - The `Replica::handle` logic duplicates rmc_host::replica (about 60 lines) because of the dependency graph. Moving it into rmc_world/rmc_protocol is a possible later refactor.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 08:30 — F054 GreedyMesher with AO in merge key — passed
 
 **Decisions:**
+
 - Positions are chunk-local meters (cell × 0.5). The chunk's mesh entity goes at `pos.origin_cell().min_corner_m()` (F055/F056).
 - Vertex color = material sRGB color converted to linear (bevy Color::srgba_u8().to_linear(); Bevy vertex colors are linear) × AO factor. The factors per level are 0 → 0.4, 1 → 0.6, 2 → 0.8, 3 → 1.0 (`AO_FACTORS`). Alpha = emissive strength (the material color's alpha is dropped), per SAD.
 - Cells outside the bounds, cells in non-resident chunks and unknown material ids read as air / not Solid, the same as World::is_solid. The world's outer surface is therefore meshed, and a chunk is remeshed when a neighbour arrives (F053 already marks all 26 neighbours on a snapshot).
 - One test expectation of my own was wrong before the first commit (removing only the chunk above a buried chunk does not give a single 32×32 top, because the diagonal chunks above occlude the edge row). I corrected it and added the edge case as its own check. No committed test was changed.
 - Reviewer verdict: PASS, no SAD violations. Its minor gap (from_world at negative chunk coordinates) is now covered.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands).
-
 
 ### 2026-10-18 06:32 — F055 Async mesh pipeline with revision discard, budgets, nearest-first, MeshStats resource — passed
 
 **Decisions:**
+
 - Nearest-first is integer: squared distance in cells from the chunk's center cell (origin + 16) to the camera's cell (`CellPos::from_meters`), ties by ChunkPos, so the order is deterministic. "The camera" is the active `Camera3d` with the lowest `order`, then the lowest entity; with none, the world origin. If F056/F057 add several 3D cameras, the game camera should be order 0.
 - One job per chunk at a time. A chunk dirtied again while its job runs stays queued and gets a new job when the old one ends. Revision discard alone would miss a neighbour's border edit, because that does not bump this chunk's revision; the old result is then uploaded and the chunk meshes again.
 - "Initial load" ends the first frame after a Welcome when the queue, running jobs, ready results and the replica's dirty set are all empty and at least one chunk was meshed. A later Welcome starts a new initial load. The reset is triggered by the `FromHost(Welcome)` message, not `Res<Replica>::is_added()`, because replacing an existing resource does not set its added tick.
 - Entities carry no material yet; F056 adds the StandardMaterial (and the emissive extension, F058), for example on `Added<ChunkMesh>`. MeshPipelinePlugin is not added to TestApp in this feature: F056 wires rendering and the game camera into the test kit, and boot_renders reads `MeshStats` from there.
 - mesh_bytes counts vertex data (12 + 12 + 16 bytes per vertex) plus 4 bytes per index. It is the "mesh memory" figure for SAD §13's 256 MB target.
 - The unit tests build `Assets::<Mesh>::default()` directly instead of adding AssetPlugin, so they need no asset server.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands). Environment note for later sessions: this shell has RUST_BACKTRACE=1, and the rmc_client test PDB is about 1 GB, so every panicking test spends minutes symbolizing a backtrace (the process looks hung at low CPU, and `ls` in target/ slows down). Run failing-test loops with RUST_BACKTRACE=0. Linking the rmc_client test binary took 11–25 minutes this session (MSVC link.exe, I/O-bound).
-
 
 ### 2026-10-18 07:01 — F056 Rendering: StandardMaterial with vertex colors, lighting, bloom, camera — passed
 
 **Decisions:**
+
 - test-fix (commit 30229ab): screenshot::tests::captures_nonblack_image assumed the camera sees only the clear color. From F056 the game camera renders the world, so the test points the camera straight up from above its 1-chunk world before spawning the cube. No assertion changed.
 - The camera pose is a placeholder overview until the player controller (F060) moves the camera. It is a resource (CameraStart), not tied to Welcome. A move on Welcome would also displace anything spawned relative to the camera before the join, which broke the screenshot test's setup. rmc_app should insert CameraStart::overview(its bounds) or a spawn pose.
 - The lantern is a child of the GameCamera ("a point light on the player"). When F060 adds the player, the camera follows the eye, so the lantern follows the player.
@@ -662,55 +643,48 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - Hook note: .claude/hooks/protect-files.sh computes REL from a POSIX project dir, but the Write tool passes a Windows path (E:\...), so its tests/e2e/* exception never matches on Windows and every new E2E file with #[ignore] is denied. I wrote tests/e2e/tests/boot_renders.rs through the shell, which the rule allows in tests/e2e (CLAUDE.md requires #[ignore] there). The hook itself is protected and was not changed. It needs a fix by the owner (normalize E:\ to /e/ and backslashes to slashes).
 - Reviewer verdict: GAPS (minor). Fixed: logic-mode GlobalTransform did not propagate (TransformPlugin added, with a test). Not acted on (test depth, not SAD violations): no pixel check of the lantern or shadows, no cave-readability view, and the 40% threshold passes easily (terrain is about 85% of the frame). The caves will be seen in the first scenario that goes underground (F066/F067).
 - docs/screens/boot_renders-130.png: sky band, dark bedrock walls, green terraced terrain with AO and side-face shading.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands; the protect-files hook issue above).
-
 
 ### 2026-10-18 07:15 — F057 Fly camera (noclip) with keyboard/mouse; moves through solid cells — passed
 
 **Decisions:**
+
 - Toggle key is V (noclip's usual binding). F1 stays for the egui panel (F070/F072). F070 lists bindings in docs/CONTROLS.md and may move `enabled` into EditorState; FlyCam keeps its tuning either way.
 - Fly mode starts off. Once the controller exists (F060), it should skip its update while `FlyCam::enabled`, and re-enabling it snaps to a free cell (F070's unit test). Until then, nothing but the fly camera moves the GameCamera.
 - Movement uses Update and the virtual-time delta, not FixedUpdate: it is a debug camera with no collision, so it needs no fixed step or interpolation.
 - No world-bounds clamp: noclip may leave the world. The view from inside rock shows cave walls from behind (back faces are culled), which is the expected X-ray view (docs/screens/fly_camera-205.png).
 - Up/down are world Y, not camera up, so Space/Ctrl give the same height change whatever the pitch.
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands; the protect-files hook still denies new tests/e2e/*.rs files with #[ignore] through Write on Windows, so this scenario was written through the shell as allowed for tests/e2e).
-
 
 ### 2026-10-18 11:35 — F058 Emissive via ExtendedMaterial reading color alpha — passed
 
 **Decisions:**
+
 - "Adds color.a × emissive_scale to the emissive term" is read as adding `color.rgb × color.a × emissive_scale`, so a glowing cell glows in its own color (with its AO) instead of white. A strength of 0 leaves the fragment exactly as StandardMaterial shades it.
 - Emission is not scaled by the camera exposure (StandardMaterial's default emissive_exposure_weight is 0), so EMISSIVE_SCALE 1.0 makes strength 1 as bright as a fully lit white surface; the glowcrystal (strength 2) is twice that and blooms. Tune EMISSIVE_SCALE (or the material asset at runtime) if it reads too hot.
 - The extension is not bindless (no #[bindless]), so the combined material uses the non-bindless StandardMaterial layout. The extension binding is 100, as in Bevy's extended-material convention.
 - ChunkMaterial (plain StandardMaterial) is still created in rendering apps; it is the fallback when the emissive material is absent and keeps the F056 test's contract.
 - Only the forward main pass is replaced. If a later feature turns on the deferred prepass, EmissiveFromAlpha needs a deferred fragment shader too.
 - The protect-files hook still blocks new tests/e2e/*.rs files through Write on Windows, so emissive_glow.rs was written through the shell (allowed for tests/e2e).
-**Blockers:** none new (the Windows CRLF issue in verify-features.sh --all from F005 still stands; so does the protect-files hook path issue).
-
 
 ### 2026-10-18 12:40 — F060 Kinematic controller: swept AABB collision, gravity, walk — passed
 
 **Decisions:**
+
 - Out-of-bounds cells below or beside the world block, so the player cannot walk or fall out of the world. Above the top of the world is open sky, so standing on the full-height bedrock edge walls is possible.
 - Cells in chunks the replica does not hold block. A player waiting for chunks does not fall through, but a box that already overlaps one stays stuck until the chunk loads.
 - No push-out. A box that already overlaps a blocking cell (a Set onto the player's cell, or a spawn inside rock) is not moved out. It can still move away, because only layers it has not yet entered are tested. The reviewer flagged this. F070's snap-to-free-cell is where to add a de-penetration helper; F071's Set brush might also refuse cells overlapping the player.
 - Walk speed is applied instantly (no acceleration or friction). Mouse look runs in Update because AccumulatedMouseMotion is per frame, and movement runs in FixedUpdate. The camera follows the current fixed-step position until F062 adds interpolation.
 - Reviewer verdict: GAPS. Fixed: the plugin left Bevy's default 64 Hz fixed rate, and my test had hidden that by setting 60 Hz itself. The plugin now sets 60 Hz, and the test asserts the plugin's timestep. Recorded, not fixed: the no-push-out above. Also, `grounded` relies on g·dt² (5.5 mm at 60 Hz) exceeding SKIN_M (1 mm); at much smaller dt the player would hover in the skin gap. Not acted on (test depth): the proptest never uses negative coordinates.
 - The first build after adding proptest to rmc_client rebuilt Bevy and ran past two 10-minute tool time limits. Later builds are fast.
-**Blockers:** none new. The Windows CRLF issue in verify-features.sh --all from F005 still stands, and so does the protect-files hook path issue.
-
 
 ### 2026-10-18 16:05 — F061 Jump and one-cell auto step-up — passed
 
 **Decisions:**
+
 - "When grounded" means grounded both before and after this step's vertical move. A falling player never climbs: on the step it lands it stays below the ledge, and it can climb on the next step (one 1/60 s frame later).
 - Step-up smoothing is a visual eye offset; the collision box snaps up one cell. F062's interpolation should interpolate `eye()` (feet + offset), not only the feet. PlayerState (F064) should send the feet, not the eye.
 - Holding Space bunny-hops (jumps again on each landing). Space is also fly-up in fly mode; the controller is skipped while FlyCam is on, so there is no conflict.
 - Jump speed 7 m/s, so a jump clears 1 m (two cells) but not 1.5 m.
 - Uncommitted script edits (jq CRLF strip in pass/skip/verify-features/report.sh, run-overnight.sh JSON array parsing) and an untracked .mailmap were in the tree at session start. They are the user's Phase 2 handoff fixes, not a cut-off feature, so they were left untouched and kept out of this session's commits.
-**Blockers:** none new. The Windows CRLF issue in verify-features.sh --all from F005 still stands (the user's uncommitted jq wrapper addresses it), and so does the protect-files hook path issue.
-Addendum (F061 session): the stop hook requires a clean tree, so the user's pending script fixes and .mailmap were committed unchanged as 65f9724, not left in the tree. They were committed rather than stashed because stashing would rewrite run-overnight.sh on disk while the driver may be running it. These were already on the approved Phase 2 list. Still to do from that list: confirm `scripts/verify-features.sh --all` prints ALL_FEATURES_PASS when every feature passes.
-
 
 ### 2026-10-18 18:30 — OWNER housekeeping and Phase 2 backlog — passed
 
@@ -719,6 +693,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 19:00 — F062 FixedUpdate at 60 Hz with render interpolation — passed
 
 **Decisions:**
+
 - Only the eye position is interpolated. The rotation is not: mouse look applies in Update every frame, so it is already smooth and has no fixed-step lag.
 - The view is up to one fixed step (16.7 ms) behind the simulation, as in Bevy's example. A player standing still has prev == curr, so the existing plugin test's camera-at-eye check still holds.
 - A teleport (feet set outside FixedUpdate) glides over one fixed step instead of snapping. No snap threshold was added; F070's snap-to-free-cell may want to call `InterpolatedEye::at` after moving the player.
@@ -727,6 +702,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 20:10 — F063 E2E: walk_and_jump and step_up through injected input — passed
 
 **Decisions:**
+
 - The player is spawned by the scenario (`spawn_player`) rather than by the game, because no feature spawns one yet. F064 and later bots reuse it.
 - "A 2-cell wall stops them" is tested twice: on the ledge, where the wall is two cells above the ledge the player stands on, and from the floor.
 - Reviewer verdict: GAPS (minor). Fixed:
@@ -741,6 +717,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 21:00 — F064 Pickaxe: tools.ron profile, raycast targeting, swing interval, Damage edits, PlayerState at 20 Hz — passed
 
 **Decisions:**
+
 - The profile lives in rmc_world (Bevy-free), so the host can use reach for validation later. tools.ron also holds reach_m. A single `pickaxe` field avoids looking a tool up by key.
 - A swing needs a target. Holding at the sky or beyond reach sends nothing and does not start the interval, so the swing comes the moment a cell is in reach. Undiggable cells (bedrock) are still swung at; the host skips them (SAD §8.2).
 - The interval is counted in fixed-step time. 21 steps of 1/60 s fall a few ns short of 0.35 s, hence the 1 ms slack.
@@ -752,6 +729,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 21:45 — F065 HUD with HudState resource: crosshair, target outline, material name, damage progress, inventory — passed
 
 **Decisions:**
+
 - Damage progress is a client-side estimate, because the host never sends damage (SAD §7, §8.3).
   - It is the sum of the `Damage` this client sent per cell, counted only for cells that are diggable and solid in the replica, and capped at hardness.
   - It is forgotten when a delta or snapshot changes the cell's chunk/cell, and on Welcome.
@@ -763,6 +741,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 22:30 — F066 E2E: dig_cell_visible and latency_dig — passed
 
 **Decisions:**
+
 - "Visible delta" means the replica holds the broken cell and the cell's chunk has an uploaded mesh built from the replica's current chunk revision, so that step's rendered frame draws the hole. Latency counts from the step whose FixedUpdate sent the breaking swing.
 - The pipeline order (queue_dirty, poll_jobs, start_jobs, upload) makes 2 the minimum: delta in N+1, job started in N+1, polled and uploaded in N+2. The bound holds only if the mesh job finishes during frame N+1's render. That is likely on WARP/lavapipe, where a frame takes tens of ms and a chunk meshes in about 1 ms. A heavily loaded machine could see 3 (a spurious failure, never a vacuous pass).
 - The backdrop is chosen by log-luminance contrast, not RGB distance, because tonemapping compresses bright colors.
@@ -772,6 +751,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 17:30 — F067 E2E: dig_tunnel with TunnelBot; host/replica hash equality — passed
 
 **Decisions:**
+
 - "2-high tunnel" (SAD §12.3) means the smallest tunnel the player fits through.
   - With 0.5 m cells and a 0.6 × 1.7 m player, a literal 2-cell tunnel (1 m) cannot be entered, and "≥ 4 m deeper" would be impossible.
   - Width and height come from PLAYER_WIDTH_M / PLAYER_HEIGHT_M (+ SKIN_M): 2 × 4 cells.
@@ -787,6 +767,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 22:30 — F070 EditorState resource with keyboard bindings and docs/CONTROLS.md — passed
 
 **Decisions:**
+
 - The fly camera stays in its own `FlyCam` resource (V), rather than moving `enabled` into EditorState. The controller, pickaxe and HUD already read FlyCam, and two copies of the flag could disagree. The F072 panel should edit FlyCam::enabled directly.
 - "Re-enable snap-back" (SAD §12.4, fly_camera row) is read as: leaving fly mode drops the player at the camera, snapped to the nearest free spot. It falls back to the old position only when nothing in range is free. Noclip can then be used to move the player around in the editor.
 - Every editor key except F1 is ignored while the editor is closed. Digits and F-keys then stay free during play, and F071 can make the brush's left click and the pickaxe exclusive with `EditorState::open`.
@@ -798,6 +779,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 23:10 — F071 Brush ops through EditCommand: Set on face-normal side, Remove/Paint on hit, Box and Sphere — passed
 
 **Decisions:**
+
 - Brush reach is 32 m (`BRUSH_REACH_M`), not the pickaxe's 3 m. The SAD gives no number. A debug editor needs to reach across a room, and host reach validation is a Phase 1 no-op hook.
 - One edit per click (just_pressed in Update), not per held frame. "Left click applies" (SAD §11.6) reads as a click. It also keeps a held button from flooding the host with Box/Sphere commands.
 - The brush does not refuse a Set that overlaps the player's box. SAD §8.2 lets Set overwrite and says nothing about players. F074 (place_and_climb) should aim at a cell beside the player.
@@ -806,6 +788,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 23:55 — F072 egui panel (bevy_egui + inspector): brush, stats, gizmos toggles, seed, save/load buttons — passed
 
 **Decisions:**
+
 - Left side panel, not a floating window. Inside an egui Window, a scroll area is capped at the window's 420-pt default height, so the lower sections were cut off. A full-height side panel with a scroll area fits any view height.
 - F1 is the only way to close the panel; a side panel has no close button.
 - Worldgen seed + regenerate:
@@ -821,6 +804,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 23:59 — owner: M7 polish backlog from the M6 playtest — passed
 
 **Decisions:**
+
 - Playtest items left out on purpose (minor or already decided):
   - bunny-hop with no coyote time or jump buffer
   - grounded depends on dt
@@ -833,6 +817,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-18 23:45 — F073 Gizmos: chunk bounds, targeted cell, mesh-queue state — passed
 
 **Decisions:**
+
 - Chunk bounds draw only the resident chunks within CHUNK_BOUNDS_RADIUS = 1 chunk (on each axis) of the view ray's origin chunk: the fly camera while it is on, else the player's eye. Drawing every chunk of a 256-chunk world hid the terrain. With no view ray (no player, fly off), no bounds are drawn.
 - The targeted-cell gizmo shows the brush's target, not the pickaxe's: same ray, BRUSH_REACH_M, fly camera aware. The HUD already outlines the pickaxe target. The gizmo draws the hit cell (magenta) and, when it differs (Set), the cell the brush shape is centered on (cyan).
 - Mesh queue lists every chunk the pipeline knows, with MeshQueue::state's earliest state. Each is drawn as a box 4 % inside the chunk:
@@ -844,6 +829,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 04:10 — F074 E2E: place_and_climb and editor_brush_sphere — passed
 
 **Decisions:**
+
 - "Climb" means walking onto a one-cell platform using the controller's auto step-up (SAD §11.4), with no jump. A 3 × 3 platform is placed as 9 Cell-brush clicks, not as one Box brush (a Box of size 1 is a 3 × 3 × 3 cube, not a platform).
 - Placing order is far row first, then outer columns before the middle, so a placed cell never blocks a later aim ray. The aim is still verified before every click.
 - The bot uses whatever brush material the editor holds (by default the first `placeable`). It never picks a material by key (rule 5). The e2e test, being a test, asserts the key brass_plate.
@@ -854,6 +840,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 05:20 — F075 Save/load from the app: autosave timer, quit save, SaveRequest, CLI --save path, load on start — passed
 
 **Decisions:**
+
 - `--seed` is optional. With a save in `--save`, the save's seed is used; an explicit seed that differs fails the load loudly (SAD §10 "fail loudly on any mismatch"). With no save, DEFAULT_SEED = 1 (TestApp's default).
 - The autosave timer is client-side (a SaveRequest every 5 min of game time), so the host's existing SaveRequest path is the only writer. The quit save is host-side (stop the thread, then `Host::save`), because a SaveRequest sent while quitting could race the thread's stop.
 - Runtime Load has no protocol message (SAD §8.4 lists none). It goes from the app, which owns the host thread, as a `HostHandle::submit` job. Clients see an ordinary Welcome + snapshots, which the replica and mesh pipeline already handle as a rejoin.
@@ -863,6 +850,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 07:10 — F076 E2E: save_load_roundtrip — passed
 
 **Decisions:**
+
 - `TestApp::load` takes `(dir, TestConfig)`, not just a path as in the §12.2 sketch. The header has to be matched against an expected seed and bounds, and render/size are not in the save. A mismatch fails loudly (§10).
 - `TestApp::save` goes through the game's SaveRequest path rather than calling `rmc_world::save` directly, so the scenario covers the client → host save.
 - The compared screenshots hide the HUD root and the default gizmo group (the target outline). The HUD lists the inventory, which saves do not hold. The outline follows whatever the pickaxe targets. The reviewer noted the outline in the control shot; hiding it took the control RMS from 0.026 to 0.0228, which is the world change alone.
@@ -872,6 +860,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 08:40 — F077 rmc_app main: windowed game (host thread, client plugins, CLI); playable with cargo run — passed
 
 **Decisions:**
+
 - The game spawns the player itself (no feature did, and TestApp scenarios place their own). Spawn = topmost solid cell of the middle column, after the whole world is resident, so `blocks()` never sees a missing neighbour chunk.
 - After Load or Regenerate the player goes back to the spawn rather than keeping its pose: the save holds no player pose (§10), and a regenerated world can bury or strand the old position.
 - Headless means logic-only (no render plugins), as TestApp's `render: false`. That is what the tests need, and it is what the F108 `--headless --seasons N` path will want.
@@ -885,6 +874,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 10:30 — F086 Player-overlap safety: host skips Set cells inside a player's box; controller pushes an embedded player out — passed
 
 **Decisions:**
+
 - `World::apply_keeping_clear` is a variant of `World::apply`, not a new way to change cells. Rule 2's list is read as including it. The floats (player box → cell box) stay in rmc_host. rmc_world gets only integer `CellAabb`s (rule 3).
 - The skip covers every `Set`, `Set(air)` included, which is the owner's "any Set cell" wording. An embedded player can still be freed with Remove, or by the client's push-out.
 - The protected box is the last reported one (20 Hz). A Set that lands between reports can still catch a moving player; the client's push-out covers that.
@@ -896,6 +886,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 12:40 — F087 Lantern falloff: close rock is not blown out; dark materials stay dark at every distance — passed
 
 **Decisions:**
+
 - Derived ceiling: 120. That is about twice basalt's own color luminance (62.6). The measured value after the fix is 74.3 and before it was 241.5. It leaves room for adapter differences, and a lantern that washes basalt out to a light gray still fails.
 - Fix approach: offset the light and dim it. A larger radius would not work, because in Bevy 0.20 `PointLight::radius` only softens specular; the diffuse falloff stays a bare 1/d² (checked in bevy_pbr pbr_lighting.wesl). Exposure and bloom changes would not work either, because they scale near and far alike and do not change the ratio.
 - The lantern has no shadows. Hung 2 m behind the eye, it can light faces of a cavity behind thin rock behind the player. This is accepted: it is minor, and shadows on the lantern would cost too much on WARP.
@@ -907,6 +898,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 06:45 — F088 Readable horizon: distance fog, a sky with a sun direction, a world shell that does not read as a black void — passed
 
 **Decisions:**
+
 - Sky: a CPU-generated cubemap Skybox, not Bevy's Atmosphere. It is cheap on WARP: one full-screen pass, ~3 MB, built once at startup. Its horizon equals the fog color by construction.
 - Fog: linear rather than exponential, so nothing within 24 m (walls, tunnels, rooms, the lantern tests) is touched. It has no directional-light tint: Bevy's tint varies with shadows, which would break the seamless match with the sky.
 - Threshold NEAR_BLACK 64: the old look measured p10 49.9 in a level view (the slab itself was about 25). The new look measures about 145.
@@ -921,6 +913,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 07:45 — F089 Terrain depth cues: per-face directional shading baked into vertex colors — passed
 
 **Decisions:**
+
 - Shade values: the ones in the feature notes. ±X gets 0.8 and ±Z gets 0.7, so two walls meeting at a corner read apart.
 - The factors multiply the linear color, the same as AO. After the sRGB encode, top vs ±Z is about 1.0 vs 0.85.
 - Emissive faces are shaded too, consistent with how AO already darkens them. F092 (glow) can revisit this if the owner wants glow to be uniform.
@@ -929,6 +922,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 09:45 — F090 Hit feedback: every swing and every break gives visible feedback, mirrored in HudState — passed
 
 **Decisions:**
+
 - Gizmo-drawn effects (wireframe flash and chips), not meshes or particles: no new crates, no assets, and nothing extra in logic-only apps.
 - Pulse and effect lengths are client render constants in hud.rs, like the existing HUD sizes; they are not RON data (rule 5 concerns material behavior).
 - `Full` deltas and snapshots show no break effect: a pickaxe swing (Cell or a small Sphere) never produces a Full delta.
@@ -939,6 +933,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 09:48 — F091 Cursor grab: locked and hidden while playing, Escape releases, click re-grabs, editor open releases — passed
 
 **Decisions:**
+
 - Locked is always requested. bevy_winit 0.20 (`winit_windows.rs`) already falls back to Confined when Locked fails, as it does on Windows, so the plugin does not pick per platform.
 - The fly camera's mouse look is gated too: the free-cursor spin is the same problem there. As a result, with the editor open the view does not turn. The brush aims at the view center, so the user aims with F1 closed and then opens the editor; WASD fly still works with it open.
 - Focus loss releases the cursor. This is not in the feature note, but it is the conservative reading: alt-tab must not leave a hidden, locked cursor or a view that turns.
@@ -948,6 +943,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 10:24 — F092 Glow shown where it matters: crystal in a dark cave, and failure screenshots for the older scenarios — passed
 
 **Decisions:**
+
 - The lantern is off in glow_in_cave: the note's "closed dark room". Ambient stays as the game has it (§11.3: caves stay readable), so the stone is dim gray (83.7), not black.
 - The crystal is flush in the wall rather than protruding. That way the projected front face is the crystal's whole visible area, and the pixel classification needs no side faces.
 - emissive_glow is kept as is, apart from run_scenario. glow_in_cave is the scenario that shows glow against geometry.
@@ -957,6 +953,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 12:25 — F080 ChaosBot and soak_chaos E2E — passed
 
 **Decisions:**
+
 - The soak uses the default world (the real game). A 128³ world cut the WARP step time only from about 280 ms to 205 ms, because most of the cost is fixed per frame, so the smaller world was not worth the loss of coverage.
 - The p95 is recorded, not asserted, on every adapter. SAD gives the target for lavapipe and says not to assert it on CI. WARP is about 10× over.
 - ChaosBot does not fail on penetration; it counts the frames. Chaos placing near the player is in scope, and the host already skips cells in player boxes.
@@ -966,6 +963,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 14:40 — F081 Criterion benches: mesh_chunk, gen_world, host_tick_100, palette_set_get; results in docs/perf.md — passed
 
 **Decisions:**
+
 - "benches_compile" cannot build the other crates' benches from inside rmc_world (rmc_world cannot depend on them), so the test checks the wiring and the recorded results. The compile itself is enforced by `--all-targets` in the commit gate.
 - Benches use the shipped assets and the real default world rather than synthetic chunks, so the numbers are what the game sees.
 - mesh_chunk meets 2 ms with about 15% margin on this CPU; F082 decides whether the mesher needs work (its note covers binary-greedy-meshing).
@@ -974,6 +972,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 17:30 — F082 Performance pass against §13 targets; initial-load upload burst — passed
 
 **Decisions:**
+
 - "Fully meshed" means every in-bounds chunk is resident and meshed. The host sends one snapshot per resident chunk, and today's hosts (generated world, or a save loaded over it) hold every in-bounds chunk, so this matches. Against a host that leaves chunks non-resident, the burst budget would never end and `initial_load_done` would stay false (the reviewer's concern). No protocol signal was added for "all snapshots sent". A frame-count fallback would bring back the early-end race. Revisit if Phase 2 or streaming ever sends a partial world.
 - The in-flight budget stays at 8 during the initial load (SAD: "8 jobs in flight"). So in practice at most 8 meshes per frame reach the 32 upload budget. boot_renders still meshes all 256 chunks within 120 steps.
 - Frame rate is not measured: sessions cannot open a window (rule 13), and the E2E adapters are software. It stays manual, using the stats panel's FPS.
@@ -982,6 +981,7 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 18:30 — F083 CI: Linux tests+E2E on lavapipe, Windows build+E2E on WARP, windows-release artifact — passed
 
 **Decisions:**
+
 - Splitting the jobs: `cargo test -p <pkg>` resolves features for that package alone. `cargo tree` diffs show rmc_client, rmc_testkit/rmc_e2e and rmc_app each get smaller feature sets than the workspace build for image, arrayvec, profiling, regex-*, rand and getrandom. So verify-features.sh rebuilt Bevy three times (about 20 min each on CI), and e2e.sh rebuilt it once more. That costs too much time and disk for one job.
   - `resolver.feature-unification = "workspace"` would fix this, but it is still nightly-only in cargo 1.99.1.
   - A workspace-hack crate would pull Bevy-graph crates into the Bevy-free crates (rule 1).
@@ -995,14 +995,24 @@ Addendum (F061 session): the stop hook requires a clean tree, so the user's pend
 ### 2026-10-19 21:10 — F084 Playtester report and screenshot gallery — passed
 
 **Decisions:**
+
 - Playtest A1, "a one-cell hole cannot be descended": the SAD fixes the player AABB at 0.6 m wide (§11.4) and cells at 0.5 m (§2). A 0.6 m box cannot fit a 0.5 m shaft, so a player has to dig a 2-cell-wide hole to go down. That is the designed behavior, so the player box was not narrowed. If the owner wants one-cell shafts, the SAD constant has to change.
 - Playtest A2, "the fly camera goes blank high above the world": SAD §12.4 says the fly camera is noclip and not clamped, and §11.5 specifies linear distance fog. Past the fog distance from all geometry, the frame is all fog color, as specified. Clamping the camera would contradict §12.4, and height-faded fog is a look change for the owner. Left as is.
 - "Stats panel not visible in screenshots": TestApp's render mode does not add EditorPanelPlugin (F072/F077 decisions). The panel is covered by its unit test, so this is not a defect.
 - The playtester's look/feel list (fog band edge, wireframe chips, flat surfaces, no place control) is owner work or later features. It is recorded in docs/PLAYTEST.md.
 
+### 2026-10-20 00:20 — F085 docs/REPORT.md via scripts/report.sh — passed
+
+**Decisions:**
+
+- REPORT.md is a generated file and is committed as generated. Its "at commit" line names the HEAD it was built from, which is the commit before the one that adds it.
+- Phase 2 features (E0–E5) appear in the report as not passing. The report covers all of features.json rather than hiding unstarted work.
+
 ## Commits
 
 ```
+0433f7b chore(F085): progress
+2a43a74 feat(F085): docs/REPORT.md via scripts/report.sh
 1bd70d0 chore(F084): progress
 db7d1f7 feat(F084): Playtester report and screenshot gallery
 105d692 chore(F083): progress
@@ -1061,6 +1071,4 @@ fb0b359 feat(F070): EditorState resource with keyboard bindings and docs/CONTROL
 45ec465 chore: refresh walk_and_jump screenshot (now shows the F065 crosshair)
 74cbbf6 feat(F066): E2E: dig_cell_visible and latency_dig
 3d153c4 chore(F065): progress
-cff69d0 feat(F065): HUD with HudState resource: crosshair, target outline, material name, damage progress, inventory
-f5f191c chore(F064): progress
 ```

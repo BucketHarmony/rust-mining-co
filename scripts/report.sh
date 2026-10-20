@@ -17,11 +17,16 @@ out=docs/REPORT.md
   passed=$(jq '[.features[] | select(.passes)] | length' features.json)
   skipped=$(jq '[.features[] | select((.passes | not) and .skipped)] | length' features.json)
   echo "**$passed / $total features passing, $skipped skipped, $((total - passed - skipped)) not passing.**"
+  # Phase 1 ids are F0xx (docs/SAD.md), Phase 2 ids are F1xx (docs/SAD-P2.md).
+  for phase in 1 2; do
+    jq -r --arg p "F$((phase - 1))" '[.features[] | select(.id | startswith($p))]
+      | "- Phase '"$phase"': \([.[] | select(.passes)] | length) / \(length) passing, \([.[] | select((.passes | not) and .skipped)] | length) skipped"' features.json
+  done
   echo
   echo "## How to play (Windows)"
   echo
   echo '```'
-  # Drop any user@ from the remote URL so the clone command works for anyone.
+  # Drop any user@ from the remote URL; the reader clones with their own GitHub credentials (the repo is private).
   repo=$(git remote get-url origin 2>/dev/null | sed -E 's#^(https?://)[^@/]*@#\1#')
   echo "git clone ${repo:-<repo>} C:\\src\\rust-mining-co   (or download the CI \"windows-release\" artifact)"
   echo "cd C:\\src\\rust-mining-co"
@@ -53,23 +58,25 @@ out=docs/REPORT.md
   echo
   echo "## Decisions and blockers (from PROGRESS.md)"
   echo
-  # Each session block's full Decisions section, and its Blockers unless "none",
-  # under that block's heading.
+  # Each session block's full Decisions section, and its Blockers unless they
+  # start with "none", under that block's heading. A section whose first line is
+  # empty (bullets follow) gets its label when its first bullet arrives.
   awk '
+    # out() tracks the last line so a label never lands on a list item and blank lines never double.
+    function out(l) { if (l ~ /^[[:space:]]*$/ && blank) return; print l; blank = (l ~ /^[[:space:]]*$/) }
+    function label(l) { if (!shown) { if (any) out(""); out("### " head); shown = 1; any = 1 }; out(""); out(l); out("") }
     /^## / { head = substr($0, 4); shown = 0; mode = ""; next }
     /^(Done|Tests added|Next):/ { mode = ""; next }
-    /^Decisions:/ { mode = "Decisions"; rest = substr($0, 11) }
-    /^Blockers:/ {
-      mode = "Blockers"; rest = substr($0, 10)
-      if (rest ~ /^[[:space:]]*(none\.?|-)?[[:space:]]*$/) { mode = ""; next }
+    /^(Decisions|Blockers):/ {
+      mode = substr($0, 1, index($0, ":") - 1); rest = substr($0, length(mode) + 2)
+      if (mode == "Blockers" && rest ~ /^[[:space:]]*(none|-[[:space:]]*$)/) { mode = ""; next }
+      if (rest ~ /^[[:space:]]*$/) { pending = 1; next }
+      label("**" mode ":**" rest); pending = 0; next
     }
     mode == "" { next }
-    /^(Decisions|Blockers):/ {
-      if (!shown) { if (any) print ""; print "### " head; print ""; shown = 1; any = 1 }
-      print "**" mode ":**" rest
-      next
-    }
-    { print }
+    pending && /^[[:space:]]*$/ { next }
+    pending { label("**" mode ":**"); pending = 0 }
+    { out($0) }
   ' PROGRESS.md || echo "(none recorded)"
   echo
   echo "## Commits"
