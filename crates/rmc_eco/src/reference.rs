@@ -155,6 +155,82 @@ pub fn flat_sweep(flat: &mut FlatWorld, mut visit: impl FnMut(&mut FlatWorld, Ce
     }
 }
 
+/// The materials and constants the water reference reads.
+#[derive(Clone, Copy, Debug)]
+pub struct WaterRef {
+    /// Role `air` (the one `Phase::Air` material).
+    pub air: MaterialId,
+    /// Role `water`.
+    pub water: MaterialId,
+    /// `eco.flow_cap`.
+    pub flow_cap: i32,
+}
+
+/// The sideways divisor of SAD-P2 §7.3 B3: `(fill − fill_n) / 2`.
+const REF_SIDE_SPLIT: i32 = 2;
+/// The most water a cell holds.
+const REF_FULL: i32 = u8::MAX as i32;
+
+/// One water flow sweep (SAD-P2 §7.3 B steps 1, 2, 3 and 5) over every
+/// cell of `flat` in global order, written directly on the flat arrays
+/// for the oracle tests of [`WaterPass`](crate::water::WaterPass).
+/// Porous solids, magma and contact boiling are not modelled.
+pub fn flat_sweep_water(flat: &mut FlatWorld, ids: WaterRef) {
+    let moist = LayerId::Moisture;
+    let holds_water = |flat: &FlatWorld, c: CellPos| {
+        let m = flat.material(c);
+        m == Some(ids.air) || m == Some(ids.water)
+    };
+    let give = |flat: &mut FlatWorld, from: CellPos, to: CellPos, amount: i32| {
+        if flat.material(to) == Some(ids.air) {
+            flat.set_material(to, ids.water);
+        }
+        flat.set_layer(from, moist, flat.layer(from, moist) - amount);
+        flat.set_layer(to, moist, flat.layer(to, moist) + amount);
+    };
+    flat_sweep(flat, |flat, cell| {
+        if flat.material(cell) == Some(ids.air) && flat.layer(cell, moist) > 0 {
+            flat.set_material(cell, ids.water);
+        }
+        if flat.material(cell) != Some(ids.water) {
+            return;
+        }
+        let c = cell.0;
+        let below = CellPos::new(c.x, c.y - 1, c.z);
+        if holds_water(flat, below) {
+            let room = REF_FULL - flat.layer(below, moist);
+            let amount = flat.layer(cell, moist).min(room);
+            if amount > 0 {
+                give(flat, cell, below, amount);
+            }
+        }
+        for n in [
+            CellPos::new(c.x, c.y, c.z - 1),
+            CellPos::new(c.x - 1, c.y, c.z),
+            CellPos::new(c.x + 1, c.y, c.z),
+            CellPos::new(c.x, c.y, c.z + 1),
+        ] {
+            if !holds_water(flat, n) {
+                continue;
+            }
+            let (fill, fill_n) = (flat.layer(cell, moist), flat.layer(n, moist));
+            if fill_n >= fill {
+                continue;
+            }
+            let amount = ids
+                .flow_cap
+                .min((fill - fill_n) / REF_SIDE_SPLIT)
+                .min(REF_FULL - fill_n);
+            if amount > 0 {
+                give(flat, cell, n, amount);
+            }
+        }
+        if flat.layer(cell, moist) == 0 {
+            flat.set_material(cell, ids.air);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

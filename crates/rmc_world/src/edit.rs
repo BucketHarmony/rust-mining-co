@@ -1957,6 +1957,30 @@ mod tests {
     }
 
     #[test]
+    fn eco_put_layer_activates_like_any_touched_cell() {
+        let mut w = eco_world();
+        let (a, b) = (at(10, 10, 10), at(12, 10, 10));
+        set_at(&mut w, 1, "water", &[a]);
+        layer_at(&mut w, 2, b, LayerId::Moisture, 7);
+        layer_at(&mut w, 3, b, LayerId::Gas(FIREDAMP), 5);
+        for c in [a, b] {
+            for sweep in 0..crate::layers::N_SWEEPS {
+                w.eco_deactivate(c, sweep);
+            }
+        }
+        // An emptied water cell stays in the water sweep (it turns to air
+        // on its next visit).
+        assert!(w.eco_put_layer(a, LayerId::Moisture, 0));
+        assert!(active(&w, a, SWEEP_WATER));
+        // A dried air cell leaves it alone; the gas it still holds puts it
+        // back in that gas's sweep.
+        assert!(w.eco_put_layer(b, LayerId::Moisture, 0));
+        assert!(!active(&w, b, SWEEP_WATER));
+        assert!(active(&w, b, SWEEP_GAS + usize::from(FIREDAMP)));
+        assert!(!active(&w, b, SWEEP_GAS + usize::from(STEAM)));
+    }
+
+    #[test]
     fn boil_without_steam_room_loses_water_not_steam() {
         let mut w = eco_world();
         let a = at(10, 10, 10);

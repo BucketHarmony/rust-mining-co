@@ -192,16 +192,48 @@ impl World {
     /// Sets layer `id` at `cell` to `v` and returns whether it changed. On a
     /// change it bumps the chunk's `eco_revision` and, like
     /// [`World::eco_set`], adds the cell to the water sweep when it holds
-    /// moisture and to gas sweep `g` when it holds gas `g`. A cell outside
+    /// moisture or is water or magma, and to gas sweep `g` when it holds
+    /// gas `g`. A cell outside
     /// the bounds or in a non-resident chunk changes nothing. Panics if `id`
     /// is out of range or `v` does not fit the layer's type.
     pub fn eco_put_layer(&mut self, cell: CellPos, id: LayerId, v: i32) -> bool {
         assert!(id.is_valid(), "layer {id:?} index out of range");
         assert!(layer_value_fits(id, v), "value {v} does not fit {id:?}");
-        let mut fx = Effects::default();
-        self.put_layer(cell, id, v, &mut fx);
-        self.finish_effects(&fx);
-        !fx.layers.is_empty()
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        // The single-cell case of `put_layer` + `finish_effects`, without
+        // their effect maps: the sweeps call this for every move.
+        let wet_material = self
+            .get_cell(cell)
+            .is_some_and(|id| matches!(self.class(id), Class::Water | Class::Magma));
+        let (pos, local) = cell.split();
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return false;
+        };
+        if id.is_i16() {
+            let v = i16::try_from(v).expect("i16 layer value in range");
+            if chunk.layers.get_i16(id, local) == v {
+                return false;
+            }
+            chunk.layers.set_i16(id, local, v);
+        } else {
+            let v = u8::try_from(v).expect("u8 layer value in range");
+            if chunk.layers.get_u8(id, local) == v {
+                return false;
+            }
+            chunk.layers.set_u8(id, local, v);
+        }
+        chunk.eco_revision += 1;
+        if wet_material || chunk.layers.get_u8(LayerId::Moisture, local) > 0 {
+            chunk.active[SWEEP_WATER].insert(local);
+        }
+        for g in 0..crate::layers::N_GASES as u8 {
+            if chunk.layers.get_u8(LayerId::Gas(g), local) > 0 {
+                chunk.active[SWEEP_GAS + usize::from(g)].insert(local);
+            }
+        }
+        true
     }
 
     /// Season-pass plant write (rule 14). Host-only, called only by
@@ -672,9 +704,8 @@ impl World {
                 || self
                     .get_cell(cell)
                     .is_some_and(|id| matches!(self.class(id), Class::Water | Class::Magma));
-            let gases: Vec<bool> = (0..crate::layers::N_GASES as u8)
-                .map(|g| self.layer(cell, LayerId::Gas(g)) > 0)
-                .collect();
+            let gases: [bool; crate::layers::N_GASES] =
+                std::array::from_fn(|g| self.layer(cell, LayerId::Gas(g as u8)) > 0);
             let (pos, local) = cell.split();
             let Some(chunk) = self.chunks.get_mut(&pos) else {
                 continue;
