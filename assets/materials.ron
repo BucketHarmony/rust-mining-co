@@ -2,23 +2,25 @@
 // `id` must equal the entry's position; 0 is air. Keys are stable across versions.
 // Worldgen and tools filter on `tags` and `phase`, never on ids or keys.
 // Changing any field changes the table hash, which Hello and the save header carry.
+// Heat (SAD-P2 §7.1): surface materials (soil, air) conductivity 64 and capacity 8,
+// so 1.6 °C differences move heat; rock 16 and 32, so deep rock stays quiet.
 [
     (id: 0, key: "air", phase: Air, tags: [],
-     hardness: 0, diggable: false, yield_count: 0, color: (0, 0, 0, 0), emissive: 0.0),
+     hardness: 0, diggable: false, yield_count: 0, color: (0, 0, 0, 0), emissive: 0.0, conductivity: 64, heat_capacity: 8),
 
     (id: 1, key: "topsoil", phase: Solid, tags: ["soil"],
-     hardness: 10, diggable: true, yield_count: 1, color: (86, 125, 54, 255), emissive: 0.0),
+     hardness: 10, diggable: true, yield_count: 1, color: (86, 125, 54, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
     (id: 2, key: "dirt", phase: Solid, tags: ["soil"],
-     hardness: 15, diggable: true, yield_count: 1, color: (121, 85, 58, 255), emissive: 0.0),
+     hardness: 15, diggable: true, yield_count: 1, color: (121, 85, 58, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
     (id: 3, key: "clay", phase: Solid, tags: ["soil"],
-     hardness: 20, diggable: true, yield_count: 1, color: (166, 112, 82, 255), emissive: 0.0),
+     hardness: 20, diggable: true, yield_count: 1, color: (166, 112, 82, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
 
     (id: 4, key: "stone", phase: Solid, tags: ["stone"],
-     hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0),
+     hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
     (id: 5, key: "granite", phase: Solid, tags: ["stone"],
-     hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0),
+     hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
     (id: 6, key: "basalt", phase: Solid, tags: ["stone"],
-     hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0),
+     hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0),

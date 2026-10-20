@@ -16,6 +16,7 @@ use crate::noise::{
     LAYER_STRATA, LAYER_SURFACE, NoiseLayer, cell_hash,
 };
 use crate::params::{GenError, GenParams, ONE_MILLION};
+use crate::temperature::TemperatureInit;
 
 /// Tag every soil layer material must carry.
 pub const SOIL_TAG: &str = "soil";
@@ -163,6 +164,8 @@ pub struct Generator {
     shell: Shell,
     /// Whether each material id carries the `stone` tag.
     stone: Vec<bool>,
+    /// The initial temperature layer (SAD-P2 §8), when set.
+    temperature: Option<TemperatureInit>,
 }
 
 fn resolve(
@@ -298,12 +301,24 @@ impl Generator {
             crystals,
             shell,
             stone,
+            temperature: None,
         })
+    }
+
+    /// Also writes each chunk's temperature layer (SAD-P2 §8). Without it
+    /// chunks carry no layers, as in Phase 1.
+    pub fn with_temperature(mut self, init: TemperatureInit) -> Self {
+        self.temperature = Some(init);
+        self
     }
 
     /// The chunk at `pos`, with revision 0 and not modified.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
-        let chunk = Chunk::new(self.volume(pos).to_storage());
+        let mut chunk = Chunk::new(self.volume(pos).to_storage());
+        if let Some(t) = &self.temperature {
+            let bottom_y = self.shell.bounds.min.0.y;
+            t.fill(&mut chunk, pos, bottom_y, |x, z| self.surface_height(x, z));
+        }
         tracing::debug!(?pos, "chunk generated");
         chunk
     }

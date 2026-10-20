@@ -4,9 +4,11 @@
 pub mod r#gen;
 pub mod noise;
 pub mod params;
+pub mod temperature;
 
 pub use r#gen::{Generator, generate_chunk};
 pub use params::{GenError, GenParams};
+pub use temperature::TemperatureInit;
 
 /// The noise crate and version worldgen output depends on. The save header
 /// records it, and a mismatch fails load (SAD §9, §10).

@@ -1335,8 +1335,9 @@
       ],
       "e2e": false,
       "review": true,
-      "passes": false,
-      "notes": "Energy update is per edge, quantized to max(C_i, C_j) (SAD-P2 §7.1), so energy is exactly conserved. Set the freeze_thaw bit in this pass per §7.5 only once F110 lands; do not implement it here."
+      "passes": true,
+      "notes": "Energy update is per edge, quantized to max(C_i, C_j) (SAD-P2 §7.1), so energy is exactly conserved. Set the freeze_thaw bit in this pass per §7.5 only once F110 lands; do not implement it here.",
+      "passedAt": "2026-10-20T03:14:02Z"
     },
     {
       "id": "F107",

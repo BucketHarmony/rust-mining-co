@@ -8,6 +8,7 @@ pub mod ledger;
 pub mod reference;
 pub mod runner;
 pub mod tables;
+pub mod temperature;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
@@ -16,3 +17,4 @@ pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };
 pub use tables::{EcoTableError, EcoTables};
+pub use temperature::{Profile, TemperaturePass};

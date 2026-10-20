@@ -22,7 +22,7 @@ use rayon::prelude::*;
 use rmc_world::EcoRules;
 use rmc_world::chunk::Chunk;
 use rmc_world::coords::{
-    CHUNK_MASK, CHUNK_SHIFT, CHUNK_SIZE, CHUNK_VOLUME, CellPos, ChunkPos, LocalPos,
+    CHUNK_MASK, CHUNK_SHIFT, CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos,
 };
 use rmc_world::layers::{LayerId, N_SWEEPS, PlantState};
 use rmc_world::ledger::SeasonLedger;
@@ -96,6 +96,11 @@ impl<'w> ChunkView<'w> {
 
     pub fn pos(&self) -> ChunkPos {
         self.pos
+    }
+
+    /// The world bounds.
+    pub fn bounds(&self) -> CellAabb {
+        self.world.bounds()
     }
 
     /// The chunk itself.
