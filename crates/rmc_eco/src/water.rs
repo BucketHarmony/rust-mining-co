@@ -47,6 +47,8 @@
 //!
 //! [`reference::flat_sweep_water`]: crate::reference::flat_sweep_water
 
+use std::collections::BTreeSet;
+
 use rmc_world::columns::NO_SURFACE;
 use rmc_world::coords::{CellAabb, CellPos};
 use rmc_world::layers::{LayerId, SWEEP_WATER};
@@ -549,7 +551,9 @@ impl SweepPass for Condensation {
 /// steam_above)` of its fill into the steam above; ledger `evap_to_steam`
 /// records `e`. `T` is the water cell's temperature; its bucket is `T /
 /// evap_bucket`, 0 below 0 °C and the table's last entry past its end. A
-/// cell left at fill 0 becomes air at once (§7.3 B5).
+/// cell left at fill 0 becomes air at once (§7.3 B5). The cells it
+/// evaporated from are kept for the reactions' `Evaporating` condition
+/// (§7.6) until [`Evaporation::take_evaporated`].
 #[derive(Clone, Debug)]
 pub struct Evaporation {
     /// The flow sweep, for which cells the water active set holds.
@@ -562,6 +566,8 @@ pub struct Evaporation {
     table: Vec<i32>,
     /// `eco.evap_bucket`, 0.1 °C.
     bucket: i32,
+    /// Cells evaporated from since the last `take_evaporated`.
+    evaporated: BTreeSet<CellPos>,
 }
 
 impl Evaporation {
@@ -576,7 +582,14 @@ impl Evaporation {
             steam: tables.role_gas("steam")?,
             table: params.evap_table.iter().map(|&e| i32::from(e)).collect(),
             bucket: i32::from(params.evap_bucket),
+            evaporated: BTreeSet::new(),
         })
+    }
+
+    /// The cells evaporated from since the last call, which empties the
+    /// record: once per sub-step, for the reactions (§7.6 `Evaporating`).
+    pub fn take_evaporated(&mut self) -> BTreeSet<CellPos> {
+        std::mem::take(&mut self.evaporated)
     }
 
     /// The table's rate at temperature `t`.
@@ -620,6 +633,7 @@ impl SweepPass for Evaporation {
         // The steam joins the steam sweep (`eco_put_layer` adds it).
         ctx.world.eco_put_layer(above, layer, steam + amount);
         ctx.ledger.evap_to_steam += i64::from(amount);
+        self.evaporated.insert(cell);
         if fill == amount {
             ctx.world.eco_set(cell, self.air, ctx.ledger);
         }

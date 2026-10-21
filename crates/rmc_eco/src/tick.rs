@@ -16,7 +16,7 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
-use crate::chemistry::Transport;
+use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::GasPass;
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
@@ -58,6 +58,8 @@ pub enum PassId {
     Weathering,
     /// Chemistry transport, replaying the sub-step's water moves (§7.6).
     Transport,
+    /// Chemistry reactions (§7.6).
+    Reactions,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -81,6 +83,8 @@ struct Passes {
     weathering: WeatheringPass,
     /// §7.6 transport over the water pass's move log.
     transport: Transport,
+    /// §7.6 reactions, after transport.
+    reactions: ReactionsPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -134,6 +138,7 @@ pub fn season_tick_observed(
         gases: GasPass::all(tables),
         weathering: WeatheringPass::new(tables),
         transport: Transport::new(tables),
+        reactions: ReactionsPass::new(tables),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
@@ -159,9 +164,10 @@ pub fn season_tick_observed(
 
 /// One sub-step: the passes in SAD-P2 §3 order. The water pass runs its
 /// §7.3 steps in order: condensation, the flow sweeps, evaporation, rain.
-/// Chemistry transport (§7.6) then replays the flow sweeps' move log and
-/// clears it. Only the flow and gas sweeps add an `active_cells_per_sweep`
-/// entry.
+/// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
+/// (transport), and runs the reactions with the cells evaporation left in
+/// this sub-step. Only the flow and gas sweeps add an
+/// `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
     world: &mut World,
@@ -227,6 +233,21 @@ fn substep(
     passes.transport.run(world, passes.water.log());
     passes.water.clear_log();
     after(PassId::Transport, world, &report.ledger);
+    let evaporated = passes
+        .evaporation
+        .as_mut()
+        .map(Evaporation::take_evaporated)
+        .unwrap_or_default();
+    passes.reactions.set_evaporated(evaporated);
+    jacobi(
+        JacobiKind::Reactions,
+        &passes.reactions,
+        world,
+        activity,
+        exec,
+        report,
+    );
+    after(PassId::Reactions, world, &report.ledger);
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -366,10 +387,10 @@ mod tests {
                 );
             }
             // One Jacobi entry per Jacobi pass per sub-step (temperature,
-            // transitions and weathering so far), never more chunks than the
-            // world has.
+            // transitions, weathering and reactions so far), never more
+            // chunks than the world has.
             for r in &ra {
-                assert_eq!(r.active_chunks_per_jacobi.len(), 3 * substeps);
+                assert_eq!(r.active_chunks_per_jacobi.len(), 4 * substeps);
                 assert!(r.active_chunks_per_jacobi.iter().all(|&n| n <= 2));
             }
             // The season row matters: the next row's `air_temp` gives a
@@ -702,7 +723,11 @@ mod tests {
                     want.extend((0..t.params().flow_iters).map(|f| (i, PassId::Flow(f))));
                     want.extend([(i, PassId::Evaporation), (i, PassId::Rain)]);
                     want.extend((0..t.gases().len() as u8).map(|g| (i, PassId::Gas(g))));
-                    want.extend([(i, PassId::Weathering), (i, PassId::Transport)]);
+                    want.extend([
+                        (i, PassId::Weathering),
+                        (i, PassId::Transport),
+                        (i, PassId::Reactions),
+                    ]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");
                 r.ledger
@@ -718,6 +743,10 @@ mod tests {
             ("magma_set", sum(&|l| l.magma_set)),
             ("magma_melt_in", sum(&|l| l.magma_melt_in)),
             ("weather_in", sum(&|l| l.weather_in.iter().sum())),
+            (
+                "react_delta",
+                sum(&|l| l.react_delta.iter().map(|v| v.abs()).sum()),
+            ),
             ("transitions", sum(&|l| l.transitions.len() as i64)),
         ];
         for (name, v) in terms {

@@ -17,7 +17,7 @@ pub mod water;
 pub mod weathering;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
-pub use chemistry::{Move, MoveLog, Transport, TransportReport};
+pub use chemistry::{Move, MoveLog, ReactionsPass, Transport, TransportReport};
 pub use gases::GasPass;
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
 pub use ledger::SeasonLedger;

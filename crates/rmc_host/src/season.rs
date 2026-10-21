@@ -376,8 +376,9 @@ mod tests {
         let (snaps, report, changed) = season_frame(&msgs[1..msgs.len() - 1], 0);
         assert!(changed > 0);
         assert_eq!(report.substep_ms.len(), substeps);
-        // Temperature, transitions and weathering, once per sub-step.
-        assert_eq!(report.active_chunks_per_jacobi.len(), 3 * substeps);
+        // Temperature, transitions, weathering and reactions, once per
+        // sub-step.
+        assert_eq!(report.active_chunks_per_jacobi.len(), 4 * substeps);
         assert!(report.active_chunks_per_jacobi[0] > 0);
         let positions: Vec<ChunkPos> = snaps.iter().map(snapshot_pos).collect();
         assert!(positions.is_sorted(), "{positions:?}");
