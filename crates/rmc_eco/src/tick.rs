@@ -449,13 +449,16 @@ mod tests {
         let substeps = usize::from(t.seasons().substeps);
         let sweeps = usize::from(t.params().flow_iters) + t.gases().len();
         let mut w = random_world(&t, 3);
-        // A pocket of a light gas in the open air, under another air cell.
+        // A pocket of a light gas in the air above the ground, under
+        // another air cell and under an overhang, so that it is not
+        // sky-open and does not vent (§7.4).
         let gas = t.role_gas("firedamp").expect("firedamp role");
         let is_air = |w: &World, c: CellPos| w.get_cell(c) == Some(MaterialId::AIR);
         let up = |c: CellPos| CellPos::new(c.0.x, c.0.y + 1, c.0.z);
+        let covered = |w: &World, c: CellPos| c.0.y + 1 < i32::from(w.surface_y(c.0.x, c.0.z));
         let cell = crate::reference::global_order(w.bounds())
-            .find(|&c| c.0.y >= 16 && is_air(&w, c) && is_air(&w, up(c)))
-            .expect("open air above the ground");
+            .find(|&c| c.0.y >= 16 && is_air(&w, c) && is_air(&w, up(c)) && covered(&w, c))
+            .expect("air under an overhang above the ground");
         w.eco_put_layer(cell, LayerId::Gas(gas), 200);
         let checker = crate::invariants::InvariantChecker::new(&w);
         let mut activity = Activity::new(t.params().quiet_skip);
