@@ -2464,3 +2464,33 @@ Decisions:
 - `crates/rmc_world/proptest-regressions/edit.txt` (a seed from the helper panic before the test-fix) is committed, as the repo does with the others. The case passes.
 Next: F150 (gases) or F160 (light), the first unpassed features whose blockers all pass. F141 waits on F124.
 Blockers: none.
+
+## 2026-10-21 21:00 — F150 Gas concentration layers, gases.ron, active sets per gas; drift and diffusion with room checks — passed
+Done:
+- `rmc_eco::gases::GasPass`: the sweep of one gas row, over the active set `SWEEP_GAS + g`. `GasPass::all(tables)` builds one per row in row order.
+  - The gas layers, `gases.ron`, the table loader and the per-gas active sets already existed (F101–F104). This feature adds the pass.
+  - A visit to an air cell runs §7.4 step 1, drift: `min(c, |density| · 2^drift_shift, room)` into the air cell above (density < 0) or below (density > 0). Density 0 does not drift.
+  - Then step 2, diffusion: to each air neighbor holding less, in sorted (y, z, x) order with below first, `min((c − c_n) · diffusion / 2^diff_shift, room_n, c)`.
+  - Donor content and receiver room are read just before each move. Receivers join the active set. `holds` means an air cell with c > 0.
+- `reference::flat_sweep_gas` + `GasRef`: the flat-array oracle, visiting every cell.
+- `season_tick` runs one sweep per gas row after the water flow sweeps (§3 order). Each sweep adds an `active_cells_per_sweep` entry.
+- `Seasons::install` (host) fills each gas's active set alongside water's.
+Tests added:
+- `gases::tests::light_gas_collects_at_ceiling`. A sealed 8×8×6 chamber across a chunk face starts uniform at 40. After 64 sweeps, firedamp, steam and smoke each give layer sums that never decrease going up, a ceiling ≥ 3× the floor, a ceiling > 5/4 of the mean and a floor < 3/4 of the mean. Conservation and chamber containment are checked after every sweep.
+- `gases::tests::heavy_gas_collects_at_floor`. chokedamp in the same chamber: layer sums never increase going up, the floor > 2× the mean and the ceiling < half the mean.
+- `gases::tests::drift_and_diffusion_conserve_with_room_checks`:
+  - test gases (each role key with one behavior) give exact amounts for drift up and down with room 0, room-limited and content-limited cases;
+  - diffusion of 255 > 2^diff_shift, so that the room and content caps bind;
+  - no gas in stone; active-set joins and leaves;
+  - then 48 seeded random 8-chunk worlds (shipped and test gases), 4 rounds of every gas sweep: conservation, gas only on air, holders active and equality with the flat oracle after every sweep.
+- `gases::tests::oracle_equivalence_flat_sweep_gas_proptest`: the same random check, 2 rounds, about 6.5 s at 256 cases.
+- `tick::tests::gas_sweeps_run_after_water`: per sub-step, flow_iters + n_gases sweep entries; a firedamp pocket moves and rises; the invariant holds over the tick.
+Decisions:
+- Gas moves book no ledger term, following the water pass's precedent. Moving between cells is neither a source nor a sink, and the invariant checker proves conservation (rule 16's ledger terms are for sources and sinks). Vent, emission and ignition (F151, F153) will book their terms.
+- "Sorted order" for the 6 neighbors is the fixed (y, z, x) offset order with below first. It is the same `neighbors()` order as `rmc_world::displace` and the water pass's SIDEWAYS. It is not the chunk-aware global key, which can order −x before −z across a chunk face.
+- Air means `Phase::Air` (rule 5: phase, not key). The oracle uses the `air` role, which SAD-P2 §3 says is the only `Phase::Air` material.
+- With the shipped tables (diffusion ≤ 2^diff_shift), diffusion never exceeds the difference, so its room cap cannot bind. The room test uses a test gas with diffusion 255.
+- `light_gas_collects_at_ceiling` bounds come from the slowest shipped light gas. Firedamp (drift 4, diffusion 24/64) settles at about +7 per cell per layer, so the layers span 16..61 around a mean of 40. I set the bounds from that gradient instead of a guessed "2× mean".
+- `crates/rmc_eco/proptest-regressions/gases.txt` holds a seed from the stub run before the implementation. It is committed, as the repo does with the others, and the case passes.
+Next: F160 (light), the first unpassed feature whose blockers all pass. F151 and F154 wait on F123 (or are now unblocked: F154 needs only F150).
+Blockers: none.
