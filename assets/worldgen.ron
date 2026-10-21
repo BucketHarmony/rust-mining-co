@@ -57,7 +57,7 @@
     ores: [
         (material: "coal_seam", min_depth: 6, max_depth: 40,
          threshold: 0.7, noise: (frequency: 0.12, octaves: 1)),
-        (material: "copper_ore", min_depth: 16, max_depth: 64,
+        (material: "sulfide_ore", min_depth: 16, max_depth: 64,
          threshold: 0.75, noise: (frequency: 0.15, octaves: 1)),
         (material: "iron_ore", min_depth: 36, max_depth: 84,
          threshold: 0.75, noise: (frequency: 0.15, octaves: 1)),

@@ -434,7 +434,7 @@ mod tests {
     fn generate(seed: u64, table: Arc<MaterialTable>) -> World {
         let stone = id(&table, "stone");
         let granite = id(&table, "granite");
-        let copper = id(&table, "copper_ore");
+        let copper = id(&table, "sulfide_ore");
         let dirt = id(&table, "dirt");
         let mut w = World::new(table, bounds());
         let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;

@@ -500,7 +500,7 @@ mod tests {
                 },
             ),
             (
-                EditOp::Set(mat(&world, "copper_ore")),
+                EditOp::Set(mat(&world, "sulfide_ore")),
                 Shape::Box {
                     min: CellPos::new(32, 0, 32),
                     max: CellPos::new(63, 7, 63),
@@ -1146,7 +1146,7 @@ mod tests {
         let stone = mat(&world, "stone");
         let dirt = mat(&world, "dirt");
         let granite = mat(&world, "granite");
-        let copper = mat(&world, "copper_ore");
+        let copper = mat(&world, "sulfide_ore");
         let (mut host, eps) = host_with(world, 3);
         let [a, b, c] = &eps[..] else { unreachable!() };
 

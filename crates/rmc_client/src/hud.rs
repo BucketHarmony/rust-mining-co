@@ -1455,7 +1455,7 @@ mod tests {
         let (dirt, stone, copper) = (
             m.id("dirt").unwrap(),
             m.id("stone").unwrap(),
-            m.id("copper_ore").unwrap(),
+            m.id("sulfide_ore").unwrap(),
         );
         assert!(dirt < stone && stone < copper);
         assert_eq!(
@@ -1474,7 +1474,7 @@ mod tests {
             items: vec![(dirt, 2), (stone, 1), (copper, 4)],
         }]);
         assert_eq!(rig.hud().selected, None);
-        assert_eq!(inventory_text(&mut rig), "dirt 2\nstone 1\ncopper_ore 4");
+        assert_eq!(inventory_text(&mut rig), "dirt 2\nstone 1\nsulfide_ore 4");
 
         // Wheel down steps forward in inventory order, wrapping; wheel up
         // steps back.
@@ -1500,7 +1500,7 @@ mod tests {
         assert_eq!(rig.hud().selected, Some(stone));
 
         // The selected line is marked.
-        assert_eq!(inventory_text(&mut rig), "dirt 2\n> stone 1\ncopper_ore 4");
+        assert_eq!(inventory_text(&mut rig), "dirt 2\n> stone 1\nsulfide_ore 4");
 
         // The last stone spent: still selected (a place of it is refused by
         // the host), no line marked, and the next step skips it.
@@ -1508,10 +1508,10 @@ mod tests {
             items: vec![(dirt, 2), (copper, 4)],
         }]);
         assert_eq!(rig.hud().selected, Some(stone));
-        assert_eq!(inventory_text(&mut rig), "dirt 2\ncopper_ore 4");
+        assert_eq!(inventory_text(&mut rig), "dirt 2\nsulfide_ore 4");
         wheel(&mut rig, -1.0);
         assert_eq!(rig.hud().selected, Some(copper));
-        assert_eq!(inventory_text(&mut rig), "dirt 2\n> copper_ore 4");
+        assert_eq!(inventory_text(&mut rig), "dirt 2\n> sulfide_ore 4");
 
         // With the editor open the wheel and keys leave the selection alone.
         rig.app

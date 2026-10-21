@@ -24,7 +24,7 @@
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0),
-    (id: 8, key: "copper_ore", phase: Solid, tags: ["ore"],
+    (id: 8, key: "sulfide_ore", phase: Solid, tags: ["ore"],
      hardness: 40, diggable: true, yield_count: 1, color: (184, 115, 51, 255), emissive: 0.0),
     (id: 9, key: "iron_ore", phase: Solid, tags: ["ore"],
      hardness: 50, diggable: true, yield_count: 1, color: (150, 98, 82, 255), emissive: 0.0),

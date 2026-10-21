@@ -508,7 +508,7 @@ mod tests {
                 "granite",
                 "basalt",
                 "coal_seam",
-                "copper_ore",
+                "sulfide_ore",
                 "iron_ore",
                 "glowcrystal",
                 "bedrock",
@@ -548,7 +548,7 @@ mod tests {
         let tagged = |tag: &str| -> Vec<&str> { t.with_tag(tag).map(|d| d.key.as_str()).collect() };
         assert_eq!(tagged("soil"), ["topsoil", "dirt", "clay"]);
         assert_eq!(tagged("stone"), ["stone", "granite", "basalt"]);
-        assert_eq!(tagged("ore"), ["coal_seam", "copper_ore", "iron_ore"]);
+        assert_eq!(tagged("ore"), ["coal_seam", "sulfide_ore", "iron_ore"]);
         assert_eq!(tagged("crystal"), ["glowcrystal"]);
         assert_eq!(tagged("placeable"), ["brass_plate"]);
     }

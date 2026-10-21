@@ -410,7 +410,7 @@ mod tests {
         let air = MaterialId::AIR;
         let stone = id(&table, "stone");
         let bedrock = id(&table, "bedrock");
-        let copper = id(&table, "copper_ore");
+        let copper = id(&table, "sulfide_ore");
 
         // A checkerboard floor of stone at y = 0 and a bedrock cell at y = 1.
         w.apply(&cmd(1, EditOp::Set(stone), boxed((0, 0, 0), (3, 0, 0))));

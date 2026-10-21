@@ -1257,7 +1257,7 @@ mod tests {
         // SAD §6 Phase 1 ores.
         assert_eq!(
             ores,
-            ["coal_seam", "copper_ore", "iron_ore"].map(|k| id(&shipped_table, k))
+            ["coal_seam", "sulfide_ore", "iron_ore"].map(|k| id(&shipped_table, k))
         );
         let (lo, hi) = (
             i64::from(shipped.ores.iter().map(|o| o.min_depth).min().unwrap()),
@@ -1855,7 +1855,7 @@ mod tests {
             Err(GenError::MissingTag { tag: SOIL_TAG, .. })
         ));
         let mut p = params();
-        p.strata.layers[2].material = "copper_ore".into();
+        p.strata.layers[2].material = "sulfide_ore".into();
         assert!(matches!(
             Generator::new(1, &p, &table),
             Err(GenError::MissingTag { tag: STONE_TAG, .. })
@@ -1959,7 +1959,7 @@ mod tests {
             "granite",
             "basalt",
             "coal_seam",
-            "copper_ore",
+            "sulfide_ore",
             "iron_ore",
             "glowcrystal",
             "bedrock",

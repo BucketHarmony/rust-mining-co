@@ -426,10 +426,10 @@ mod tests {
 
         // A breaking area aggregates per material, ascending by id, and
         // leaves out zero yields. Layout along x: stone, rich, barren,
-        // richest, copper_ore (one column each, 2 × 2 cells), over the
+        // richest, sulfide_ore (one column each, 2 × 2 cells), over the
         // chunk border.
         let stone = id(&table, "stone");
-        let copper = id(&table, "copper_ore");
+        let copper = id(&table, "sulfide_ore");
         let mut w = world(table.clone(), "stone");
         let columns = [stone, rich, barren, richest, copper];
         for (i, &m) in columns.iter().enumerate() {

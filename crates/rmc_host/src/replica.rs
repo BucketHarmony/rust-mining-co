@@ -373,7 +373,7 @@ mod tests {
                 },
             ),
             (
-                EditOp::Set(mat(&world, "copper_ore")),
+                EditOp::Set(mat(&world, "sulfide_ore")),
                 Shape::Box {
                     min: CellPos::new(32, 2, 32),
                     max: CellPos::new(63, 9, 63),
