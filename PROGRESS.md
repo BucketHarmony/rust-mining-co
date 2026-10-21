@@ -2274,3 +2274,35 @@ Decisions:
 - `rmc_world::edit` test fixture `eco_rules` gains `soft_regolith: None`, a field the struct literal now requires. No assertion changed.
 Next: F126 (worldgen water table and flooded caves), the first unpassed feature whose blockers all pass. F114 waits on F128.
 Blockers: none.
+
+## 2026-10-21 15:00 — F126 Worldgen water table and flooded caves — passed
+Done:
+- `worldgen.ron` gains `water_table: Option<WaterTableParams { level, amplitude, noise }>` (serde default `None`, validated). `water_table_y(x, z) = level + offset_2d(noise, amplitude)` (noise layer `LAYER_WATER_TABLE` 0x0600). `GenParams::fit_to` scales `level` with the world's height, as it does the surface. Shipped: `level: 64, amplitude: 0`, which gives 32 in the 64-high Phase 2 world.
+- New `rmc_worldgen::water::WaterTableInit`, built from the eco tables. It holds the `water` role and each porous solid's `field_capacity`. `Generator::with_water_table(init)` applies it after every other step, the shell included:
+  - below the table, a cave cell (air under the column's step-1 surface) becomes water at fill 255;
+  - a porous solid (`Solid` tagged `porous`) gets moisture = `field_capacity`;
+  - the sky is never flooded, and nothing above the table changes.
+- The temperature layer is written after the water, so flooded cells start on the profile.
+- `rmc_app::session::generate_world` and the testkit's `generate_world` call `with_water_table`. The benches do not, so they stay dry, as in Phase 1.
+Tests added:
+- `water::tests::porous_below_table_at_capacity`. Test materials: a porous soil (cap 40), a porous aquifer stratum (cap 24) and a porous zero-capacity rock. Checked:
+  - every porous cell is at capacity below its column's table and 0 above it;
+  - non-porous cells and zero-capacity cells stay dry, and no cell changes;
+  - the table stays within level ± amplitude and is not flat;
+  - a table among the hills wets the soil and never the sky;
+  - with no `water_table` in the params, or no `with_water_table`, chunks match the plain generator, with no moisture layer.
+- `water::tests::caves_below_table_flooded`. With the shipped materials, checked:
+  - every cave cell below the table is water at fill 255, with temperature `profile(y)`; caves above it stay air; no other cell changes;
+  - a high table floods caves but not the sky above low ground;
+  - the shipped params have a table and `fit_to` halves its level;
+  - shipped flooded caves are at rest: no water cell has air below or beside it;
+  - without a `water` role the caves stay air.
+Decisions:
+- An absolute level, not depth under the surface. My first version followed the surface (`surface − depth`). There, the table differs from column to column, so in season 1 the water of every flooded cave spilled sideways into air beside it. The temperature pass's layer writes activate water cells. This broke `rmc_testkit eco::tests::advance_season_applies_both_snapshot_kinds` ("no pass changes materials yet"). A level table puts generated water at rest: no first-season sloshing, deep chunks stay quiet (§13 `tick_first`), and that test holds as written. The noise and amplitude stay for a tilted table, which spills until it levels.
+- Level 64 in the 128-high world is 22..42 cells under the surface (86..106). `profile(y) = 400 − 5y` is above freezing there (≥ 0.8 °C at y 63), so `water → ice` (TempBelow 0) does not fire in caves. A table at depth 24 under the surface froze cave water near y 80 in the first season.
+- A cave is an air cell under the column's step-1 surface. Worldgen leaves air there only where step 3 carved, so no separate cave mask is needed.
+- Worldgen water is not put in the water active set. It is at rest, and any later layer write or edit activates it as for any other water.
+- No shipped material is porous before F140 (limestone, crushed_sulfide). In shipped worlds the table floods caves only until F140, then also fills limestone below it.
+- Ran `scripts/e2e.sh dig_straight_down` (passes). The Phase 1 scenarios dig near y 100, far above the table.
+Next: F127 (liquid mesh pass), the first unpassed feature whose blockers all pass.
+Blockers: none.
