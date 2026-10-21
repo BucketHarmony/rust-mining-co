@@ -293,7 +293,12 @@ mod tests {
 
     #[test]
     fn gas_sweeps_run_after_water() {
-        let t = tables();
+        // No rain (SAD-P2 §7.3 D): it would land on the open air the pocket
+        // sits in and push the gas aside.
+        let t = tables().with_season_override(crate::tables::SeasonOverride {
+            rain: Some(0),
+            air_temp: None,
+        });
         let substeps = usize::from(t.seasons().substeps);
         let sweeps = usize::from(t.params().flow_iters) + t.gases().len();
         let mut w = random_world(&t, 3);

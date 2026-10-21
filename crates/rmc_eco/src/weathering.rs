@@ -202,7 +202,7 @@ mod tests {
     use crate::invariants::InvariantChecker;
     use crate::ledger::merge;
     use crate::runner::{Exec, activate_holders, run_jacobi};
-    use crate::tables::EcoSources;
+    use crate::tables::{EcoSources, SeasonOverride};
     use crate::temperature::TemperaturePass;
     use crate::tick::season_tick;
     use crate::water::WaterPass;
@@ -482,6 +482,15 @@ mod tests {
         w
     }
 
+    /// The tables with no rain in any season: the season tick's rain
+    /// (SAD-P2 §7.3 D) would wet the dry cells these tests keep dry.
+    fn no_rain(t: &EcoTables) -> EcoTables {
+        t.with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: None,
+        })
+    }
+
     fn regolith(w: &World, c: CellPos) -> i32 {
         w.layer(c, LayerId::Regolith)
     }
@@ -596,7 +605,13 @@ mod tests {
         let mut w = ground(&f, &place);
         activate_holders(&mut w, &WaterPass::new(&f.t));
         let mut activity = Activity::new(f.t.params().quiet_skip);
-        season_tick(&mut w, &f.t, SUMMER, &mut activity, Exec::Parallel);
+        season_tick(
+            &mut w,
+            &no_rain(&f.t),
+            SUMMER,
+            &mut activity,
+            Exec::Parallel,
+        );
         assert_eq!(w.get_cell(pit), Some(f.water));
         assert_eq!(bits(&w), 0, "summer: no crossings");
         let substeps = i32::from(f.t.seasons().substeps);
@@ -699,7 +714,13 @@ mod tests {
         }
         assert_eq!(w.hash(), hash, "unexposed and dry cells do not change");
         let mut activity = Activity::new(f.t.params().quiet_skip);
-        season_tick(&mut w, &f.t, SUMMER, &mut activity, Exec::Parallel);
+        season_tick(
+            &mut w,
+            &no_rain(&f.t),
+            SUMMER,
+            &mut activity,
+            Exec::Parallel,
+        );
         assert_regolith(&w, &[], "a summer");
 
         // The same block with one cell of its top face opened to an air
