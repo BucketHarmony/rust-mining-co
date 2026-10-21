@@ -1432,6 +1432,332 @@ mod tests {
         );
     }
 
+    // ---- Shipped reactions in the season tick (F143) ----
+
+    /// The shipped tables with no rain and a spring air temperature, so
+    /// nothing freezes and no water arrives from the sky.
+    fn dry_spring() -> EcoTables {
+        tables().with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: Some(100),
+        })
+    }
+
+    /// Runs one whole season on `w`, checking every invariant after every
+    /// pass, and hands each pass to `observe`. Returns the season ledger.
+    fn season(
+        w: &mut World,
+        t: &EcoTables,
+        observe: &mut dyn FnMut(u8, crate::tick::PassId, &World),
+    ) -> SeasonLedger {
+        activate_holders(w, &WaterPass::new(t));
+        let checker = InvariantChecker::new(w);
+        let report = crate::tick::season_tick_observed(
+            w,
+            t,
+            0,
+            1,
+            &mut crate::activity::Activity::new(t.params().quiet_skip),
+            Exec::Serial,
+            &mut |i, pass, w, ledger| {
+                if let Err(v) = checker.check(w, ledger) {
+                    panic!("sub-step {i}, after {pass:?}: {v}");
+                }
+                observe(i, pass, w);
+            },
+        );
+        checker.check(w, &report.ledger).unwrap();
+        report.ledger
+    }
+
+    /// The world total of substance `x`.
+    fn total(w: &World, x: u8) -> i32 {
+        global_order(w.bounds()).map(|c| w.layer(c, layer(x))).sum()
+    }
+
+    /// `oxidize`: weathering releases sulfur from an exposed, damp
+    /// crushed_sulfide, and in the same sub-step the reaction turns it
+    /// into acid. A submerged crushed_sulfide weathers too, but with no
+    /// air face it never oxidizes, and the unbroken ore (which does not
+    /// weather) releases nothing to oxidize.
+    #[test]
+    fn exposed_sulfide_releases_s_then_oxidizes() {
+        use crate::tick::PassId;
+        let t = dry_spring();
+        let m = t.materials();
+        let (crushed, ore) = (
+            m.id("crushed_sulfide").unwrap(),
+            m.id("sulfide_ore").unwrap(),
+        );
+        let s = t.substance_index("s").unwrap();
+        let acid = t.role_substance("acid").unwrap();
+        let mut ledger = SeasonLedger::default();
+
+        // Exposed: on the floor, in open air, damp below its field capacity.
+        let mut w = small_world(&t);
+        let (heap, lump) = (CellPos::new(2, 1, 2), CellPos::new(5, 1, 5));
+        w.eco_set(heap, crushed, &mut ledger);
+        w.eco_set(lump, ore, &mut ledger);
+        for c in [heap, lump] {
+            w.eco_put_layer(c, LayerId::Moisture, 30);
+        }
+        let mut seen = Vec::new();
+        let mut s_before_react = 0;
+        let got = season(&mut w, &t, &mut |i, pass, w| {
+            let (s_at, acid_at) = (w.layer(heap, layer(s)), w.layer(heap, layer(acid)));
+            match pass {
+                PassId::Weathering if i == 0 => {
+                    assert!(s_at > 0, "weathering released sulfur");
+                    assert_eq!(acid_at, 0, "no acid before the reactions pass");
+                    seen.push(pass);
+                }
+                PassId::Transport if i == 0 => s_before_react = s_at,
+                PassId::Reactions if i == 0 => {
+                    let [(_, n)] = t.reactions()[0].produce[..] else {
+                        panic!("oxidize produces one substance");
+                    };
+                    assert_eq!(acid_at, i32::from(n), "oxidize fired once");
+                    let [(_, k)] = t.reactions()[0].consume[..] else {
+                        panic!("oxidize consumes one substance");
+                    };
+                    assert_eq!(s_at, s_before_react - i32::from(k));
+                    seen.push(pass);
+                }
+                _ => {}
+            }
+        });
+        assert_eq!(seen, [PassId::Weathering, PassId::Reactions]);
+        assert!(got.weather_in[usize::from(s)] > 0);
+        assert!(got.react_delta[usize::from(s)] < 0);
+        assert!(got.react_delta[usize::from(acid)] > 0);
+        assert!(w.layer(heap, layer(acid)) > 0, "acid stays on the heap");
+        assert_eq!(w.layer(lump, layer(s)), 0, "the ore does not weather");
+        assert_eq!(w.layer(lump, layer(acid)), 0);
+
+        // Submerged: the same heap under a full pool, no air face.
+        let water = t.role_material("water").unwrap();
+        let mut w = small_world(&t);
+        for cell in global_order(w.bounds()).filter(|c| c.0.y > 0) {
+            w.eco_set(cell, water, &mut ledger);
+            w.eco_put_layer(cell, LayerId::Moisture, FULL);
+        }
+        let heap = CellPos::new(3, 1, 3);
+        w.eco_set(heap, crushed, &mut ledger);
+        w.eco_put_layer(heap, LayerId::Moisture, 30);
+        let got = season(&mut w, &t, &mut |_, _, _| {});
+        assert!(
+            got.weather_in[usize::from(s)] > 0,
+            "it weathers under water"
+        );
+        assert_eq!(got.react_delta[usize::from(s)], 0, "but never oxidizes");
+        assert_eq!(total(&w, acid), 0);
+    }
+
+    /// `neutralize`: wherever acid meets lime, two of each become two salt
+    /// each sub-step, at any pH and on any material; acid or lime alone
+    /// makes nothing.
+    #[test]
+    fn acid_plus_lime_makes_salt() {
+        let t = dry_spring();
+        let [acid, lime, salt] = ["acid", "lime", "salt"].map(|k| t.substance_index(k).unwrap());
+        let row = t
+            .reactions()
+            .iter()
+            .find(|r| r.produce.iter().any(|(k, _)| k == "salt"))
+            .expect("a salt-making reaction");
+        assert!(row.conditions.is_empty(), "neutralize needs no condition");
+        let need = needs(&t, row);
+        let (per_acid, per_lime) = (need[&acid], need[&lime]);
+        let per_salt = nets(&t, row)[&salt];
+        let substeps = i32::from(t.seasons().substeps);
+
+        let mut w = filled_world(&t);
+        // (cell, acid, lime, salt) before the season.
+        let cases = [
+            (CellPos::new(1, 1, 1), 40, 40, 0),
+            (CellPos::new(5, 1, 1), 40, 0, 0),
+            (CellPos::new(1, 1, 5), 0, 40, 0),
+            // pH 14: fires once, then lacks acid.
+            (CellPos::new(5, 1, 5), per_acid + 1, FULL, 0),
+            // Room for one fire's salt: the rest is lost.
+            (CellPos::new(3, 5, 3), 40, 40, FULL - per_salt),
+        ];
+        for &(c, a, l, s) in &cases {
+            w.eco_put_layer(c, layer(acid), a);
+            w.eco_put_layer(c, layer(lime), l);
+            w.eco_put_layer(c, layer(salt), s);
+        }
+        assert_eq!(ph(FULL, per_acid + 1, t.params().ph_shift), PH_MAX.into());
+        let got = season(&mut w, &t, &mut |_, _, _| {});
+        let fires = |a: i32, l: i32| substeps.min(a / per_acid).min(l / per_lime);
+        let mut fired = 0;
+        for &(c, a, l, s) in &cases {
+            let n = fires(a, l);
+            fired += n;
+            assert_eq!(w.layer(c, layer(acid)), a - n * per_acid, "acid at {c:?}");
+            assert_eq!(w.layer(c, layer(lime)), l - n * per_lime, "lime at {c:?}");
+            assert_eq!(
+                w.layer(c, layer(salt)),
+                (s + n * per_salt).min(FULL),
+                "salt at {c:?}"
+            );
+        }
+        assert_eq!(
+            fires(40, 40),
+            substeps,
+            "the first case fires every sub-step"
+        );
+        assert_eq!(
+            got.react_delta[usize::from(salt)],
+            i64::from(fired * per_salt)
+        );
+        assert_eq!(
+            got.react_delta[usize::from(acid)],
+            -i64::from(fired * per_acid)
+        );
+        assert_eq!(
+            got.react_delta[usize::from(lime)],
+            -i64::from(fired * per_lime)
+        );
+        assert_eq!(
+            got.saturation_loss[usize::from(salt)],
+            i64::from(substeps * per_salt - per_salt),
+            "the full cell keeps one fire's salt"
+        );
+    }
+
+    /// `dissolve_carbonate`: acid water over a limestone bed seeps into
+    /// the porous stone and carries its acid in. There, below pH 4, the
+    /// carbonate dissolves: lime appears, the stone softens (WeatherBoost)
+    /// and the lime then neutralizes acid into salt. The same pool without
+    /// acid only weathers the bed.
+    #[test]
+    fn dissolve_carbonate_in_porous_limestone_fed_by_seepage() {
+        let t = dry_spring();
+        let m = t.materials();
+        let limestone = m.id("limestone").unwrap();
+        assert!(m.has_tag(limestone, "carbonate") && m.has_tag(limestone, "porous"));
+        let water = t.role_material("water").unwrap();
+        let [acid, lime, salt] = ["acid", "lime", "salt"].map(|k| t.substance_index(k).unwrap());
+        let bed_top = 3;
+        let pool = |pool_acid: i32| {
+            let mut w = small_world(&t);
+            let mut ledger = SeasonLedger::default();
+            for cell in global_order(w.bounds()).filter(|c| c.0.y > 0) {
+                if cell.0.y <= bed_top {
+                    w.eco_set(cell, limestone, &mut ledger);
+                } else {
+                    w.eco_set(cell, water, &mut ledger);
+                    w.eco_put_layer(cell, LayerId::Moisture, FULL);
+                    w.eco_put_layer(cell, layer(acid), pool_acid);
+                }
+            }
+            w
+        };
+        // The top of the bed, under the pool, and the layer below it, which
+        // touches no water: only porous-to-porous seepage (§7.3 B4) reaches it.
+        let bed = |w: &World| -> Vec<CellPos> {
+            global_order(w.bounds())
+                .filter(|c| c.0.y == bed_top || c.0.y == bed_top - 1)
+                .collect()
+        };
+
+        let mut sour = pool(FULL);
+        let before = bed(&sour);
+        assert!(before.iter().all(|&c| sour.layer(c, layer(acid)) == 0));
+        let got = season(&mut sour, &t, &mut |_, _, _| {});
+        let mut clear = pool(0);
+        season(&mut clear, &t, &mut |_, _, _| {});
+
+        let cells = bed(&sour);
+        let wet = cells
+            .iter()
+            .filter(|&&c| sour.layer(c, LayerId::Moisture) > 0)
+            .count();
+        assert_eq!(wet, cells.len(), "the pool seeped into both layers");
+        for &c in &cells {
+            assert_eq!(sour.get_cell(c), Some(limestone));
+            if c.0.y < bed_top {
+                assert!(
+                    FACES
+                        .iter()
+                        .all(|&f| sour.get_cell(offset(c, f)) != Some(water)),
+                    "{c:?} is fed only through limestone"
+                );
+            }
+            assert!(
+                sour.layer(c, LayerId::Regolith) > clear.layer(c, LayerId::Regolith),
+                "acid softened the limestone at {c:?}"
+            );
+            assert!(
+                sour.layer(c, layer(lime)) + sour.layer(c, layer(salt)) > 0,
+                "the carbonate dissolved at {c:?}"
+            );
+            assert_eq!(clear.layer(c, layer(salt)), 0);
+        }
+        assert!(
+            got.react_delta[usize::from(acid)] < 0,
+            "the bed consumed acid"
+        );
+        assert!(
+            got.react_delta[usize::from(salt)] > 0,
+            "lime neutralized acid"
+        );
+        // dissolve_carbonate adds lime; neutralize turns lime into as much
+        // salt. Their sum is the lime the carbonate gave up.
+        let dissolved = got.react_delta[usize::from(lime)] + got.react_delta[usize::from(salt)];
+        assert!(dissolved > 0, "carbonate lime: {dissolved}");
+    }
+
+    /// `mobility_acid`: the same water moving through the same copper
+    /// carries far more of it when the water is acidic (pH below
+    /// `acid_ph`). The water moves identically either way.
+    #[test]
+    fn acid_increases_copper_transport() {
+        let t = dry_spring();
+        let water = t.role_material("water").unwrap();
+        let [cu, acid] = ["cu", "acid"].map(|k| t.substance_index(k).unwrap());
+        let row = &t.substances()[usize::from(cu)];
+        assert!(row.mobility_acid > row.mobility);
+        let column: Vec<CellPos> = (3..=5).map(|y| CellPos::new(1, y, 1)).collect();
+        let spill = |column_acid: i32| {
+            let mut w = small_world(&t);
+            let mut ledger = SeasonLedger::default();
+            for &c in &column {
+                w.eco_set(c, water, &mut ledger);
+                w.eco_put_layer(c, LayerId::Moisture, FULL);
+                w.eco_put_layer(c, layer(cu), 120);
+                w.eco_put_layer(c, layer(acid), column_acid);
+            }
+            assert_eq!(
+                Transport::new(&t).ph(&w, column[0]) < i32::from(t.params().acid_ph),
+                column_acid > 0
+            );
+            season(&mut w, &t, &mut |_, _, _| {});
+            w
+        };
+        let sour = spill(FULL);
+        let plain = spill(0);
+        let mut carried = [0; 2];
+        for cell in global_order(sour.bounds()) {
+            assert_eq!(
+                sour.layer(cell, LayerId::Moisture),
+                plain.layer(cell, LayerId::Moisture),
+                "the water moved the same at {cell:?}"
+            );
+            if !column.contains(&cell) {
+                carried[0] += sour.layer(cell, layer(cu));
+                carried[1] += plain.layer(cell, layer(cu));
+            }
+        }
+        assert_eq!(total(&sour, cu), total(&plain, cu), "copper is conserved");
+        let [acidic, neutral] = carried;
+        assert!(
+            acidic > 2 * neutral && acidic > 0,
+            "acid water carried {acidic} copper, neutral water {neutral}"
+        );
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(cases()))]
 

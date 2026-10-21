@@ -26,8 +26,13 @@
         diff_shift: 6,
         // §7.5 weathering: above this regolith the pickaxe needs hardness / 2
         soft_regolith: 128,
-        // §7.6 chemistry: pH = clamp(7 + (lime - acid) / 2^ph_shift, 0, 14)
-        ph_shift: 4,
+        // §7.6 chemistry: pH = clamp(7 + (lime - acid) / 2^ph_shift, 0, 14).
+        // pH reads amounts, and limestone holds at most field_capacity 24 of
+        // water, so its acid stays near 24 x the feed's acid/fill. Shift 2
+        // puts PhBelow(4) (acid - lime >= 16) within reach of a strongly
+        // acid feed; shift 4 would need 64 and dissolve_carbonate could never
+        // fire in seeped limestone (F143).
+        ph_shift: 2,
         acid_ph: 5,
         evap_low_fill: 32,
         crust_threshold: 64,
