@@ -2079,3 +2079,39 @@ Decisions:
 - Rule 21: there are no pixel thresholds. The "flat fill" check is a distinct-color count.
 Next: F096.
 Blockers: none.
+
+## 2026-10-21 06:30 — F096 Solid break chips and depth-tested hit feedback; damage shows on the cell face — passed
+Done:
+- Break chips (hud.rs) are now `BreakChip` entities, not gizmo wireframes.
+  - Each break spawns `BREAK_CHIPS` small cube meshes. They share one unit `Cuboid`, and each broken material gets one cached `StandardMaterial` (`..chunk_material()`, the material's color). The chips are lit, opaque, depth-tested and `NotShadowCaster`.
+  - `chip_transform` keeps the old motion constants (speed, gravity, spin). Chips shrink over the last `CHIP_SHRINK_FADE` of the effect and are despawned at `BREAK_EFFECT_S`.
+- The outline and the break flash draw in a new gizmo group, `HudGizmos`, with `depth_bias` = `HUD_GIZMO_DEPTH_BIAS` (0.0).
+- The flash now closes into the hole (`flash_scale`: from `OUTLINE_SCALE` down by `BREAK_FLASH_SHRINK` = 0.5) instead of growing by 0.5.
+- Damage on the cell: while `HudState` shows damage on the target, one `CrackOverlay` sits at the cell.
+  - It is a cube at `CRACK_OVERLAY_SCALE` (1.004), just outside the faces.
+  - Its material is unlit, fog off and `AlphaMode::Multiply`, with color `crack_color(strength)`: linear `1 - CRACK_DARKEN * strength`, where `CRACK_DARKEN` = 0.7.
+  - `strength` is the damage fraction. The overlay is despawned when there is no damage or no target.
+- Chips and the overlay run only in apps with `Assets<Mesh>` and `Assets<StandardMaterial>`. The lines need `GizmoPlugin`. A logic-only app shows neither.
+Tests added:
+- `hud::tests::{break_chips_are_depth_tested_meshes, target_outline_is_depth_tested, damaged_cell_gets_crack_tint}`.
+  - `Rig::rendering` adds `AssetPlugin`, `GizmoPlugin` and the mesh, material and skinning assets.
+  - The "no gizmo draw" check counts line vertices over all `GizmoAsset`s. After a break the count equals one cube's (the flash): wireframe chips would add 8 more cubes.
+  - Disabling `HudGizmos` leaves 0 vertices, which shows the outline and flash draw in that group.
+- E2E `hit_feedback_close` swings at basalt from 0.4 m, 1.5 m and 0.25 m. For each it checks:
+  - mid-damage: the overlay's strength equals the damage fraction, and its color equals `crack_color`;
+  - on the break: 8 chips with mesh and material, and the overlay gone;
+  - after the effect: the chips despawned;
+  - the frame is not blank.
+  - Screenshots: `docs/screens/hit_feedback_close-*.png`.
+- Reviewer: GAPS, minor. It noted that `depth_bias` 0 is Bevy's default, so pinning it does not change how the lines are drawn, and that there was no shot as close as pt-725. Both are addressed by the flash change and the 0.25 m shot below.
+Decisions:
+- Cause of pt-725's lines across the whole view: Bevy gizmo lines were already depth-tested (default `depth_bias` 0). At 0.2 m, the flash cube had grown to 1.5 cells, so its near edges crossed the open air a few cm in front of the eye, and from there they span the whole view.
+  - Fix: the flash now closes into the hole and never comes nearer the camera than the outline.
+  - The `HudGizmos` group pins the bias at 0, so the depth test is explicit and tested.
+  - The 0.25 m shot (`touching-break`) shows the flash inside the hole.
+- `BREAK_FLASH_GROWTH` is replaced by `BREAK_FLASH_SHRINK` (same 0.5). The flash is not a chip motion constant, so the note "keep their motion constants" does not cover it.
+- Damage shows as a darkening (multiply), not a crack texture. The notes allow either. Multiply needs no sorting or alpha, and keeps the cell's own lighting.
+- Rule 21: there are no pixel thresholds. The only image check is a count of at least 16 distinct colors, which catches a blank frame.
+- The closest E2E distance is 0.25 m, not 0.2 m: the 0.45 m box (F094) needs 0.225 m plus clearance.
+Next: F097.
+Blockers: none.
