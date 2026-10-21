@@ -665,18 +665,37 @@ mod tests {
         let corner = t.host_world().bounds().max;
         assert_eq!(replica_hash(&t), t.host_world().hash());
 
-        // A real season: the temperature pass changes layers only, so
-        // every changed chunk comes as a LayerSnapshot.
+        // A real season. A chunk whose materials changed (its `revision`:
+        // rain, and steam condensing in caves, turn air to water, SAD-P2
+        // §7.3) comes as a ChunkSnapshot; one whose layers alone changed
+        // (the temperature pass's) as a LayerSnapshot; the rest not at all.
+        let revisions = |t: &TestApp| -> Vec<(ChunkPos, u64, u64)> {
+            t.host_world()
+                .iter_chunks_sorted()
+                .map(|(p, c)| (p, c.revision, c.eco_revision))
+                .collect()
+        };
+        let before = revisions(&t);
         t.advance_season();
         assert_eq!(t.host().season(), Some(1));
         let s = t.last_season().expect("a season").clone();
         assert_eq!(s.season, 0);
-        assert!(
-            s.chunk_snapshots.is_empty(),
-            "no pass changes materials yet"
-        );
+        let (mut want_chunk, mut want_layer) = (Vec::new(), Vec::new());
+        for (&(p, rev, eco), (q, rev_after, eco_after)) in before.iter().zip(revisions(&t)) {
+            assert_eq!(p, q, "the same resident chunks");
+            if rev_after != rev {
+                want_chunk.push(p);
+            } else if eco_after != eco {
+                want_layer.push(p);
+            }
+        }
+        assert_eq!(s.chunk_snapshots, want_chunk, "material changes");
+        assert_eq!(s.layer_snapshots, want_layer, "layer-only changes");
         assert!(!s.layer_snapshots.is_empty(), "temperatures changed");
-        assert_eq!(s.changed_chunks as usize, s.layer_snapshots.len());
+        assert_eq!(
+            s.changed_chunks as usize,
+            s.chunk_snapshots.len() + s.layer_snapshots.len()
+        );
         let mut sorted = s.layer_snapshots.clone();
         sorted.sort();
         assert_eq!(sorted, s.layer_snapshots, "ascending");
@@ -691,9 +710,9 @@ mod tests {
             assert_eq!(replica_temp(&t, cell), t.temp(cell), "{cell:?}");
         }
 
-        // A ChunkSnapshot inside a season frame. No pass changes materials
-        // before F125, so the host cannot send one yet: the frame is
-        // written to the client's inbox as the host would send it.
+        // A ChunkSnapshot inside a season frame, written to the client's
+        // inbox as the host would send it, so that both kinds arrive
+        // whatever the season changed.
         let pos = ChunkPos::new(1, 2, 0);
         let host_chunk = t.host_world().chunk(pos).expect("resident").clone();
         let stone = t
