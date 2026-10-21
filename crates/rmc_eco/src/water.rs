@@ -18,7 +18,14 @@
 //!    the receiver's room, to the first neighbor, below first, then the 4
 //!    horizontal ones in sorted order, that is air or water with room or
 //!    porous with room;
-//! 5. water at fill 0 becomes air.
+//! 5. water at fill 0 becomes air;
+//! 6. magma, a whole-cell liquid, moves on the iterations where
+//!    `iter % (viscosity + 1) == 0` ([`WaterPass::set_iter`]): it swaps
+//!    with the air below, else with the first air cell of the 4
+//!    horizontal neighbors in sorted order, taking its temperature along
+//!    (§7.1). It never enters water, porous solids or another liquid.
+//!    Magma is conserved as a cell count; a swap neither sets nor melts
+//!    any.
 //!
 //! A porous solid is a `Solid` material tagged `porous`; its moisture is
 //! the water it holds, up to its `field_capacity` (`cap_left` is the
@@ -26,8 +33,8 @@
 //! room from the current state just before it is applied, and the
 //! receiver joins the active set. Moves inside the water total need no
 //! ledger entry: water that changes cells is neither a source nor a sink.
-//! Magma (6) and contact boiling (7) take their places in this order;
-//! [`reference::flat_sweep_water`] is the flat-array oracle.
+//! Contact boiling (7) takes its place after magma;
+//! [`reference::flat_sweep_water`] is the flat-array oracle (without magma).
 //!
 //! [`reference::flat_sweep_water`]: crate::reference::flat_sweep_water
 
@@ -60,6 +67,13 @@ pub struct WaterPass {
     /// Per material id: the porous solid's constants, `None` for every
     /// other material.
     porous: Vec<Option<Porous>>,
+    /// Role `magma`.
+    magma: Option<MaterialId>,
+    /// Magma's `viscosity + 1`: it moves on iterations that are a multiple
+    /// of this.
+    magma_period: u16,
+    /// The flow iteration of the current sweep within the sub-step.
+    iter: u8,
 }
 
 /// The constants of a porous solid (a `Solid` tagged `porous`).
@@ -116,6 +130,10 @@ impl WaterPass {
                 })
             })
             .collect();
+        let magma = tables.role_material("magma");
+        let viscosity = magma
+            .and_then(|m| tables.materials().get(m))
+            .map_or(0, |d| d.viscosity);
         Self {
             air: tables.role_material("air"),
             water: tables.role_material("water"),
@@ -125,7 +143,16 @@ impl WaterPass {
             infil_side_shift: params.infil_side_shift,
             seep_shift: params.seep_shift,
             porous,
+            magma,
+            magma_period: u16::from(viscosity) + 1,
+            iter: 0,
         }
+    }
+
+    /// Tells the pass which of the sub-step's `flow_iters` sweeps runs
+    /// next (0-based); magma moves only on some of them (§7.3 B6).
+    pub fn set_iter(&mut self, iter: u8) {
+        self.iter = iter;
     }
 
     /// Flow sweeps per sub-step (`eco.flow_iters`).
@@ -182,6 +209,49 @@ impl WaterPass {
             .eco_put_layer(to, LayerId::Moisture, receiver.held() + amount);
         ctx.receive(to);
         held - amount
+    }
+
+    /// Step 6, magma, on every `viscosity + 1`-th iteration: swap with the
+    /// air below, else with the first air neighbor of the 4 horizontal
+    /// ones in sorted order. Anything else (water, porous solids, other
+    /// liquids, solids) blocks it.
+    fn flow_magma(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, air: MaterialId) {
+        if u16::from(self.iter) % self.magma_period != 0 {
+            return;
+        }
+        let to = std::iter::once(BELOW)
+            .chain(SIDEWAYS)
+            .map(|d| offset(cell, d))
+            .find(|&n| {
+                ctx.world
+                    .get_cell(n)
+                    .is_some_and(|id| Self::is_air(ctx.world, id))
+            });
+        if let Some(to) = to {
+            self.swap_magma(ctx, cell, to, air);
+        }
+    }
+
+    /// Swaps the magma at `cell` with the air at `to`, materials and
+    /// temperatures (§7.1 advection). Both changes go through `eco_set`,
+    /// so the air's gases and moisture are displaced as for any cell that
+    /// stops being air (§7.0), into the cell the magma left when it is the
+    /// first with room. `eco_set` books the two halves as a set and a
+    /// melt; a swap is neither, so the pass takes both back and the magma
+    /// count stays balanced.
+    fn swap_magma(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, to: CellPos, air: MaterialId) {
+        let magma = self.magma.expect("only magma cells swap");
+        let (t_magma, t_air) = (
+            ctx.world.layer(cell, LayerId::Temperature),
+            ctx.world.layer(to, LayerId::Temperature),
+        );
+        ctx.world.eco_set(cell, air, ctx.ledger);
+        ctx.world.eco_set(to, magma, ctx.ledger);
+        ctx.ledger.magma_set -= 1;
+        ctx.ledger.magma_melt_in -= 1;
+        ctx.world.eco_put_layer(cell, LayerId::Temperature, t_air);
+        ctx.world.eco_put_layer(to, LayerId::Temperature, t_magma);
+        ctx.receive(to);
     }
 
     /// Step 4, seepage: a porous cell above its threshold sheds the
@@ -252,6 +322,10 @@ impl SweepPass for WaterPass {
             self.seep(ctx, cell, fill, p);
             return;
         }
+        if Some(m) == self.magma {
+            self.flow_magma(ctx, cell, air);
+            return;
+        }
         // 1. Air with moisture becomes water.
         let is_water = if Self::is_air(ctx.world, m) && fill > 0 {
             ctx.world.eco_set(cell, water, ctx.ledger);
@@ -301,7 +375,7 @@ impl SweepPass for WaterPass {
         }
     }
 
-    /// Water cells, moist air, and porous cells above their seepage
+    /// Water cells, moist air, magma, and porous cells above their seepage
     /// threshold (at or below it, their visit moves nothing; a porous cell
     /// that receives water is visited and leaves again if it is still at
     /// or below). Ice keeps its moisture in place, so it leaves the set.
@@ -312,7 +386,9 @@ impl SweepPass for WaterPass {
         if let Some(p) = self.porous(m) {
             return moisture(world, cell) > p.threshold;
         }
-        Some(m) == self.water || (Self::is_air(world, m) && moisture(world, cell) > 0)
+        Some(m) == self.water
+            || Some(m) == self.magma
+            || (Self::is_air(world, m) && moisture(world, cell) > 0)
     }
 }
 
@@ -352,11 +428,16 @@ mod tests {
         loam: MaterialId,
         /// Porous with permeability 0.
         hardpan: MaterialId,
+        /// Role `magma`: the SAD-P2 §5 row (Liquid, viscosity 3).
+        magma: MaterialId,
+        /// A liquid of another kind than water or magma.
+        brine: MaterialId,
     }
 
     impl Fix {
-        /// The shipped tables, with two porous test materials appended to
-        /// the shipped material table (it has no porous row yet).
+        /// The shipped tables, with two porous test materials, magma (the
+        /// SAD-P2 §5 row) and a test liquid appended to the shipped material
+        /// table (it has no porous or magma row yet).
         fn new() -> Self {
             let base = std::fs::read_to_string(format!("{ASSETS}/materials.ron")).unwrap();
             let n = MaterialTable::from_ron_str(&base).unwrap().len();
@@ -367,12 +448,24 @@ mod tests {
                      emissive: 0.0, permeability: {perm}, field_capacity: {LOAM_CAP}),\n"
                 )
             };
+            let liquid = |id: usize, key: &str, extra: &str| {
+                format!(
+                    "(id: {id}, key: \"{key}\", phase: Liquid, tags: [], hardness: 0,                      diggable: false, yield_count: 0, color: (255, 90, 0, 255),                      emissive: 2.0{extra}),
+"
+                )
+            };
             let end = base.rfind(']').expect("material list closes");
             let text = format!(
-                "{}{}{}]",
+                "{}{}{}{}{}]",
                 &base[..end],
                 row(n, "test_loam", LOAM_PERM),
-                row(n + 1, "test_hardpan", 0)
+                row(n + 1, "test_hardpan", 0),
+                liquid(
+                    n + 2,
+                    "magma",
+                    ", viscosity: 3, conductivity: 64, heat_capacity: 32"
+                ),
+                liquid(n + 3, "test_brine", "")
             );
             let m = Arc::new(MaterialTable::from_ron_str(&text).expect("test table loads"));
             let t = EcoTables::load_with_materials(m, ASSETS).expect("Phase 2 tables load");
@@ -380,12 +473,16 @@ mod tests {
             let air = t.role_material("air").expect("materials.ron has air");
             let loam = t.materials().id("test_loam").unwrap();
             let hardpan = t.materials().id("test_hardpan").unwrap();
+            let magma = t.role_material("magma").expect("the magma row resolves");
+            let brine = t.materials().id("test_brine").unwrap();
             Self {
                 t,
                 air,
                 water,
                 loam,
                 hardpan,
+                magma,
+                brine,
             }
         }
 
@@ -842,6 +939,267 @@ mod tests {
         assert_eq!(ledger, SeasonLedger::default());
     }
 
+    fn temp(w: &World, cell: CellPos) -> i32 {
+        w.layer(cell, LayerId::Temperature)
+    }
+
+    /// The ledger's magma terms: a swap is neither a set nor a melt.
+    fn magma_terms(l: &SeasonLedger) -> (i64, i64, i64) {
+        (l.magma_set, l.magma_melt_in, l.magma_edit)
+    }
+
+    /// One sub-step's flow sweeps, each told its iteration.
+    fn substep(w: &mut World, pass: &mut WaterPass, ledger: &mut SeasonLedger) {
+        for i in 0..pass.flow_iters() {
+            pass.set_iter(i);
+            run_sweep(w, pass, ledger);
+        }
+    }
+
+    #[test]
+    fn magma_swaps_with_air_and_carries_temperature() {
+        let f = Fix::new();
+        let steam = f.t.role_gas("steam").expect("steam role");
+        let hot = 12_000;
+        // Falling: magma 4 cells above the slab, the air under it at 150 and
+        // holding steam. In the world's −x −z corner, so that once on the
+        // slab its only open neighbors come later in order: it steps to +x
+        // and, visited again, straight back.
+        let fall = |y| CellPos::new(0, SLAB_Y + y, 0);
+        // Sliding: a pocket in the slab top whose only open neighbor is +x,
+        // which has air under it.
+        let slide = CellPos::new(10, SLAB_Y, 10);
+        let ledge = CellPos::new(11, SLAB_Y, 10);
+        let drop = CellPos::new(11, SLAB_Y - 1, 10);
+        // Sorted order: magma on the slab with air on all four sides moves
+        // to the first, −z.
+        let flat = CellPos::new(20, SLAB_Y + 1, 20);
+        let flat_to = CellPos::new(20, SLAB_Y + 1, 19);
+        let mut w = f.world(&[
+            (fall(4), f.magma),
+            (slide, f.magma),
+            (ledge, f.air),
+            (drop, f.air),
+            (flat, f.magma),
+        ]);
+        for c in [fall(4), slide, flat] {
+            w.eco_put_layer(c, LayerId::Temperature, hot);
+        }
+        w.eco_put_layer(fall(3), LayerId::Temperature, 150);
+        w.eco_put_layer(fall(3), LayerId::Gas(steam), 7);
+        w.eco_put_layer(drop, LayerId::Temperature, 80);
+        let mut pass = WaterPass::new(&f.t);
+        activate_holders(&mut w, &pass);
+        for c in [fall(4), slide, flat] {
+            assert!(active(&w, c), "magma joins the water sweep");
+        }
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let rev = revision(&w);
+
+        pass.set_iter(0);
+        run_sweep(&mut w, &mut pass, &mut ledger);
+
+        // One cell down per sweep: the cell below comes earlier in the
+        // global order, so the magma is not visited again this sweep.
+        assert_eq!(w.get_cell(fall(3)), Some(f.magma));
+        assert_eq!(w.get_cell(fall(4)), Some(f.air));
+        assert_eq!(temp(&w, fall(3)), hot, "magma takes its temperature");
+        assert_eq!(temp(&w, fall(4)), 150, "the air takes its own");
+        assert_eq!(w.layer(fall(3), LayerId::Gas(steam)), 0, "gas left");
+        assert!(active(&w, fall(3)) && !active(&w, fall(4)));
+        // Sideways onto the ledge (later in order, so visited again this
+        // sweep), then down off it.
+        assert_eq!(w.get_cell(slide), Some(f.air));
+        assert_eq!(w.get_cell(ledge), Some(f.air));
+        assert_eq!(w.get_cell(drop), Some(f.magma));
+        assert_eq!(temp(&w, drop), hot);
+        assert_eq!(temp(&w, ledge), 80, "the drop's air went up to the ledge");
+        assert_eq!(temp(&w, slide), 0, "the ledge's air went into the pocket");
+        // The first air neighbor in sorted order.
+        assert_eq!(w.get_cell(flat_to), Some(f.magma));
+        assert_eq!(w.get_cell(flat), Some(f.air));
+        assert_eq!(temp(&w, flat_to), hot);
+        assert!(revision(&w) > rev, "swaps bump the revision");
+        checker
+            .check(&w, &ledger)
+            .expect("magma and steam conserved");
+        assert_eq!(
+            magma_terms(&ledger),
+            (0, 0, 0),
+            "a swap is not a set or a melt"
+        );
+
+        // It keeps falling until it rests on the slab.
+        for _ in 0..8 {
+            run_sweep(&mut w, &mut pass, &mut ledger);
+        }
+        assert_eq!(w.get_cell(fall(1)), Some(f.magma));
+        assert_eq!(temp(&w, fall(1)), hot);
+        checker.check(&w, &ledger).expect("magma conserved");
+        assert_eq!(magma_terms(&ledger), (0, 0, 0));
+    }
+
+    #[test]
+    fn magma_viscosity_gates_moves() {
+        let f = Fix::new();
+        let viscosity = f.t.materials().get(f.magma).unwrap().viscosity;
+        assert_eq!(viscosity, 3, "the SAD-P2 §5 row");
+        assert_eq!(f.t.params().flow_iters, 8, "the counts below assume 8");
+        // Magma high in open air falls one cell on each iteration where
+        // `iter % (viscosity + 1) == 0`: iterations 0 and 4.
+        let top = CellPos::new(10, 28, 10);
+        let mut w = f.world(&[(top, f.magma)]);
+        let mut pass = WaterPass::new(&f.t);
+        activate_holders(&mut w, &pass);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let at = |w: &World| {
+            (SLAB_Y + 1..=28).find(|&y| w.get_cell(CellPos::new(10, y, 10)) == Some(f.magma))
+        };
+
+        for i in 0..pass.flow_iters() {
+            pass.set_iter(i);
+            let before = at(&w);
+            let r = run_sweep(&mut w, &mut pass, &mut ledger);
+            assert!(r.visits >= 1, "iteration {i}: gated magma is still visited");
+            let moved = at(&w) != before;
+            assert_eq!(moved, i % (viscosity + 1) == 0, "iteration {i}");
+        }
+        assert_eq!(at(&w), Some(26), "two moves per sub-step");
+        substep(&mut w, &mut pass, &mut ledger);
+        assert_eq!(at(&w), Some(24));
+        checker.check(&w, &ledger).expect("magma conserved");
+
+        // Viscosity 0 moves on every iteration.
+        let mut w = f.world(&[(top, f.magma)]);
+        let mut runny = WaterPass::new(&f.t);
+        runny.magma_period = 1;
+        activate_holders(&mut w, &runny);
+        substep(&mut w, &mut runny, &mut ledger);
+        assert_eq!(at(&w), Some(20));
+    }
+
+    #[test]
+    fn magma_never_enters_water_or_porous() {
+        let f = Fix::new();
+        // Shafts in the slab: magma at the top of each, with air above it
+        // and stone around it except for the cell named.
+        let top = |x| CellPos::new(x, SLAB_Y, 10);
+        let under = |x| CellPos::new(x, SLAB_Y - 1, 10);
+        let beside = |x| CellPos::new(x + 1, SLAB_Y, 10);
+        let mut cells = Vec::new();
+        for (x, m, v) in [
+            (1, f.water, 255),
+            (4, f.water, 100),
+            (7, f.loam, 0),
+            (10, f.hardpan, 0),
+            (13, f.brine, 0),
+        ] {
+            // One shaft with the cell under the magma, one with it beside.
+            cells.push((top(x), f.magma, 0));
+            cells.push((under(x), m, v));
+            cells.push((top(x + 15), f.magma, 0));
+            cells.push((beside(x + 15), m, v));
+        }
+        let (mut w, mut pass) = pocket_world(&f, &cells);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let magma_cells = |w: &World| -> Vec<CellPos> {
+            global_order(w.bounds())
+                .filter(|&c| w.get_cell(c) == Some(f.magma))
+                .collect()
+        };
+        let start = magma_cells(&w);
+        assert_eq!(start.len(), 10);
+
+        for _ in 0..4 {
+            for i in 0..pass.flow_iters() {
+                let before: Vec<(CellPos, MaterialId)> = global_order(w.bounds())
+                    .map(|c| (c, w.get_cell(c).unwrap()))
+                    .collect();
+                pass.set_iter(i);
+                run_sweep(&mut w, &mut pass, &mut ledger);
+                for (c, m) in before {
+                    if w.get_cell(c) == Some(f.magma) {
+                        assert!(m == f.magma || m == f.air, "magma entered {m:?} at {c:?}");
+                    }
+                }
+                checker.check(&w, &ledger).expect("conserved");
+            }
+        }
+        // Nothing open around them: no magma moved, and none put anything
+        // into the porous cells. (Contact boiling, §7.3 B7, may turn magma
+        // beside water into obsidian; it never moves magma.)
+        let end = magma_cells(&w);
+        assert!(
+            end.iter().all(|c| start.contains(c)),
+            "magma moved: {end:?}"
+        );
+        for c in [under(7), under(10), beside(22), beside(25)] {
+            assert_eq!(fill(&w, c), 0, "magma put nothing into {c:?}");
+        }
+        assert_eq!((ledger.magma_melt_in, ledger.magma_edit), (0, 0));
+    }
+
+    #[test]
+    fn magma_count_invariant() {
+        let f = Fix::new();
+        let mut s = 0x006d_6167_6d61_u64;
+        for case in 0..cases() {
+            let seed = next(&mut s);
+            let (mut w, mut pass) = random_world_with(&f, seed, true);
+            let count = |w: &World| {
+                global_order(w.bounds())
+                    .filter(|&c| w.get_cell(c) == Some(f.magma))
+                    .count()
+            };
+            // Magma cells carry their temperature, and a swap moves both
+            // temperatures: all temperatures stay the same multiset through
+            // any number of sweeps, and so do the magma temperatures while no
+            // magma has set (contact boiling, §7.3 B7, sets it in place).
+            let temps = |w: &World, only_magma: bool| {
+                let mut v: Vec<i32> = global_order(w.bounds())
+                    .filter(|&c| !only_magma || w.get_cell(c) == Some(f.magma))
+                    .map(|c| temp(w, c))
+                    .collect();
+                v.sort_unstable();
+                v
+            };
+            let (n, magma_t, all_t) = (count(&w), temps(&w, true), temps(&w, false));
+            let checker = InvariantChecker::new(&w);
+            let mut ledger = SeasonLedger::default();
+            for step in 0..2 {
+                for i in 0..pass.flow_iters() {
+                    pass.set_iter(i);
+                    run_sweep(&mut w, &mut pass, &mut ledger);
+                    let at = format!("case {case} seed {seed:#x} sub-step {step} iter {i}");
+                    // The full checker (every quantity) once per sub-step,
+                    // which keeps the test fast; magma's own equation below
+                    // after every sweep.
+                    if i + 1 == pass.flow_iters()
+                        && let Err(v) = checker.check(&w, &ledger)
+                    {
+                        panic!("{at}: {v}");
+                    }
+                    // The flow sweep never melts or places magma.
+                    assert_eq!((ledger.magma_melt_in, ledger.magma_edit), (0, 0), "{at}");
+                    let want = n as i64 - ledger.magma_set;
+                    assert_eq!(count(&w) as i64, want, "{at}: magma count");
+                    if ledger.magma_set == 0 {
+                        assert_eq!(temps(&w, true), magma_t, "{at}: magma temperatures");
+                    }
+                    assert_eq!(temps(&w, false), all_t, "{at}: temperatures");
+                    for c in global_order(w.bounds()) {
+                        if w.get_cell(c) == Some(f.magma) {
+                            assert!(active(&w, c), "{at}: magma at {c:?} not active");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn cases() -> u32 {
         std::env::var("PROPTEST_CASES")
             .ok()
@@ -865,6 +1223,12 @@ mod tests {
     /// with any moisture (over capacity too, as `SetLayer` can leave it).
     /// Water holders are active.
     fn random_world(f: &Fix, seed: u64) -> (World, WaterPass) {
+        random_world_with(f, seed, false)
+    }
+
+    /// [`random_world`], and with `magma` also magma cells (about one in
+    /// six) and a random temperature on every cell.
+    fn random_world_with(f: &Fix, seed: u64, magma: bool) -> (World, WaterPass) {
         let stone = f.t.materials().id("stone").unwrap();
         let bounds = CellAabb::new(CellPos::new(-4, -4, -4), CellPos::new(3, 3, 3));
         let mut w = World::new(Arc::clone(f.t.materials()), bounds);
@@ -875,11 +1239,17 @@ mod tests {
             .collect();
         let mut s = seed;
         let mut fills = Vec::new();
+        let mut temps = Vec::new();
+        let kinds = if magma { 16 } else { 13 };
         for cell in global_order(bounds) {
             let r = next(&mut s);
             let v = ((r >> 8) % 256) as i32;
-            let (m, v) = match r % 13 {
+            if magma {
+                temps.push((cell, ((r >> 16) % 13_000) as i32));
+            }
+            let (m, v) = match r % kinds {
                 _ if cell.0.y == bounds.min.0.y => (stone, 0),
+                13.. => (f.magma, 0),
                 0..=2 => (stone, 0),
                 3..=5 => (f.air, 0),
                 6 => (f.air, v),
@@ -897,6 +1267,9 @@ mod tests {
         }
         for (cell, v) in fills {
             w.eco_put_layer(cell, LayerId::Moisture, v);
+        }
+        for (cell, t) in temps {
+            w.eco_put_layer(cell, LayerId::Temperature, t);
         }
         let pass = WaterPass::new(&f.t);
         activate_holders(&mut w, &pass);

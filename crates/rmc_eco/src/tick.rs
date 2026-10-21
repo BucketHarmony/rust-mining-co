@@ -112,7 +112,8 @@ fn substep(
         exec,
         report,
     );
-    for _ in 0..passes.water.flow_iters() {
+    for i in 0..passes.water.flow_iters() {
+        passes.water.set_iter(i);
         let r = run_sweep(world, &mut passes.water, &mut report.ledger);
         report
             .active_cells_per_sweep
