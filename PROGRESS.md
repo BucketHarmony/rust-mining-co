@@ -2834,3 +2834,42 @@ Decisions:
 - Activity: `Evaporating` reads the evaporated set from outside the chunk view. Any evaporation changes the cell's moisture, which bumps `eco_revision` and wakes the chunk, so a skipped chunk never misses a newly evaporated cell.
 Next: F143 (oxidation, neutralization, carbonate, copper under acid) is now unblocked, and so are F144, F145 and F155 (once F150 is in). Also ready: F146, F151, F152, F154, F160. E2's playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 20:20 — F143 Oxidation, neutralization, carbonate dissolution, copper mobility under acid — passed
+Done:
+- F141 (transport) and F142 (reactions runner) already carried the mechanics. This feature proves the shipped rows through whole season ticks (`season_tick_observed`, every invariant checked after every pass).
+- `assets/eco.ron`: `ph_shift` 4 → 2. See Decisions.
+Tests added (all in `rmc_eco::chemistry::tests`, shipped tables, no rain, spring air):
+- `exposed_sulfide_releases_s_then_oxidizes`:
+  - Sub-step 0 on a damp, open-air crushed_sulfide: after Weathering, s > 0 and acid 0. After Reactions, acid equals oxidize's produce, and s dropped by its consume from the post-Transport value.
+  - Ledger `weather_in[s]` > 0, `react_delta[s]` < 0, `react_delta[acid]` > 0.
+  - Unbroken sulfide_ore releases nothing and makes no acid.
+  - A crushed_sulfide under a full pool (no air face) weathers but never oxidizes: world acid stays 0.
+- `acid_plus_lime_makes_salt`: five buried cells over one season. Each checks acid, lime and salt against `min(substeps, acid/2, lime/2)` fires:
+  - 40/40 fires every sub-step;
+  - acid only and lime only make nothing;
+  - pH 14 (lime 255, acid 3) fires once;
+  - a near-full salt cell books `saturation_loss`.
+  - Ledger `react_delta` matches exactly.
+- `dissolve_carbonate_in_porous_limestone_fed_by_seepage`: a limestone bed under a pool of acid 255 at fill 255, against the same pool with acid 0. Asserted on the bed's top layer and on the layer below, which touches no water (only B4 porous seepage reaches it):
+  - both layers are wet;
+  - each cell is still limestone;
+  - regolith is above the control's (WeatherBoost);
+  - lime + salt > 0, while the control has no salt;
+  - ledger acid < 0, salt > 0, lime + salt > 0.
+- `acid_increases_copper_transport`: a cu-laden water column spills over a floor, with acid 255 against acid 0:
+  - moisture is identical cell by cell, so the water moves the same either way;
+  - total cu is equal;
+  - cu carried out of the column with acid is more than twice the neutral case.
+Decisions:
+- `ph_shift` 4 → 2. pH reads amounts, not concentrations. A limestone cell holds at most `field_capacity` 24 of water (SAD §5), and transport carries acid in proportion to the water. A limestone cell under a pool at maximum acid (255 at fill 255) therefore settles near acid 24: pH 6 with shift 4, where `PhBelow(4)` needs acid − lime ≥ 64. `dissolve_carbonate` could never fire in seeped limestone, which SAD-P2 §7.6 and §12 require.
+  - With shift 2 it needs ≥ 16. Measured over one season: top layer acid 13, 4 dissolves (regolith 80 vs 16), salt 8; the layer below, regolith 32 vs 0.
+  - The SAD gives no default for `ph_shift`. Its `field_capacity` 24 and its `PhBelow(4)` row are unchanged.
+  - All existing tests derive pH from `params().ph_shift` and still pass.
+  - Side effects of the change:
+    - `mobility_acid` now applies at acid − lime ≥ 12 (was 48);
+    - water reads pH 0 at a net acid of 28.
+  - Consequence for E3's E2E scenarios (`tailings_acidify_downslope`, `limestone_channel_clears`): limestone dissolves only when the feed's acid is about 2/3 of its fill or more. A "swale pH ≥ 6" check needs acid − lime ≤ 7. Evaporation concentrates acid, and lime carried down from the channel neutralizes the swale. Those features may need to tune the rows, not the code.
+- The four tests passed on first run for three of them; the fourth failed for the reason above before the tuning. No pass code changed.
+Next: F144 (Coat side effect: ochre and salt crusts) is unblocked. Also ready: F145, F146, F151, F152, F154, F160. E2's playtester run is still outstanding.
+Blockers: none.
