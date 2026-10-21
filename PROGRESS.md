@@ -2634,3 +2634,25 @@ Decisions:
 - Look (rule 21): winter ice slabs over the slope do not melt in the following summer; only the top cell of a column is clamped to `air_temp`. In both screenshots the slope is terraced ice and water, and the cut itself is under it. The playtester judges.
 Next: F129 (pit_becomes_pond) is the last E2 feature; run the playtester after it. F131, F141, F151, F154 and F160 are ready too.
 Blockers: none.
+
+## 2026-10-21 10:05 — F129 E2E: pit_becomes_pond — passed
+Done:
+- `tests/e2e/tests/pit_becomes_pond.rs`, on a 64 × 128 × 64 generated world (seed 1), no fixture.
+  - An 8 × 8 pit at x, z = 28..=35 is dug from the highest surface over it down to 4 cells under the lowest `water_table_y` of its columns (y 60..=98).
+  - A control pit of the same footprint at x = 12..=19 is dug down to 4 cells over the table (y 68..=96).
+- Preconditions: the pit's cells and walls below the table hold moisture (82413) and the control's ground holds none. Right after digging, neither pit has a solid or liquid cell left.
+- One season with rain 0. It asserts:
+  - `rain_in` is 0;
+  - the pit holds water cells, some of them below the table;
+  - the control holds none;
+  - the pit's fill grew past what digging left on its cells (the ground below the table feeds it).
+- One screenshot looking down the shaft at the pond; the test asserts liquid quads > 0 and no render failure.
+- `TestApp::water_table_y(x, z)` (rmc_testkit): the table worldgen laid down, from `assets/worldgen.ron` and the config's seed.
+- Measured: 50490 fill left on the dug cells (the pit cuts through a flooded cave and wet limestone), 57857 after the season with `evap_to_steam` 2280. 256 water cells, all below the table; control 0. About 56 s.
+Tests added: `e2e:pit_becomes_pond`.
+Decisions:
+- The pit is dug into generated terrain, not a fixture: the fixtures rebuild the site from non-porous stone and soil, which has no water table.
+- The scenario passed on its first run, since F120–F128 already implement the behavior. The control pit and the fill-growth assertion are what make it discriminate: a pit above the table stays dry, and without seepage and cave inflow the fill could only fall (no rain, evaporation > 0).
+- Rule 21 does not apply (not a look feature); the screenshot is for the playtester.
+Next: E2 is complete. Its playtester run is due (step 11 lists M6, M7, M8, E3b, E5, not E2, so this session does not run it). F131, F141, F151, F154 and F160 are ready.
+Blockers: none.
