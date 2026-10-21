@@ -1,0 +1,9 @@
+# Keep builds and tests from taking the whole machine (24 threads, 64 GB). Each Bevy test binary's
+# link takes ~1-2 GB, and cargo runs one link per job. Override for a run with CARGO_BUILD_JOBS=N.
+[build]
+jobs = 8
+
+[env]
+# Test harness threads and rayon pools (season_tick's Jacobi passes) per test process.
+RUST_TEST_THREADS = "8"
+RAYON_NUM_THREADS = "8"

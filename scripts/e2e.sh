@@ -20,9 +20,13 @@ if [ -z "${WGPU_ADAPTER_NAME:-}" ] && [ -z "${WGPU_FORCE_FALLBACK_ADAPTER:-}" ];
 fi
 
 filter="${1:-}"
+# Each scenario is its own test binary (tests/e2e/tests/<name>.rs) that links all of Bevy. For one
+# scenario build only its binary; `--test '*'` would link every scenario (~1.5 GB of RAM each).
+target="*"
+[ -n "$filter" ] && [ -f "tests/e2e/tests/$filter.rs" ] && target="$filter"
 # One scenario at a time: each creates its own render device.
 log="$(mktemp)"
-cargo test -q -p rmc_e2e --test '*' -- --test-threads=1 --include-ignored ${filter:+--exact "$filter"} 2>&1 | tee "$log"
+cargo test -q -p rmc_e2e --test "$target" -- --test-threads=1 --include-ignored ${filter:+--exact "$filter"} 2>&1 | tee "$log"
 rc=${PIPESTATUS[0]}
 # A filter that matches no scenario runs 0 tests and exits 0; that must not count as a pass.
 ran="$(grep -oE '[0-9]+ passed; [0-9]+ failed' "$log" | awk '{s += $1 + $3} END {print s + 0}')"

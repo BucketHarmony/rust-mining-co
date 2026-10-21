@@ -6,7 +6,7 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 
 - Build: `cargo build --workspace`
 - Fast check after edits: `cargo clippy -p <crate> --all-targets -- -D warnings`
-- Unit/integration tests: `cargo test --workspace`
+- Unit/integration tests: `cargo test --workspace --exclude rmc_e2e` (rmc_e2e holds only `#[ignore]` scenarios; run them with `scripts/e2e.sh`). While working, prefer `cargo test -p <crate>`.
 - End-to-end tests (headless render, lavapipe): `scripts/e2e.sh [name]` (sets `RMC_E2E=1 WGPU_ADAPTER_NAME=llvmpipe`)
 - Soak: `scripts/soak.sh`
 - Screenshots for review: `scripts/screens.sh` → `docs/screens/`
@@ -23,7 +23,7 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 5. Behavior comes from `assets/*.ron`. Filter on `tags` and `phase`; never branch on a specific material id or key in non-test code.
 6. TDD. Write the failing test named in `features.json` first. Never delete, `#[ignore]`, or weaken an existing test. If a test is wrong, fix it in its own commit with message prefix `test-fix:` and a reason, and note it in `PROGRESS.md`.
 7. `features.json` is modified only by `scripts/pass-feature.sh` and `scripts/skip-feature.sh`. Do not edit it by hand or with sed.
-8. Every commit passes: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `scripts/check-no-bevy.sh`. A hook blocks commits that fail. Do not bypass it (`--no-verify` is denied).
+8. Every commit passes: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --exclude rmc_e2e`, `scripts/check-no-bevy.sh`. A hook blocks commits that fail. Do not bypass it (`--no-verify` is denied).
 9. One feature per session. Finish it, commit, append to `PROGRESS.md`, stop. Do not start a second feature.
 10. Never ask questions. Nobody is watching. Take the conservative reading of the SAD, implement, and record the decision in `PROGRESS.md` under `## Decisions`.
 11. Pin every crate version in the workspace `Cargo.toml`. Before adding a crate, confirm on crates.io (WebFetch `https://crates.io/api/v1/crates/<name>`) that a release targets the pinned Bevy minor.
@@ -59,6 +59,14 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
       - if the feature's listed tests pass, run `scripts/pass-feature.sh`, title the block's status `passed (CI red, see Blockers)`, and stop.
     - Later features must not wait on that CI. A follow-up fix is owner work.
     - Narrowing what CI runs (dropping a job or an E2E scenario, raising a timeout) is allowed only with a reason under `## Decisions`.
+
+## Machine resources
+
+23. This runs on the owner's desktop. Keep memory use bounded.
+    - Run one cargo command at a time. Do not start cargo (or a script that runs it) in the background while another cargo command, `scripts/e2e.sh`, or a subagent that builds is still running.
+    - Run E2E scenarios by name: `scripts/e2e.sh <name>` for the feature's `e2e:` tests. Run the whole suite (`scripts/e2e.sh` with no name) only at the end of a milestone or when the feature's notes ask for it.
+    - Do not raise `jobs`, `RUST_TEST_THREADS` or `RAYON_NUM_THREADS` in `.cargo/config.toml`, or the debug settings in the workspace `Cargo.toml`. Those are owner settings.
+    - Do not run `cargo clean`. If the disk fills (link error LNK1318), run `cargo clean -p rmc_e2e` and record it.
 
 ## Conventions
 

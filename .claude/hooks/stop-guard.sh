@@ -13,7 +13,7 @@ dirty="$(git status --porcelain 2>/dev/null | grep -vE '^\?\? (logs/|target/)' |
 [ -z "$dirty" ] && exit 0
 extra=""
 if echo "$dirty" | grep -qE '\.rs$|Cargo\.toml$'; then
-  if ! PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo test --workspace -q >/tmp/rmc-stop.log 2>&1; then
+  if ! PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo test --workspace --exclude rmc_e2e -q >/tmp/rmc-stop.log 2>&1; then
     extra="Tests currently fail:
 $(tail -n 30 /tmp/rmc-stop.log)"
   fi

@@ -2014,3 +2014,16 @@ Decisions:
 - The first smoke run failed `meshpipe::tests::{nearest_chunk_first, in_flight_budget_respected}` under machine load: one mesh job took 2.4 s, and the rmc_client lib took 116 s. Run alone they passed, the lib in 0.65 s, and a second full smoke run was SMOKE_OK. No fix: the failure was load, not code.
 Next: F094 (narrower player box, 0.45 m).
 Blockers: none.
+
+## 2026-10-21 00:15 — Owner: machine resource limits; F094 stopped and stashed — partial
+Done:
+- The owner stopped the driver during F094's `pass-feature.sh` check: the machine was pegged by 21 parallel `link.exe` (about 1.5 GB each), because `scripts/e2e.sh <name>` built every e2e binary. F094's work is in `git stash` as "F094 near-done (owner stopped for resource review ...)". Its tests were passing, and pass-feature had not run. Two older F094 stashes sit under it and are superseded by it.
+- `scripts/e2e.sh <name>` now builds only `--test <name>`.
+- `.cargo/config.toml` (new): `jobs = 8`; `[env] RUST_TEST_THREADS = 8`, `RAYON_NUM_THREADS = 8`.
+- Workspace `Cargo.toml`: dev profile `debug = "line-tables-only"`, dependencies `debug = false`.
+- The gate and stop hooks run `cargo test --workspace --exclude rmc_e2e`. All e2e scenarios are `#[ignore]` and run through `scripts/e2e.sh`; `clippy --all-targets` still compiles them.
+- CLAUDE.md: rule 8 and the Commands list updated; new rule 23 (Machine resources).
+- `cargo clean` once: freed 297 GB (E: went from 98% to 83% full).
+Measured after the change: a cold full gate took 13 min with build processes peaking at 4.6 GB; `scripts/e2e.sh boot_renders` peaked at about 4 GB. Before, the same e2e step reached about 30 GB.
+Next: F094. Run `git stash pop` (stash@{0}), then re-run `scripts/verify-features.sh F094` and pass it.
+Blockers: none.

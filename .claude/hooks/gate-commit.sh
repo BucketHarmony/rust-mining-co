@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse on Bash: when the command contains `git commit`, block it unless fmt, clippy and tests are green.
+# rmc_e2e is left out of `cargo test`: all its scenarios are #[ignore] (run by scripts/e2e.sh), so the
+# workspace test run would only link 20+ Bevy binaries for nothing; clippy --all-targets still compiles them.
 INPUT="$(cat)"
 # Native Windows: jq.exe ends lines with CRLF, and tool paths arrive as E:\...; normalize both.
 jq() { command jq "$@" | tr -d '\r'; }
@@ -16,6 +18,6 @@ fail() { echo "COMMIT BLOCKED: $1" >&2; tail -n 50 "$LOG" >&2; exit 2; }
 
 cargo fmt --all --check >>"$LOG" 2>&1 || fail "cargo fmt --all --check failed (run cargo fmt --all)"
 cargo clippy --workspace --all-targets -q -- -D warnings >>"$LOG" 2>&1 || fail "clippy failed"
-PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo test --workspace -q >>"$LOG" 2>&1 || fail "cargo test --workspace failed"
+PROPTEST_CASES="${PROPTEST_CASES:-64}" cargo test --workspace --exclude rmc_e2e -q >>"$LOG" 2>&1 || fail "cargo test --workspace --exclude rmc_e2e failed"
 [ -x scripts/check-no-bevy.sh ] && { scripts/check-no-bevy.sh >>"$LOG" 2>&1 || fail "a core crate depends on bevy"; }
 exit 0
