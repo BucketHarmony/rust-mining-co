@@ -2494,3 +2494,52 @@ Decisions:
 - `crates/rmc_eco/proptest-regressions/gases.txt` holds a seed from the stub run before the implementation. It is committed, as the repo does with the others, and the case passes.
 Next: F160 (light), the first unpassed feature whose blockers all pass. F151 and F154 wait on F123 (or are now unblocked: F154 needs only F150).
 Blockers: none.
+
+## 2026-10-21 22:30 — F123 Condensation (start of pass), evaporation to steam (actual amounts), rain at surface_y+1 or into the anchor under a plant — passed
+Done:
+- `rmc_eco::water::Condensation` (§7.3 A): one sweep over the steam active set, run before the flow sweeps.
+  - An air cell holding steam, colder than `condense_temp` and not sky-open turns `min(steam, 255 − moisture)` into moisture on itself (ledger `condense_from_steam`). The first flow sweep then makes it water.
+- `Evaporation` (§7.3 C): one sweep over the water set, run after the flow sweeps.
+  - A water cell with air above moves `min(evap_table[T / evap_bucket], fill, 255 − steam_above)` into the steam above (ledger `evap_to_steam`). The bucket is clamped to 0 below 0 °C and to the last entry past the end.
+  - A cell left at fill 0 becomes air through `eco_set`.
+- `Rain` (§7.3 D): once per sub-step after evaporation, per column in the global order of a y-plane.
+  - The target is `surface_y + 1` when it is air (it becomes water through `eco_set`, §7.0) or water. When it is a plant, the target is the porous anchor under it.
+  - The amount is `min(rain · pattern / 256, room)`, and `rain_in` books it.
+  - `rain_pattern(seed, season, x, z)` is a seeded xxh3 of the four values.
+- `season_tick(world, tables, season, seed, activity, exec)` now takes the world seed. The host passes `config.seed`.
+Tests added:
+- `water::tests::evaporation_limited_by_steam_room_ledger_actual`: table rates by temperature; steam room 15 and 0; a pond drying out to air; no evaporation under stone; the ledger books the moved amounts; the checker passes; a second sweep.
+- `water::tests::condensation_below_temp_returns_steam`: below, at and above `condense_temp`; moisture room 105 and 0; set joins and leaves; the flow sweep then makes the moist cell water.
+- `water::tests::steam_above_sky_open_pond_vents_not_condenses`: sky-open steam stays steam and stays in the steam set; under an overhang it condenses; the open pond's own evaporation does not come back.
+- `water::tests::rain_targets_surface_plus_one_or_anchor_never_overhang`, checked per cell over the whole world:
+  - an open column;
+  - under an overhang, rain lands on the overhang and the air beneath stays dry;
+  - a plant on loam waters the loam, capped at field capacity;
+  - a plant on stone, and a surface at the world's top, get nothing;
+  - on a pond, rain lands above the pond.
+- `water::tests::rain_ledger_records_actual`: room 5, 0 and 2 cap the amount; `rain_in` equals the actual total, which is below the requested total; a second sub-step adds to it; a dry season leaves the world hash and ledger unchanged.
+- `water::tests::rain_pattern_is_seeded`: a pure function; another seed, another season, or the same row a year later gives a different pattern.
+- `tick::tests::water_pass_condenses_evaporates_and_rains`: on a random world, one tick has all three ledger terms > 0; the checker passes; the same seed gives the same hash and another seed a different one.
+Test-fixes (rule 6):
+- 0a46f06: `tick::tests::gas_sweeps_run_after_water` and the weathering tests `regolith_only_when_exposed_and_moist` / `unexposed_control_unchanged` assumed a dry season. They now run with `SeasonOverride { rain: Some(0) }`.
+- 3fd90a6: testkit `eco::tests::advance_season_applies_both_snapshot_kinds` assumed that no pass changes materials, so every changed chunk shipped as a LayerSnapshot.
+  - Rain and evaporation change materials. Cave evaporation plus condensation flip cells air → water → air even with rain 0.
+  - The test now classifies chunks exactly by host `revision` / `eco_revision`. It still requires at least one LayerSnapshot, and the client still applies both kinds.
+  - It passes on the pre-F123 code.
+Decisions:
+- Condensation skips sky-open cells (`y > surface_y`). §7.3 A does not say so, but §7.4's vent step owns sky-open steam, and the listed test says steam above an open pond "vents, not condenses". The steam stays in the steam set for F151's vent.
+- Condensation, evaporation and rain add no `active_cells_per_sweep` entries; only the flow and gas sweeps do, as before.
+- Evaporation uses the water cell's own temperature. A cell emptied to 0 turns to air at once (§7.3 B5).
+- Where rain does not fall:
+  - a column with no surface (`NO_SURFACE`);
+  - a target above the world's top or in a non-resident chunk;
+  - a plant on a non-porous anchor;
+  - anything at `surface_y + 1` other than air, water or a plant.
+- "Plant" means the resolved material of a `plants.ron` row, not a tag (rule 18).
+- The rain pattern hashes the season number, not the row index, so the same season next year rains differently. Rain falls every sub-step with that season's pattern.
+- Build cache: the background test builds that were killed at the 10-minute limit left the workspace crates' incremental caches inconsistent (rustc LNK2001/LNK1120 on `.llvm.*` symbols).
+  - `rm -rf` is denied and rule 23 forbids `cargo clean`, so I moved `target/debug/incremental/rmc_*` to `target/incremental-stale/`. Only the workspace crates rebuilt.
+  - The owner can delete `target/incremental-stale/`.
+- A stale stash entry `F123 wip` (`stash@{0}` now; already applied, its changes are in 03ab8ba) is left in the list, because `git stash drop` is denied. It is not lost work.
+Next: F124, F131, F151, F154 and F160 are ready (their blockers all pass). E2 still lacks F124, F128 and F129, so no playtester run yet.
+Blockers: none.
