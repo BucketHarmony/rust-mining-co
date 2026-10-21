@@ -274,6 +274,14 @@ impl TestApp {
             .unwrap_or_else(|| panic!("{cell:?} is not in a resident chunk"))
     }
 
+    /// The derived pH of `cell` on the host (SAD-P2 §7.6), from its `acid`
+    /// and `lime` substance roles. Cells outside resident chunks read
+    /// neutral.
+    pub fn ph(&self, cell: CellPos) -> u8 {
+        let ph = self.eco_tables().ph_rule().at(self.host_world(), cell);
+        u8::try_from(ph).expect("pH is clamped to 0..=14")
+    }
+
     /// Sets layer `id` of `cell` to `value` with an `EditOp::SetLayer` from
     /// the local player, and steps until it is applied.
     pub fn set_layer(&mut self, cell: CellPos, id: LayerId, value: i32) {
@@ -879,6 +887,34 @@ mod tests {
         assert_eq!(t.layer_u8(cell, LayerId::Moisture), 77);
         assert_eq!(t.sum_layer(LayerId::Moisture, floor), 77);
         assert_eq!(replica_hash(&t), t.host_world().hash());
+    }
+
+    #[test]
+    fn ph_reads_the_host_acid_and_lime() {
+        let mut t = joined();
+        let eco = t.eco_tables().clone();
+        let rule = eco.ph_rule();
+        let (acid, lime) = (
+            rule.acid.expect("an acid role"),
+            rule.lime.expect("a lime role"),
+        );
+        let step = 1i32 << rule.ph_shift;
+        let site = t.fixture(Fixture::Pool);
+        let c = site.feature.min;
+        assert_eq!(t.ph(c), 7, "clean water is neutral");
+        t.set_layer(c, acid, 4 * step);
+        assert_eq!(t.ph(c), 3);
+        t.set_layer(c, lime, step);
+        assert_eq!(t.ph(c), 4);
+        t.set_layer(c, acid, 0);
+        assert_eq!(t.ph(c), 8);
+        t.set_layer(c, lime, i32::from(u8::MAX));
+        assert_eq!(t.ph(c), 14, "clamped");
+        assert_eq!(
+            i32::from(t.ph(c)),
+            rule.at(t.host_world(), c),
+            "the pH rule the client reads"
+        );
     }
 
     #[test]
