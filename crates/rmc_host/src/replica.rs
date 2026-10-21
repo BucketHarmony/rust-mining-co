@@ -1370,6 +1370,7 @@ mod tests {
 
         let mut rng = Rng(0x0F10_7000_5EA5_0115);
         let mut stats = Stats::default();
+        let mut layer_snapshots = 0;
         for season in 0..SEASONS {
             if season == 1 {
                 clients[2].join();
@@ -1400,6 +1401,11 @@ mod tests {
 
             // Any joined player may ask for the season.
             let before = host.world().hash();
+            let revisions: BTreeMap<ChunkPos, (u64, u64)> = host
+                .world()
+                .iter_chunks_sorted()
+                .map(|(p, c)| (p, (c.revision, c.eco_revision)))
+                .collect();
             let joined: Vec<usize> = (0..clients.len()).filter(|&i| clients[i].joined).collect();
             let who = joined[rng.below(joined.len() as u64) as usize];
             clients[who].ep.send(ClientMsg::AdvanceSeason).unwrap();
@@ -1409,13 +1415,31 @@ mod tests {
                 before,
                 "season {season} changed nothing"
             );
+            // Every chunk the season changed gets one snapshot of the right
+            // kind: a ChunkSnapshot if its materials changed, a
+            // LayerSnapshot if only its layers or plants did.
+            let mut want: Vec<(ChunkPos, bool)> = host
+                .world()
+                .iter_chunks_sorted()
+                .filter_map(|(p, c)| {
+                    let (r, e) = revisions[&p];
+                    (r != c.revision || e != c.eco_revision).then_some((p, r == c.revision))
+                })
+                .collect();
+            want.sort_unstable_by_key(|&(p, _)| p);
             for c in clients.iter_mut().filter(|c| c.joined) {
                 let msgs = c.pump_lossy(|_| true);
-                let layer_snapshots = msgs
+                let mut got: Vec<(ChunkPos, bool)> = msgs
                     .iter()
-                    .filter(|m| matches!(m, ServerMsg::LayerSnapshot { .. }))
-                    .count();
-                assert!(layer_snapshots > 0, "season {season}");
+                    .filter_map(|m| match m {
+                        ServerMsg::ChunkSnapshot { pos, .. } => Some((*pos, false)),
+                        ServerMsg::LayerSnapshot { pos, .. } => Some((*pos, true)),
+                        _ => None,
+                    })
+                    .collect();
+                got.sort_unstable_by_key(|&(p, _)| p);
+                assert_eq!(got, want, "season {season}: snapshot kinds");
+                layer_snapshots += got.iter().filter(|&&(_, layers_only)| layers_only).count();
                 assert!(matches!(
                     msgs.last(),
                     Some(ServerMsg::SeasonDone { season: s, changed_chunks, .. })
@@ -1431,6 +1455,8 @@ mod tests {
             }
         }
         assert_eq!(host.season(), Some(SEASONS));
+        // Some season changed a chunk's layers without its materials.
+        assert!(layer_snapshots > 0, "no LayerSnapshot in {SEASONS} seasons");
         assert!(stats.layers_deltas >= 100, "{stats:?}");
         assert!(stats.applied >= 1_000, "{stats:?}");
         println!("{stats:?}");
