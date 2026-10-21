@@ -38,6 +38,9 @@ pub struct EcoRules {
     pub harvest_shift: u8,
     /// `yield_material` per substance index.
     pub substance_yields: [Option<MaterialId>; N_SUBSTANCES],
+    /// `eco.soft_regolith` (SAD-P2 §7.5): above it the pickaxe needs half
+    /// the hardness. `None` (no eco tables) never softens a cell.
+    pub soft_regolith: Option<u8>,
 }
 
 /// What caused a material change: an edit (with its op) or a season pass.

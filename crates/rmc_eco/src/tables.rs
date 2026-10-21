@@ -748,6 +748,7 @@ impl EcoTables {
             plant_litter: self.plants.iter().map(|p| p.litter).collect(),
             harvest_shift: self.params.harvest_shift,
             substance_yields,
+            soft_regolith: Some(self.params.soft_regolith),
         }
     }
 }

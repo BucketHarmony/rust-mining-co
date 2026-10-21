@@ -230,8 +230,10 @@ impl World {
     /// chunk compacted) when more than [`FULL_DELTA_THRESHOLD`] cells changed.
     ///
     /// `Damage` adds to each diggable cell's damage (saturating). A cell whose
-    /// damage reaches its hardness breaks: it becomes air and its material's
-    /// `yield_count` is added to the yields. Damage without a break changes
+    /// damage reaches its hardness (halved when its regolith is above
+    /// `soft_regolith`, SAD-P2 §7.5) breaks: it becomes air and its
+    /// material's `yield_count` of its `yield_material` (or of the material
+    /// itself) is added to the yields. Damage without a break changes
     /// no cell and produces no delta. `Set`, `Paint` and `Remove` clear the
     /// damage on every cell they apply to.
     pub fn apply(&mut self, cmd: &EditCommand) -> EditResult {
@@ -279,11 +281,17 @@ impl World {
                     let Some(def) = def.filter(|d| d.diggable) else {
                         continue;
                     };
-                    if !self.damage.hit(cell, def.hardness, dmg) {
+                    let hardness = self.break_hardness(cell, def);
+                    if !self.damage.hit(cell, hardness, dmg) {
                         continue;
                     }
                     if def.yield_count > 0 {
-                        *yields.entry(old).or_insert(0) += u32::from(def.yield_count);
+                        let yielded = def
+                            .yield_material
+                            .as_deref()
+                            .and_then(|key| self.materials.id(key))
+                            .unwrap_or(old);
+                        *yields.entry(yielded).or_insert(0) += u32::from(def.yield_count);
                     }
                     MaterialId::AIR
                 }

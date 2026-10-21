@@ -1190,6 +1190,7 @@ mod tests {
             plant_litter: vec![LITTER],
             harvest_shift: HARVEST_SHIFT,
             substance_yields,
+            soft_regolith: None,
         }
     }
 

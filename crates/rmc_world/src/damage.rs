@@ -8,6 +8,30 @@
 use std::collections::BTreeMap;
 
 use crate::coords::{CellPos, ChunkPos};
+use crate::layers::LayerId;
+use crate::materials::MaterialDef;
+use crate::world::World;
+
+/// Divisor of the hardness of a cell softened by regolith (SAD-P2 §7.5).
+const SOFT_DIV: u16 = 2;
+
+impl World {
+    /// Damage that breaks `cell`, which holds `def`: its hardness, or
+    /// `hardness / 2` when its regolith is above the displacement rules'
+    /// `soft_regolith` (SAD-P2 §7.5). Without that constant (no eco tables)
+    /// regolith never softens a cell.
+    pub fn break_hardness(&self, cell: CellPos, def: &MaterialDef) -> u16 {
+        let soft = self
+            .rules
+            .soft_regolith
+            .is_some_and(|s| self.layer(cell, LayerId::Regolith) > i32::from(s));
+        if soft {
+            def.hardness / SOFT_DIV
+        } else {
+            def.hardness
+        }
+    }
+}
 
 /// Accumulated damage per cell, in [`CellPos`] order. A cell with no entry
 /// has no damage. Every entry is below its cell's hardness and above zero.
@@ -68,12 +92,12 @@ mod tests {
 
     use crate::chunk::Chunk;
     use crate::coords::CellAabb;
+    use crate::displace::EcoRules;
     use crate::edit::{
         ChunkDelta, CommandId, EditCommand, EditOp, EditResult, EditStatus, PlayerId, RejectReason,
     };
-    use crate::materials::{MaterialDef, MaterialId, MaterialTable};
+    use crate::materials::{MaterialId, MaterialTable};
     use crate::shape::Shape;
-    use crate::world::World;
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 
@@ -612,5 +636,266 @@ mod tests {
             w.damage().iter().collect::<Vec<_>>(),
             vec![(cell(0, 0, 0), 5)]
         );
+    }
+
+    /// `eco.soft_regolith` in assets/eco.ron.
+    const SOFT: u8 = 128;
+
+    /// [`world`] with the displacement rules' `soft_regolith` set to `soft`.
+    fn eco_world(table: Arc<MaterialTable>, fill: &str, soft: Option<u8>) -> World {
+        let mut w = world(table, fill);
+        w.set_eco_rules(EcoRules {
+            soft_regolith: soft,
+            ..EcoRules::default()
+        });
+        w
+    }
+
+    /// Sets the regolith layer of one cell through the edit path.
+    fn set_regolith(w: &mut World, seq: u32, at: CellPos, value: u8) {
+        let op = EditOp::SetLayer {
+            layer: LayerId::Regolith,
+            value: i32::from(value),
+        };
+        apply(w, &cmd(seq, op, Shape::Cell(at)));
+        assert_eq!(w.layer(at, LayerId::Regolith), i32::from(value));
+    }
+
+    /// Hits `at` with `dmg` until it breaks and returns the number of hits.
+    /// Every hit before the last leaves the cell standing.
+    fn hits_to_break(w: &mut World, at: CellPos, dmg: u16) -> u32 {
+        let m = w.get_cell(at).unwrap();
+        for k in 1..=1000 {
+            let r = hit(w, 1000 + k, at, dmg);
+            if w.get_cell(at) == Some(MaterialId::AIR) {
+                assert!(!r.deltas.is_empty());
+                return k;
+            }
+            assert_eq!(w.get_cell(at), Some(m));
+            assert!(r.yields.is_empty());
+        }
+        panic!("{at:?} never broke");
+    }
+
+    #[test]
+    fn regolith_halves_hardness() {
+        let table = table_with(&[("odd", 45, 1), ("feather", 1, 1), ("instant", 0, 1)]);
+        let at = cell(31, 7, 12);
+
+        // For every diggable solid and several damages, a cell needs
+        // ⌈hardness / dmg⌉ hits at regolith ≤ soft_regolith and
+        // ⌈(hardness / 2) / dmg⌉ above it (at least one hit).
+        let diggable: Vec<MaterialDef> = table
+            .iter()
+            .filter(|d| d.diggable && d.is_solid())
+            .cloned()
+            .collect();
+        for def in &diggable {
+            for dmg in [1, 2, 7, 15, 29, u16::MAX] {
+                for (regolith, need) in [
+                    (0, def.hardness),
+                    (SOFT - 1, def.hardness),
+                    (SOFT, def.hardness),
+                    (SOFT + 1, def.hardness / 2),
+                    (u8::MAX, def.hardness / 2),
+                ] {
+                    let mut w = eco_world(table.clone(), &def.key, Some(SOFT));
+                    set_regolith(&mut w, 1, at, regolith);
+                    let expected = ceil_div(need, dmg).max(1);
+                    assert_eq!(
+                        hits_to_break(&mut w, at, dmg),
+                        expected,
+                        "{} hardness {} regolith {regolith} dmg {dmg}",
+                        def.key,
+                        def.hardness
+                    );
+                }
+            }
+        }
+
+        // Hand-computed: stone 30 → 15, odd 45 → 22 (truncating), feather
+        // 1 → 0, which breaks on a zero-damage hit.
+        let stone = table.get(id(&table, "stone")).unwrap().hardness;
+        assert_eq!(stone, 30);
+        for (key, dmg, soft_hits, hard_hits) in [
+            ("stone", 15, 1, 2),
+            ("stone", 14, 2, 3),
+            ("odd", 22, 1, 3),
+            ("odd", 21, 2, 3),
+        ] {
+            let mut w = eco_world(table.clone(), key, Some(SOFT));
+            set_regolith(&mut w, 1, at, SOFT + 1);
+            assert_eq!(hits_to_break(&mut w, at, dmg), soft_hits, "{key} {dmg}");
+            let mut w = eco_world(table.clone(), key, Some(SOFT));
+            assert_eq!(hits_to_break(&mut w, at, dmg), hard_hits, "{key} {dmg}");
+        }
+        let mut w = eco_world(table.clone(), "feather", Some(SOFT));
+        set_regolith(&mut w, 1, at, u8::MAX);
+        let r = hit(&mut w, 2, at, 0);
+        assert_eq!(r.yields, vec![(id(&table, "feather"), 1)]);
+        assert_eq!(w.get_cell(at), Some(MaterialId::AIR));
+
+        // Only the cell's own regolith counts: soft neighbors do not soften it.
+        let mut w = eco_world(table.clone(), "stone", Some(SOFT));
+        for (seq, n) in (1..).zip([cell(30, 7, 12), cell(32, 7, 12), cell(31, 8, 12)]) {
+            set_regolith(&mut w, seq, n, u8::MAX);
+        }
+        assert_eq!(hits_to_break(&mut w, at, 15), 2);
+
+        // Damage dealt before the cell softened counts toward the halved
+        // hardness: 10 on hard stone, then 5 once soft breaks it.
+        let mut w = eco_world(table.clone(), "stone", Some(SOFT));
+        let before = w.clone();
+        let r = hit(&mut w, 1, at, 10);
+        assert_no_change(&r, &before, &w);
+        assert_eq!(w.damage().get(at), 10);
+        set_regolith(&mut w, 2, at, 200);
+        let r = hit(&mut w, 3, at, 5);
+        assert_eq!(r.yields, vec![(id(&table, "stone"), 1)]);
+        assert_eq!(w.get_cell(at), Some(MaterialId::AIR));
+        assert!(w.damage().is_empty());
+
+        // An area hit across the chunk border: soft cells break, hard ones
+        // only take damage.
+        let mut w = eco_world(table.clone(), "stone", Some(SOFT));
+        let soft = [cell(30, 0, 0), cell(33, 0, 0)];
+        for (seq, &c) in (1..).zip(&soft) {
+            set_regolith(&mut w, seq, c, SOFT + 1);
+        }
+        let r = apply(
+            &mut w,
+            &cmd(9, EditOp::Damage(15), boxed(cell(30, 0, 0), cell(33, 0, 0))),
+        );
+        assert_eq!(r.yields, vec![(id(&table, "stone"), 2)]);
+        for x in 30..=33 {
+            let broken = soft.contains(&cell(x, 0, 0));
+            assert_eq!(w.get_cell(cell(x, 0, 0)) == Some(MaterialId::AIR), broken);
+            assert_eq!(w.damage().get(cell(x, 0, 0)), if broken { 0 } else { 15 });
+        }
+
+        // Without eco rules (Phase 1 worlds) regolith does not soften.
+        let mut w = eco_world(table.clone(), "stone", None);
+        set_regolith(&mut w, 1, at, u8::MAX);
+        assert_eq!(hits_to_break(&mut w, at, 15), 2);
+        let mut w = world(table.clone(), "stone");
+        set_regolith(&mut w, 1, at, u8::MAX);
+        assert_eq!(hits_to_break(&mut w, at, 15), 2);
+
+        // Undiggable cells stay unbreakable however soft.
+        let mut w = eco_world(table.clone(), "bedrock", Some(SOFT));
+        set_regolith(&mut w, 1, at, u8::MAX);
+        let before = w.clone();
+        let r = hit(&mut w, 2, at, u16::MAX);
+        assert_no_change(&r, &before, &w);
+        assert!(w.damage().is_empty());
+
+        // The shipped soft_regolith is the one these cases use.
+        let eco =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/eco.ron"))
+                .expect("assets/eco.ron reads");
+        assert!(eco.contains(&format!("soft_regolith: {SOFT},")));
+    }
+
+    /// The Phase 1 table plus: `crushed` (stone copy, yield_count 2),
+    /// `ore` (yields `crushed`, yield_count 3), `dud_ore` (yields `crushed`,
+    /// yield_count 0) and `self_ore` (yields itself by `yield_material`).
+    fn yield_table() -> Arc<MaterialTable> {
+        let base = phase1();
+        let stone = base.get(id(&base, "stone")).unwrap().clone();
+        let mut defs: Vec<MaterialDef> = base.iter().cloned().collect();
+        for (key, yield_count, yield_material) in [
+            ("crushed", 2, None),
+            ("ore", 3, Some("crushed")),
+            ("dud_ore", 0, Some("crushed")),
+            ("self_ore", 4, Some("self_ore")),
+        ] {
+            let n = u16::try_from(defs.len()).unwrap();
+            defs.push(MaterialDef {
+                id: MaterialId(n),
+                key: key.to_string(),
+                yield_count,
+                yield_material: yield_material.map(str::to_string),
+                ..stone.clone()
+            });
+        }
+        Arc::new(MaterialTable::from_defs(defs).expect("test table is valid"))
+    }
+
+    #[test]
+    fn yield_material_overrides_self() {
+        let table = yield_table();
+        let crushed = id(&table, "crushed");
+        let ore = id(&table, "ore");
+        let self_ore = id(&table, "self_ore");
+        let stone = id(&table, "stone");
+
+        // Every diggable solid yields its yield_material (or itself when it
+        // has none), its own yield_count times.
+        for def in table.iter().filter(|d| d.diggable && d.is_solid()) {
+            let mut w = world(table.clone(), &def.key);
+            let r = hit(&mut w, 1, cell(1, 2, 3), u16::MAX);
+            assert_eq!(r.deltas.len(), 1, "{}", def.key);
+            let to = def
+                .yield_material
+                .as_deref()
+                .map_or(def.id, |k| id(&table, k));
+            let expected = if def.yield_count == 0 {
+                vec![]
+            } else {
+                vec![(to, u32::from(def.yield_count))]
+            };
+            assert_eq!(r.yields, expected, "{}", def.key);
+        }
+
+        // Hand-written: ore yields 3 crushed and no ore; dud_ore yields
+        // nothing; self_ore yields itself.
+        let mut w = world(table.clone(), "ore");
+        let r = hit(&mut w, 1, cell(0, 0, 0), u16::MAX);
+        assert_eq!(r.yields, vec![(crushed, 3)]);
+        let mut w = world(table.clone(), "dud_ore");
+        let r = hit(&mut w, 1, cell(0, 0, 0), u16::MAX);
+        assert_eq!(r.deltas.len(), 1);
+        assert!(r.yields.is_empty());
+        let mut w = world(table.clone(), "self_ore");
+        let r = hit(&mut w, 1, cell(0, 0, 0), u16::MAX);
+        assert_eq!(r.yields, vec![(self_ore, 4)]);
+
+        // An area over the chunk border: yields aggregate under the yielded
+        // material. Columns along x (2 × 2 cells each): ore, crushed, stone,
+        // dud_ore, ore.
+        let mut w = world(table.clone(), "stone");
+        let columns = ["ore", "crushed", "stone", "dud_ore", "ore"];
+        for (i, key) in columns.iter().enumerate() {
+            let x = 30 + i32::try_from(i).unwrap();
+            let op = EditOp::Set(id(&table, key));
+            apply(&mut w, &cmd(1, op, boxed(cell(x, 0, 0), cell(x, 1, 1))));
+        }
+        let r = apply(
+            &mut w,
+            &cmd(
+                2,
+                EditOp::Damage(u16::MAX),
+                boxed(cell(30, 0, 0), cell(34, 1, 1)),
+            ),
+        );
+        let stone_yield = u32::from(table.get(stone).unwrap().yield_count);
+        let mut expected = vec![(stone, 4 * stone_yield), (crushed, 2 * 4 * 3 + 4 * 2)];
+        expected.sort_unstable_by_key(|&(m, _)| m);
+        assert_eq!(r.yields, expected);
+        assert!(!r.yields.iter().any(|&(m, _)| m == ore));
+
+        // No yield without a break, and none from Remove.
+        let mut w = world(table.clone(), "ore");
+        let r = hit(&mut w, 1, cell(0, 0, 0), 29);
+        assert!(r.yields.is_empty());
+        let r = apply(&mut w, &cmd(2, EditOp::Remove, Shape::Cell(cell(0, 0, 0))));
+        assert_eq!(r.deltas.len(), 1);
+        assert!(r.yields.is_empty(), "Remove has no yield");
+
+        // A soft ore cell breaks at half hardness and still yields crushed.
+        let mut w = eco_world(table.clone(), "ore", Some(SOFT));
+        set_regolith(&mut w, 1, cell(0, 0, 0), u8::MAX);
+        let r = hit(&mut w, 2, cell(0, 0, 0), 15);
+        assert_eq!(r.yields, vec![(crushed, 3)]);
     }
 }
