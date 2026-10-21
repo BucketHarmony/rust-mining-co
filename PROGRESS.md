@@ -2733,3 +2733,33 @@ Decisions:
 - Rule 21: magma, obsidian and core colors are not in any screenshot yet. Nothing shows magma before F134 (`magma_meets_water`), whose screenshots the playtester judges.
 Next: F134 (E2E magma_meets_water), the last E2b feature. E2's playtester run is still outstanding. Also ready: F141, F151, F152, F154, F160.
 Blockers: none.
+
+## 2026-10-21 16:30 — F134 E2E: magma_meets_water — passed
+Done:
+- `tests/e2e/tests/magma_meets_water.rs`, the SAD-P2 §12 scenario.
+  - Setup: `Fixture::Pool` (8 × 6 × 8 of water). Under its middle, a 4 × 4 one-layer magma pocket (brush `Set(magma)`, so 1200.0 °C). Two cells of fixture stone separate them, and there is fixture stone under the pocket too, so the pocket can meet only the pool's water.
+  - Dig through: a 2 × 2 shaft is removed from the stone between them. Then one season.
+  - Asserts:
+    - `count(obsidian) > 0`, in the pocket;
+    - `ledger.boil_to_steam > 0`;
+    - `boil_to_steam` over the baseline is > 0;
+    - the fill of the pool, shaft and pocket fell by at least that boil;
+    - `magma_set` over the baseline is ≥ the obsidian count;
+    - the dug pool lost more than the undug baseline pool.
+  - Then a shot down the shaft from over the rim.
+- Measured: 4 obsidian. 7140 boiled over the baseline's 39426 (contact boiling plus BoilAll in the hot shaft). Pool fill 97920 → 90268.
+- No engine code changed. F131 and F133 already did the work, so the scenario passed once its setup was right. The first, failing runs exposed the two setup problems below.
+Tests added: `e2e:magma_meets_water` (~57 s).
+Decisions:
+- The season ledger is the whole world's. Worldgen chambers (§8) boil about 39k units elsewhere every season, so "the pool's fill fell by at least `boil_to_steam`" cannot hold literally.
+  - The scenario first runs a render-less baseline `TestApp`: same seed, fixture, pocket and overrides, no shaft. It asserts the same world hash before the season.
+  - It then compares the pool's loss with `boil_to_steam − baseline`. The literal `boil_to_steam > 0` is still asserted.
+- In this 128-high world, the §8 profile (`geothermal_base` 400, `gradient` 5) puts the ground under the surface below 0 °C: −5.5 °C at the pool's floor. The fixture's pool froze to ice in the first sub-step and never reached the pocket. So the scenario:
+  - warms the pool and the stone roof to 10.0 °C with a `SetLayer(Temperature)` edit before the season;
+  - overrides `air_temp` to 10.0 °C (spring's);
+  - overrides rain to 0.
+  The profile itself is unchanged. Other near-surface water features (ponds, swales) will also freeze outside summer. That is worth a playtester look.
+- Reviewer: PASS with no gaps. I added its two suggestions, `magma_set` over the baseline and the loss exceeding the undug pool's.
+- Rule 21: screenshot `docs/screens/magma_meets_water-20.png`. It looks down through the pool at the shaft. Neither the obsidian nor magma's glow is visible through the water. The playtester judges it.
+Next: E2b is complete. Its playtester run is not in step 11's list (M6, M7, M8, E3b, E5). E2's playtester run is still outstanding. Ready: F141, F151, F152, F154, F160.
+Blockers: none.
