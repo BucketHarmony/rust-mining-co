@@ -2656,3 +2656,39 @@ Decisions:
 - Rule 21 does not apply (not a look feature); the screenshot is for the playtester.
 Next: E2 is complete. Its playtester run is due (step 11 lists M6, M7, M8, E3b, E5, not E2, so this session does not run it). F131, F141, F151, F154 and F160 are ready.
 Blockers: none.
+
+## 2026-10-21 10:14 — F131 Transitions: magma→basalt on cooling, stone→magma near a core; contact boiling → obsidian + steam — passed
+Done:
+- `rmc_eco::water`: §7.3 B7, contact boiling.
+  - A visited magma cell that is still in place after step 6 looks for a water cell among its 6 faces, in sorted (y, z, x) order: below, −z, −x, +x, +z, above. It takes the first.
+  - Both changes go through `World::eco_set`. The water cell becomes air, and the §7.0 boiling rule turns its whole fill into steam on that cell (`boil_to_steam`). The magma cell becomes obsidian in place (`magma_set`). Both keep their temperatures.
+  - One event per visit. The pass reads the role `obsidian` and is inert without it.
+- `rmc_eco::transitions`: no pass change. The shipped `transitions.ron` rows already drive magma→basalt and stone-tag→magma through the generic pass and `eco_set`'s magma ledger terms. F131 adds their tests.
+Tests added:
+- `transitions::tests::magma_cools_to_basalt_away_from_source`:
+  - the row's edge: 899.9 °C sets, 900.0 °C stays; the cell keeps its temperature; `magma_set` and the checker hold;
+  - in stone, a stray magma cell 10 cells from a radius-4 chamber sets within 64 sub-steps while the chamber stays molten.
+- `transitions::tests::worldgen_magma_stays_molten_20_substeps`: noise-free chambers of radius 3, 4 and 5 (the `worldgen.ron` range), each with a radius-1 core, in stone at the §8 profile. 20 sub-steps of temperature, transitions and the flow sweeps. Every magma cell stays magma, with the invariants checked after each pass.
+- `transitions::tests::stone_tag_melts_near_source`:
+  - every `stone`-tagged material melts above 1250.0 °C; 1250.0 stays; bedrock (untagged) does not melt;
+  - in stone, a cell with cores on all 6 faces melts within 256 sub-steps; a cell with one core face, and the cell beyond it, never do.
+- `water::tests::contact_boiling_whole_fill_obsidian_one_event`:
+  - the whole fill (200, 120, 255) boils; below beats +x; a water cell shared by two magma cells boils once; the second magma cell stays magma;
+  - the face order −z < −x < +x < +z; moving magma does not boil on that visit, and boils the water above it on the next one;
+  - ledgers are exact, and the checker holds.
+- The water test fixture gains an `obsidian` row when the shipped table lacks one. The test in `magma_never_enters_water_or_porous` already allowed for boiling.
+Decisions:
+- SAD gap: with §5's magma `heat_capacity: 32`, worldgen chambers do not stay molten for 20 sub-steps.
+  - Every integer ball has axis tip cells with 5 stone faces and 1 magma face. With k = 16 they lose about ΔT/256 per stone face per sub-step, and the interior feeds them only about ΔT/64.
+  - Measured at radius 3, 4 and 5: the tips fall below 900.0 °C at sub-step 18–19, around 883–886 at sub-step 20. A core radius of 2 changes nothing, because the tips are far from the core.
+  - At capacity 64 the chamber minimum at sub-step 20 is 1014.9–1021.0 °C, the first cell sets at sub-step 38–43, and a lone magma cell in stone sets at about sub-step 28. At 128: 1103 °C, no set in 80 sub-steps, and a lone cell takes 59.
+  - The F131 fixture row therefore uses magma `heat_capacity: 64`. It is still a power of two within 8..=128. **F133 must ship magma with heat_capacity 64.** Otherwise `worldgen_magma_stays_molten_20_substeps` fails against the shipped row, which the fixture defers to.
+  - I left the other §5/§7.2 values alone: `magma_init_temp` 12000, the 9000 / 12500 rows, conductivities, and the core's heat_source of 13000.
+- Contact boiling is not gated by viscosity. §7.3 gates only step 6, so B7 runs on every flow iteration, after step 6, and only if the magma did not move.
+- The boiled cell stays in the water active set until its next visit, which clears it (§3 active-set rule).
+- B7 writes no `MoveLog` entry: the MoveLog does not exist yet. F141 (chemistry transport) adds it and should log B7 boils with the B2–B4 moves.
+- The water pass books no `transitions` event for magma→obsidian: §7.3 names only `boil_to_steam` and `magma_set`.
+- The chamber fixtures are noise-free balls (`amplitude` 0). Noise bumps are thinner, but they are the same 5-stone-face tip case.
+- Reviewer: pass, with no blocking gaps. On its test-coverage notes I added the face order beyond "below" and the moving-magma case.
+Next: F133 (magma, obsidian, basalt colors; HUD temperature), with magma heat_capacity 64 (see above). E2's playtester run is still outstanding: E2 completed with F129, and this run's step 11 lists E2. Also ready: F141, F151, F154, F160.
+Blockers: none.
