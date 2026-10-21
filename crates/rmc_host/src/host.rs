@@ -1147,6 +1147,12 @@ mod tests {
         let dirt = mat(&world, "dirt");
         let granite = mat(&world, "granite");
         let copper = mat(&world, "sulfide_ore");
+        // What breaking it yields: its yield_material (SAD-P2 §7.5), else itself.
+        let copper_yield = world
+            .materials()
+            .get(copper)
+            .and_then(|d| d.yield_material.as_deref())
+            .map_or(copper, |k| mat(&world, k));
         let (mut host, eps) = host_with(world, 3);
         let [a, b, c] = &eps[..] else { unreachable!() };
 
@@ -1277,13 +1283,16 @@ mod tests {
         assert_eq!(b.drain(), want[1]);
         assert!(c.drain().is_empty());
 
-        // The totals, counted by hand (ids ascend: stone, granite, copper).
+        // The totals, counted by hand (ids ascend: stone, granite, copper's yield).
         let inv_a = host.inventory(a.player()).unwrap();
         assert_eq!(inv_a, &inventories[0]);
-        assert_eq!(inv_a.items(), vec![(stone, 37), (granite, 1), (copper, 2)]);
+        assert_eq!(
+            inv_a.items(),
+            vec![(stone, 37), (granite, 1), (copper_yield, 2)]
+        );
         let inv_b = host.inventory(b.player()).unwrap();
         assert_eq!(inv_b, &inventories[1]);
-        assert_eq!(inv_b.items(), vec![(dirt, 1), (copper, 13)]);
+        assert_eq!(inv_b.items(), vec![(dirt, 1), (copper_yield, 13)]);
         assert!(host.inventory(c.player()).is_none());
 
         // Totals carry over to later ticks: the next message is cumulative.

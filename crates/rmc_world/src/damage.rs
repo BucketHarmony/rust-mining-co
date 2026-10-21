@@ -236,10 +236,12 @@ mod tests {
             }],
             "{key} dmg {dmg}: breaks on hit {hits}"
         );
+        // The row's yield_material when it has one (SAD-P2 §7.5).
+        let yielded = def.yield_material.as_deref().map_or(m, |k| id(table, k));
         let expected_yield = if def.yield_count == 0 {
             vec![]
         } else {
-            vec![(m, u32::from(def.yield_count))]
+            vec![(yielded, u32::from(def.yield_count))]
         };
         assert_eq!(r.yields, expected_yield, "{key} dmg {dmg}");
         assert_eq!(w.get_cell(at), Some(MaterialId::AIR));

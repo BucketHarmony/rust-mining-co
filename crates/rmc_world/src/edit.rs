@@ -236,7 +236,17 @@ mod tests {
     /// The Phase 1 rows of the shipped table.
     fn phase1() -> Arc<MaterialTable> {
         let t = MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads");
-        let rows = t.iter().take(PHASE1_ROWS).cloned().collect();
+        let mut rows: Vec<MaterialDef> = t.iter().take(PHASE1_ROWS).cloned().collect();
+        // Phase 2 fields of these rows may name later rows (sulfide_ore
+        // yields crushed_sulfide); the Phase 1 tests do not read them.
+        let keys: Vec<String> = rows.iter().map(|d| d.key.clone()).collect();
+        for d in &mut rows {
+            for r in [&mut d.yield_material, &mut d.weathers_to] {
+                if r.as_ref().is_some_and(|k| !keys.contains(k)) {
+                    *r = None;
+                }
+            }
+        }
         Arc::new(MaterialTable::from_defs(rows).expect("Phase 1 rows form a table"))
     }
 

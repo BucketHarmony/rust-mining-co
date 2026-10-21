@@ -1338,7 +1338,13 @@ mod tests {
             let (mut w, mut pass) = random_world(&f, seed);
             let mut flat = FlatWorld::from_world(&w, &[LayerId::Moisture]);
             let ids = water_ref(&f);
-            prop_assert_eq!(ids.porous.len(), 2, "the test loam and hardpan");
+            // The oracle knows every porous row; the random worlds use the
+            // test loam and hardpan (the shipped porous rows may be absent).
+            let porous: Vec<MaterialId> = ids.porous.iter().map(|p| p.0).collect();
+            prop_assert!(
+                porous.contains(&f.loam) && porous.contains(&f.hardpan),
+                "the test loam and hardpan"
+            );
             let mut ledger = SeasonLedger::default();
             for sweep in 0..pass.flow_iters() {
                 run_sweep(&mut w, &mut pass, &mut ledger);

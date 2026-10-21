@@ -580,8 +580,17 @@ mod tests {
     fn loads_and_validates() {
         let p = phase1();
         assert_eq!(p.soil.len(), 2);
-        assert_eq!(p.strata.layers.len(), 3);
-        assert_eq!(p.strata.layers[2].until_depth, None);
+        // The Phase 1 strata in order; Phase 2 adds bands between them
+        // (SAD-P2 §8 limestone).
+        let phase1_strata: Vec<&str> = p
+            .strata
+            .layers
+            .iter()
+            .map(|l| l.material.as_str())
+            .filter(|m| ["stone", "granite", "basalt"].contains(m))
+            .collect();
+        assert_eq!(phase1_strata, ["stone", "granite", "basalt"]);
+        assert_eq!(p.strata.layers.last().unwrap().until_depth, None);
         assert_eq!(p.ores.len(), 3);
         assert_eq!(p.crystals.material, "glowcrystal");
         assert_eq!(p.bounds.aabb(), CellAabb::PHASE1_DEFAULT);
@@ -621,7 +630,7 @@ mod tests {
             ("no strata", Box::new(|p| p.strata.layers.clear())),
             (
                 "bounded last",
-                Box::new(|p| p.strata.layers[2].until_depth = Some(90)),
+                Box::new(|p| p.strata.layers.last_mut().unwrap().until_depth = Some(90)),
             ),
             (
                 "unbounded middle",

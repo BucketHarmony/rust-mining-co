@@ -316,7 +316,15 @@ mod tests {
                 flooded += 1;
             } else {
                 assert_eq!(got, was, "{cell:?}: only caves below the table change");
-                assert_eq!(fill, 0, "{cell:?}: nothing shipped is porous");
+                // Porous solids below the table hold their field_capacity
+                // (porous_below_table_at_capacity); every other cell is dry.
+                let d = m.get(was).unwrap();
+                let porous = d.phase == Phase::Solid && d.has_tag(POROUS);
+                let want = if below && porous { d.field_capacity } else { 0 };
+                assert_eq!(
+                    fill, want,
+                    "{cell:?}: only porous cells below the table are wet"
+                );
                 dry_cave += usize::from(cave);
             }
         });
@@ -393,8 +401,19 @@ mod tests {
         let roleless = Generator::new(SEED, &p, &m2)
             .unwrap()
             .with_water_table(WaterTableInit::new(&t2));
+        // Porous solids below the table still hold their field_capacity.
         for pos in plain.bounds().chunks() {
-            assert_eq!(roleless.generate(pos), plain.generate(pos), "{pos:?}");
+            let (got, want) = (roleless.generate(pos), plain.generate(pos));
+            assert_eq!(got.storage, want.storage, "{pos:?}");
+            for i in 0..CHUNK_VOLUME as u16 {
+                let l = LocalPos::from_index(i);
+                let c = CellPos::from_chunk_local(pos, l);
+                let d = m2.get(got.storage.get(l)).unwrap();
+                let below = c.0.y < roleless.water_table_y(c.0.x, c.0.z).unwrap();
+                let porous = d.phase == Phase::Solid && d.has_tag(POROUS);
+                let cap = if below && porous { d.field_capacity } else { 0 };
+                assert_eq!(got.layers.get_u8(LayerId::Moisture, l), cap, "{c:?}");
+            }
         }
     }
 }
