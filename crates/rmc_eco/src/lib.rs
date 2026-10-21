@@ -26,5 +26,5 @@ pub use tables::{EcoTableError, EcoTables, SeasonOverride};
 pub use temperature::{Profile, TemperaturePass};
 pub use tick::{TickReport, season_tick};
 pub use transitions::TransitionsPass;
-pub use water::WaterPass;
+pub use water::{Condensation, Evaporation, Rain, WaterPass, rain_pattern};
 pub use weathering::WeatheringPass;

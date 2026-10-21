@@ -21,7 +21,7 @@ use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
 use crate::transitions::TransitionsPass;
-use crate::water::WaterPass;
+use crate::water::{Condensation, Evaporation, Rain, WaterPass};
 use crate::weathering::WeatheringPass;
 
 /// What one season tick did. Everything but `substep_ms` is a function of
@@ -44,7 +44,13 @@ pub struct TickReport {
 struct Passes {
     temperature: TemperaturePass,
     transitions: TransitionsPass,
+    /// §7.3 A; `None` without a steam role.
+    condensation: Option<Condensation>,
     water: WaterPass,
+    /// §7.3 C; `None` without the steam, water and air roles.
+    evaporation: Option<Evaporation>,
+    /// §7.3 D.
+    rain: Rain,
     /// One sweep per gas row, in row order.
     gases: Vec<GasPass>,
     weathering: WeatheringPass,
@@ -52,12 +58,14 @@ struct Passes {
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
 /// clears the freeze-thaw bits (SAD-P2 §7.5), marks the season boundary in
-/// `activity`, then runs `seasons.substeps` sub-steps. `world` must carry the tables'
+/// `activity`, then runs `seasons.substeps` sub-steps. `seed` is the world
+/// seed; it patterns the rain (§7.3 D). `world` must carry the tables'
 /// displacement rules ([`EcoTables::displacement_rules`]).
 pub fn season_tick(
     world: &mut World,
     tables: &EcoTables,
     season: u32,
+    seed: u64,
     activity: &mut Activity,
     exec: Exec,
 ) -> TickReport {
@@ -68,7 +76,10 @@ pub fn season_tick(
     let mut passes = Passes {
         temperature: TemperaturePass::new(tables, season),
         transitions: TransitionsPass::new(tables),
+        condensation: Condensation::new(tables),
         water: WaterPass::new(tables),
+        evaporation: Evaporation::new(tables),
+        rain: Rain::new(tables, season, seed),
         gases: GasPass::all(tables),
         weathering: WeatheringPass::new(tables),
     };
@@ -92,7 +103,9 @@ pub fn season_tick(
     report
 }
 
-/// One sub-step: the passes in SAD-P2 §3 order.
+/// One sub-step: the passes in SAD-P2 §3 order. The water pass runs its
+/// §7.3 steps in order: condensation, the flow sweeps, evaporation, rain.
+/// Only the flow and gas sweeps add an `active_cells_per_sweep` entry.
 fn substep(
     world: &mut World,
     passes: &mut Passes,
@@ -116,6 +129,9 @@ fn substep(
         exec,
         report,
     );
+    if let Some(condensation) = &mut passes.condensation {
+        run_sweep(world, condensation, &mut report.ledger);
+    }
     for i in 0..passes.water.flow_iters() {
         passes.water.set_iter(i);
         let r = run_sweep(world, &mut passes.water, &mut report.ledger);
@@ -123,6 +139,10 @@ fn substep(
             .active_cells_per_sweep
             .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
     }
+    if let Some(evaporation) = &mut passes.evaporation {
+        run_sweep(world, evaporation, &mut report.ledger);
+    }
+    passes.rain.run(world, &mut report.ledger);
     for gas in &mut passes.gases {
         let r = run_sweep(world, gas, &mut report.ledger);
         report
@@ -244,7 +264,7 @@ mod tests {
         let mut activity = Activity::new(t.params().quiet_skip);
         let reports = (first..first + seasons)
             .map(|season| {
-                let mut r = season_tick(&mut w, t, season, &mut activity, exec);
+                let mut r = season_tick(&mut w, t, season, seed, &mut activity, exec);
                 assert_eq!(r.substep_ms.len(), usize::from(t.seasons().substeps));
                 r.substep_ms.clear();
                 r
@@ -292,6 +312,42 @@ mod tests {
     }
 
     #[test]
+    fn water_pass_condenses_evaporates_and_rains() {
+        let t = tables();
+        let steam = t.role_gas("steam").expect("steam role");
+        let tick_from = |seed: u64| {
+            let mut w = random_world(&t, 5);
+            // Steam in every covered air cell (under the scattered
+            // overhangs), where it can condense.
+            let covered: Vec<CellPos> = crate::reference::global_order(w.bounds())
+                .filter(|&c| {
+                    w.get_cell(c) == Some(MaterialId::AIR)
+                        && c.0.y < i32::from(w.surface_y(c.0.x, c.0.z))
+                })
+                .collect();
+            assert!(!covered.is_empty(), "the random world has overhangs");
+            for c in covered {
+                w.eco_put_layer(c, LayerId::Gas(steam), 50);
+            }
+            let checker = crate::invariants::InvariantChecker::new(&w);
+            let mut activity = Activity::new(t.params().quiet_skip);
+            let r = season_tick(&mut w, &t, 0, seed, &mut activity, Exec::Serial);
+            checker
+                .check(&w, &r.ledger)
+                .expect("conserved over the tick");
+            (w, r)
+        };
+        let (a, r) = tick_from(7);
+        let l = &r.ledger;
+        assert!(l.condense_from_steam > 0, "covered steam condensed");
+        assert!(l.rain_in > 0, "spring rain fell");
+        assert!(l.evap_to_steam > 0, "the rain's puddles evaporated");
+        // The rain pattern follows the world seed.
+        assert_eq!(a.hash(), tick_from(7).0.hash());
+        assert_ne!(a.hash(), tick_from(8).0.hash());
+    }
+
+    #[test]
     fn gas_sweeps_run_after_water() {
         // No rain (SAD-P2 §7.3 D): it would land on the open air the pocket
         // sits in and push the gas aside.
@@ -313,7 +369,7 @@ mod tests {
         let checker = crate::invariants::InvariantChecker::new(&w);
         let mut activity = Activity::new(t.params().quiet_skip);
 
-        let r = season_tick(&mut w, &t, 0, &mut activity, Exec::Serial);
+        let r = season_tick(&mut w, &t, 0, 0, &mut activity, Exec::Serial);
 
         // Every sub-step: the flow sweeps, then one sweep per gas row.
         assert_eq!(r.active_cells_per_sweep.len(), substeps * sweeps);

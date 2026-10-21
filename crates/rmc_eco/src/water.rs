@@ -36,13 +36,22 @@
 //! Contact boiling (7) takes its place after magma;
 //! [`reference::flat_sweep_water`] is the flat-array oracle (without magma).
 //!
+//! Around the flow sweeps, once per sub-step, run the other §7.3 steps:
+//! [`Condensation`] (A) before them, then [`Evaporation`] (C) and
+//! [`Rain`] (D), whose per-column amount follows [`rain_pattern`].
+//!
 //! [`reference::flat_sweep_water`]: crate::reference::flat_sweep_water
 
-use rmc_world::coords::CellPos;
+use rmc_world::columns::NO_SURFACE;
+use rmc_world::coords::{CellAabb, CellPos};
 use rmc_world::layers::{LayerId, SWEEP_WATER};
+use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
+use xxhash_rust::xxh3::Xxh3;
 
+use crate::gases::GasPass;
+use crate::reference::global_order;
 use crate::runner::{SweepCtx, SweepPass};
 use crate::tables::{EcoTables, SEEP_DEN};
 
@@ -392,6 +401,273 @@ impl SweepPass for WaterPass {
     }
 }
 
+/// The divisor of the rain amount, `rain · pattern / 256` (§7.3 D).
+const PATTERN_DEN: i32 = 256;
+/// The cell above.
+const ABOVE: [i32; 3] = [0, 1, 0];
+
+/// Step A, condensation (SAD-P2 §7.3), once per sub-step before the flow
+/// sweeps: one sweep over the steam active set. An air cell holding steam
+/// that is colder than `eco.condense_temp` and not sky-open turns
+/// `min(steam, 255 − moisture)` of it into moisture on itself (the first
+/// flow sweep makes it water); ledger `condense_from_steam`. Steam that
+/// finds no room stays steam. Sky-open steam (`y > surface_y`) is left to
+/// the steam sweep's vent step (§7.4): above an open pond it vents
+/// instead of condensing back.
+#[derive(Clone, Debug)]
+pub struct Condensation {
+    /// The steam sweep: its active set and which cells hold steam.
+    steam: GasPass,
+    /// `eco.condense_temp`, 0.1 °C.
+    condense_temp: i32,
+}
+
+impl Condensation {
+    /// `None` without a `steam` gas role.
+    pub fn new(tables: &EcoTables) -> Option<Self> {
+        let steam = tables.role_gas("steam")?;
+        Some(Self {
+            steam: GasPass::new(tables, steam),
+            condense_temp: i32::from(tables.params().condense_temp),
+        })
+    }
+}
+
+impl SweepPass for Condensation {
+    fn kind(&self) -> usize {
+        self.steam.kind()
+    }
+
+    fn visit(&mut self, ctx: &mut SweepCtx<'_>, cell: CellPos) {
+        if !self.steam.holds(ctx.world, cell) {
+            return;
+        }
+        let sky_open = cell.0.y > i32::from(ctx.world.surface_y(cell.0.x, cell.0.z));
+        if sky_open || ctx.world.layer(cell, LayerId::Temperature) >= self.condense_temp {
+            return;
+        }
+        let layer = LayerId::Gas(self.steam.gas());
+        let steam = ctx.world.layer(cell, layer);
+        let held = moisture(ctx.world, cell);
+        let amount = steam.min(FULL - held);
+        if amount <= 0 {
+            return;
+        }
+        ctx.world.eco_put_layer(cell, layer, steam - amount);
+        // Moist air joins the water sweep (`eco_put_layer` adds it).
+        ctx.world
+            .eco_put_layer(cell, LayerId::Moisture, held + amount);
+        ctx.ledger.condense_from_steam += i64::from(amount);
+    }
+
+    /// Air cells holding steam, as for the steam sweep.
+    fn holds(&self, world: &World, cell: CellPos) -> bool {
+        self.steam.holds(world, cell)
+    }
+}
+
+/// Step C, evaporation (SAD-P2 §7.3), once per sub-step after the flow
+/// sweeps: one sweep over the water active set. A water cell whose cell
+/// above is air moves `e = min(evap_table[bucket(T)], fill, 255 −
+/// steam_above)` of its fill into the steam above; ledger `evap_to_steam`
+/// records `e`. `T` is the water cell's temperature; its bucket is `T /
+/// evap_bucket`, 0 below 0 °C and the table's last entry past its end. A
+/// cell left at fill 0 becomes air at once (§7.3 B5).
+#[derive(Clone, Debug)]
+pub struct Evaporation {
+    /// The flow sweep, for which cells the water active set holds.
+    flow: WaterPass,
+    water: MaterialId,
+    air: MaterialId,
+    /// The steam gas's layer index.
+    steam: u8,
+    /// `eco.evap_table`.
+    table: Vec<i32>,
+    /// `eco.evap_bucket`, 0.1 °C.
+    bucket: i32,
+}
+
+impl Evaporation {
+    /// `None` without the `steam` gas role or the `water` and `air`
+    /// material roles.
+    pub fn new(tables: &EcoTables) -> Option<Self> {
+        let params = tables.params();
+        Some(Self {
+            flow: WaterPass::new(tables),
+            water: tables.role_material("water")?,
+            air: tables.role_material("air")?,
+            steam: tables.role_gas("steam")?,
+            table: params.evap_table.iter().map(|&e| i32::from(e)).collect(),
+            bucket: i32::from(params.evap_bucket),
+        })
+    }
+
+    /// The table's rate at temperature `t`.
+    fn rate(&self, t: i32) -> i32 {
+        let i = usize::try_from(t / self.bucket).unwrap_or(0);
+        self.table
+            .get(i)
+            .or(self.table.last())
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+impl SweepPass for Evaporation {
+    fn kind(&self) -> usize {
+        SWEEP_WATER
+    }
+
+    fn visit(&mut self, ctx: &mut SweepCtx<'_>, cell: CellPos) {
+        if ctx.world.get_cell(cell) != Some(self.water) {
+            return;
+        }
+        let above = offset(cell, ABOVE);
+        let open = ctx
+            .world
+            .get_cell(above)
+            .is_some_and(|m| WaterPass::is_air(ctx.world, m));
+        if !open {
+            return;
+        }
+        let layer = LayerId::Gas(self.steam);
+        let fill = moisture(ctx.world, cell);
+        let steam = ctx.world.layer(above, layer);
+        let rate = self.rate(ctx.world.layer(cell, LayerId::Temperature));
+        let amount = rate.min(fill).min(FULL - steam);
+        if amount <= 0 {
+            return;
+        }
+        ctx.world
+            .eco_put_layer(cell, LayerId::Moisture, fill - amount);
+        // The steam joins the steam sweep (`eco_put_layer` adds it).
+        ctx.world.eco_put_layer(above, layer, steam + amount);
+        ctx.ledger.evap_to_steam += i64::from(amount);
+        if fill == amount {
+            ctx.world.eco_set(cell, self.air, ctx.ledger);
+        }
+    }
+
+    /// The water active set's cells, as for the flow sweeps.
+    fn holds(&self, world: &World, cell: CellPos) -> bool {
+        self.flow.holds(world, cell)
+    }
+}
+
+/// Step D, rain (SAD-P2 §7.3), once per sub-step after evaporation, per
+/// column in the global order of a y-plane. The target is the cell at
+/// `surface_y + 1` when it is air (it becomes water, §7.0) or water; when
+/// it is a plant (a passable solid above the surface) the target is the
+/// porous anchor below it instead. No surface, a target above the world's
+/// top or outside the resident chunks, a plant on a non-porous anchor, or
+/// anything else at `surface_y + 1` gets no rain. The amount is `min(rain ·
+/// pattern / 256, room)` with `room` = `255 − moisture` (air, water) or
+/// `field_capacity − moisture` (porous); ledger `rain_in` records it.
+#[derive(Clone, Debug)]
+pub struct Rain {
+    /// The flow sweep, for the roles and the porous solids.
+    flow: WaterPass,
+    /// Per material id: whether it is a plant (the material of a
+    /// `plants.ron` row).
+    plant: Vec<bool>,
+    /// The season row's `rain`.
+    rain: u8,
+    season: u32,
+    seed: u64,
+}
+
+impl Rain {
+    /// The rain of season `season` (row `season % len` of `seasons.ron`),
+    /// patterned by the world seed `seed`.
+    pub fn new(tables: &EcoTables, season: u32, seed: u64) -> Self {
+        let rows = &tables.seasons().seasons;
+        let m = tables.materials();
+        let mut plant = vec![false; m.len()];
+        for id in tables.plants().iter().filter_map(|p| m.id(&p.material)) {
+            plant[usize::from(id.0)] = true;
+        }
+        Self {
+            flow: WaterPass::new(tables),
+            plant,
+            rain: rows[season as usize % rows.len()].rain,
+            season,
+            seed,
+        }
+    }
+
+    fn is_plant(&self, id: MaterialId) -> bool {
+        self.plant.get(usize::from(id.0)).copied().unwrap_or(false)
+    }
+
+    /// Where the rain of column `(x, z)` lands: the cell, what it holds,
+    /// its room and whether it is air (to become water).
+    fn target(&self, world: &World, x: i32, z: i32) -> Option<(CellPos, i32, i32, bool)> {
+        let water = self.flow.water?;
+        let surface = world.surface_y(x, z);
+        if surface == NO_SURFACE {
+            return None;
+        }
+        let surface = i32::from(surface);
+        let above = CellPos::new(x, surface + 1, z);
+        let m = world.get_cell(above)?;
+        let air = WaterPass::is_air(world, m);
+        if air || m == water {
+            let held = moisture(world, above);
+            return Some((above, held, FULL - held, air));
+        }
+        if !self.is_plant(m) {
+            return None;
+        }
+        let anchor = CellPos::new(x, surface, z);
+        let porous = world.get_cell(anchor).and_then(|a| self.flow.porous(a))?;
+        let held = moisture(world, anchor);
+        Some((anchor, held, (porous.capacity - held).max(0), false))
+    }
+
+    /// Rains on every column of `world` and returns how many columns
+    /// received water.
+    pub fn run(&self, world: &mut World, ledger: &mut SeasonLedger) -> u32 {
+        let Some(water) = self.flow.water else {
+            return 0;
+        };
+        if self.rain == 0 {
+            return 0;
+        }
+        let b = world.bounds();
+        let plane = CellAabb::new(b.min, CellPos::new(b.max.0.x, b.min.0.y, b.max.0.z));
+        let mut columns = 0;
+        for col in global_order(plane) {
+            let (x, z) = (col.0.x, col.0.z);
+            let Some((cell, _, room, air)) = self.target(world, x, z) else {
+                continue;
+            };
+            let pattern = i32::from(rain_pattern(self.seed, self.season, x, z));
+            let amount = (i32::from(self.rain) * pattern / PATTERN_DEN).min(room);
+            if amount <= 0 {
+                continue;
+            }
+            if air {
+                world.eco_set(cell, water, ledger);
+            }
+            let held = moisture(world, cell);
+            world.eco_put_layer(cell, LayerId::Moisture, held + amount);
+            ledger.rain_in += i64::from(amount);
+            columns += 1;
+        }
+        columns
+    }
+}
+
+/// The seeded rain pattern of column `(x, z)` in season `season`, 0..=255
+/// (SAD-P2 §7.3 D; §16: a seeded hash per column).
+pub fn rain_pattern(seed: u64, season: u32, x: i32, z: i32) -> u8 {
+    let mut h = Xxh3::with_seed(seed);
+    h.update(&season.to_le_bytes());
+    h.update(&x.to_le_bytes());
+    h.update(&z.to_le_bytes());
+    h.digest().to_le_bytes()[0]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,13 +677,15 @@ mod tests {
 
     use proptest::prelude::*;
     use rmc_world::chunk::Chunk;
-    use rmc_world::coords::{CHUNK_VOLUME, CellAabb, ChunkPos, LocalPos};
+    use rmc_world::coords::{CHUNK_VOLUME, ChunkPos, LocalPos};
+    use rmc_world::layers::SWEEP_GAS;
     use rmc_world::ledger::SeasonLedger;
     use rmc_world::materials::MaterialTable;
 
     use crate::invariants::InvariantChecker;
     use crate::reference::{FlatWorld, WaterRef, flat_sweep_water, global_order};
     use crate::runner::{activate_holders, run_sweep};
+    use crate::tables::SeasonOverride;
 
     const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
     /// Top of the stone slab the pockets are cut into.
@@ -432,6 +710,8 @@ mod tests {
         magma: MaterialId,
         /// A liquid of another kind than water or magma.
         brine: MaterialId,
+        /// A passable plant material (plants.ron's `moss` row).
+        moss: MaterialId,
     }
 
     impl Fix {
@@ -454,9 +734,17 @@ mod tests {
 "
                 )
             };
+            // A passable plant: the material of plants.ron's `moss` row.
+            let plant = |id: usize, key: &str| {
+                format!(
+                    "(id: {id}, key: \"{key}\", phase: Solid, tags: [\"plant\"], hardness: 1, \
+                     diggable: true, yield_count: 1, color: (60, 140, 60, 255), \
+                     emissive: 0.0, passable: true),\n"
+                )
+            };
             let end = base.rfind(']').expect("material list closes");
             let text = format!(
-                "{}{}{}{}{}]",
+                "{}{}{}{}{}{}]",
                 &base[..end],
                 row(n, "test_loam", LOAM_PERM),
                 row(n + 1, "test_hardpan", 0),
@@ -465,7 +753,8 @@ mod tests {
                     "magma",
                     ", viscosity: 3, conductivity: 64, heat_capacity: 32"
                 ),
-                liquid(n + 3, "test_brine", "")
+                liquid(n + 3, "test_brine", ""),
+                plant(n + 4, "moss"),
             );
             let m = Arc::new(MaterialTable::from_ron_str(&text).expect("test table loads"));
             let t = EcoTables::load_with_materials(m, ASSETS).expect("Phase 2 tables load");
@@ -475,6 +764,7 @@ mod tests {
             let hardpan = t.materials().id("test_hardpan").unwrap();
             let magma = t.role_material("magma").expect("the magma row resolves");
             let brine = t.materials().id("test_brine").unwrap();
+            let moss = t.materials().id("moss").unwrap();
             Self {
                 t,
                 air,
@@ -483,6 +773,7 @@ mod tests {
                 hardpan,
                 magma,
                 brine,
+                moss,
             }
         }
 
@@ -1198,6 +1489,497 @@ mod tests {
                 }
             }
         }
+    }
+
+    // §7.3 A, C and D: condensation, evaporation and rain.
+
+    fn steam_gas(f: &Fix) -> u8 {
+        f.t.role_gas("steam").expect("steam role")
+    }
+
+    fn up(c: CellPos) -> CellPos {
+        CellPos::new(c.0.x, c.0.y + 1, c.0.z)
+    }
+
+    fn in_set(w: &World, cell: CellPos, kind: usize) -> bool {
+        let (pos, local) = cell.split();
+        w.chunk(pos).unwrap().active[kind].contains(local)
+    }
+
+    #[test]
+    fn evaporation_limited_by_steam_room_ledger_actual() {
+        let f = Fix::new();
+        let st = steam_gas(&f);
+        let steam = LayerId::Gas(st);
+        let p = f.t.params();
+        let table: Vec<i32> = p.evap_table.iter().map(|&e| i32::from(e)).collect();
+        let bucket = i32::from(p.evap_bucket);
+        let hottest = *table.last().unwrap();
+        assert!(hottest > 15, "the room-limited case needs a rate above 15");
+        let hot = bucket * (table.len() as i32 + 3);
+        // Ponds in the top slab layer under open air, and one sealed under
+        // the slab's top (stone above it).
+        let at = |x| CellPos::new(x, SLAB_Y, 10);
+        let warm = at(4);
+        let roomy = at(8);
+        let choked = at(12);
+        let shallow = at(16);
+        let frozen = at(20);
+        let sealed = CellPos::new(24, SLAB_Y - 1, 10);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (warm, f.water, 200),
+                (roomy, f.water, 200),
+                (choked, f.water, 200),
+                (shallow, f.water, 3),
+                (frozen, f.water, 200),
+                (sealed, f.water, 200),
+            ],
+        );
+        for (c, t) in [
+            (warm, 2 * bucket + bucket / 2),
+            (roomy, hot),
+            (choked, hot),
+            (shallow, hot),
+            (frozen, -bucket / 2),
+            (sealed, hot),
+        ] {
+            w.eco_put_layer(c, LayerId::Temperature, t);
+        }
+        w.eco_put_layer(up(roomy), steam, 240);
+        w.eco_put_layer(up(choked), steam, 255);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut evap = Evaporation::new(&f.t).expect("steam, water and air roles");
+
+        run_sweep(&mut w, &mut evap, &mut ledger);
+
+        // (cell, fill, steam above): the table's rate for the cell's
+        // temperature, within the steam room above and the fill.
+        let want = [
+            (warm, 200 - table[2], table[2]),
+            (roomy, 200 - 15, 255),
+            (choked, 200, 255),
+            (frozen, 200 - table[0], table[0]),
+        ];
+        for (c, fill_c, steam_above) in want {
+            assert_eq!(fill(&w, c), fill_c, "{c:?} fill");
+            assert_eq!(w.layer(up(c), steam), steam_above, "{c:?} steam above");
+            assert_eq!(w.get_cell(c), Some(f.water));
+        }
+        // The shallow pond dries out: its whole fill, 3, is steam, and the
+        // empty cell is air.
+        assert_eq!(fill(&w, shallow), 0);
+        assert_eq!(w.layer(up(shallow), steam), 3);
+        assert_eq!(w.get_cell(shallow), Some(f.air));
+        assert!(!active(&w, shallow), "the dry cell leaves the water sweep");
+        // Stone above: nothing evaporates.
+        assert_eq!(fill(&w, sealed), 200);
+        assert_eq!(w.layer(up(sealed), steam), 0);
+        // The steam joins the steam sweep.
+        for c in [warm, roomy, shallow, frozen] {
+            assert!(in_set(&w, up(c), SWEEP_GAS + usize::from(st)), "{c:?}");
+        }
+        // The ledger books what moved, not the table's rates.
+        let expect = SeasonLedger {
+            evap_to_steam: i64::from(table[2] + 15 + 3 + table[0]),
+            ..SeasonLedger::default()
+        };
+        assert_eq!(ledger, expect);
+        checker
+            .check(&w, &ledger)
+            .expect("water and steam conserved");
+
+        // Again: the room above the roomy pond is gone.
+        run_sweep(&mut w, &mut evap, &mut ledger);
+        assert_eq!(fill(&w, roomy), 200 - 15);
+        assert_eq!(fill(&w, warm), 200 - 2 * table[2]);
+        assert_eq!(
+            ledger.evap_to_steam,
+            expect.evap_to_steam + i64::from(table[2] + table[0])
+        );
+        checker
+            .check(&w, &ledger)
+            .expect("water and steam conserved");
+    }
+
+    #[test]
+    fn condensation_below_temp_returns_steam() {
+        let f = Fix::new();
+        let st = steam_gas(&f);
+        let steam = LayerId::Gas(st);
+        let ct = i32::from(f.t.params().condense_temp);
+        // Sealed one-cell air pockets just under the slab's top.
+        let at = |x| CellPos::new(x, SLAB_Y - 1, 10);
+        let cold = at(4);
+        let warm = at(8);
+        let damp = at(12);
+        let soaked = at(16);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (cold, f.air, 0),
+                (warm, f.air, 0),
+                (damp, f.air, 150),
+                (soaked, f.air, 255),
+            ],
+        );
+        for (c, s, t) in [
+            (cold, 100, ct - 1),
+            (warm, 100, ct),
+            (damp, 200, 0),
+            (soaked, 50, 0),
+        ] {
+            w.eco_put_layer(c, steam, s);
+            w.eco_put_layer(c, LayerId::Temperature, t);
+        }
+        for c in [cold, warm, damp, soaked] {
+            assert!(i32::from(w.surface_y(c.0.x, c.0.z)) > c.0.y, "covered");
+        }
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut cond = Condensation::new(&f.t).expect("steam role");
+        let gas_set = SWEEP_GAS + usize::from(st);
+        assert_eq!(cond.kind(), gas_set);
+
+        run_sweep(&mut w, &mut cond, &mut ledger);
+
+        // Below condense_temp all the steam that fits becomes moisture on
+        // the cell itself; at condense_temp nothing does.
+        assert_eq!((fill(&w, cold), w.layer(cold, steam)), (100, 0));
+        assert_eq!((fill(&w, warm), w.layer(warm, steam)), (0, 100));
+        assert_eq!((fill(&w, damp), w.layer(damp, steam)), (255, 95));
+        assert_eq!((fill(&w, soaked), w.layer(soaked, steam)), (255, 50));
+        assert!(!in_set(&w, cold, gas_set), "no steam left");
+        assert!(in_set(&w, damp, gas_set) && in_set(&w, warm, gas_set));
+        assert!(active(&w, cold), "moist air joins the water sweep");
+        let expect = SeasonLedger {
+            condense_from_steam: 100 + 105,
+            ..SeasonLedger::default()
+        };
+        assert_eq!(ledger, expect);
+        checker
+            .check(&w, &ledger)
+            .expect("water and steam conserved");
+        // The cell is still air; the first flow sweep makes it water.
+        assert_eq!(w.get_cell(cold), Some(f.air));
+        run_sweep(&mut w, &mut WaterPass::new(&f.t), &mut ledger);
+        assert_eq!(w.get_cell(cold), Some(f.water));
+        assert_eq!(fill(&w, cold), 100);
+        checker
+            .check(&w, &ledger)
+            .expect("water and steam conserved");
+    }
+
+    #[test]
+    fn steam_above_sky_open_pond_vents_not_condenses() {
+        let f = Fix::new();
+        let st = steam_gas(&f);
+        let steam = LayerId::Gas(st);
+        let stone = f.t.materials().id("stone").unwrap();
+        let p = f.t.params();
+        let table: Vec<i32> = p.evap_table.iter().map(|&e| i32::from(e)).collect();
+        // A pond open to the sky, and one under a stone overhang two cells
+        // above the air over it.
+        let pond = CellPos::new(10, SLAB_Y, 10);
+        let covered = CellPos::new(20, SLAB_Y, 20);
+        let roof = CellPos::new(20, SLAB_Y + 3, 20);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (pond, f.water, 255),
+                (covered, f.water, 255),
+                (roof, stone, 0),
+            ],
+        );
+        assert_eq!(
+            i32::from(w.surface_y(10, 10)),
+            SLAB_Y,
+            "open above the pond"
+        );
+        assert_eq!(i32::from(w.surface_y(20, 20)), SLAB_Y + 3, "the overhang");
+        // Both air cells are far below condense_temp.
+        let ct = i32::from(p.condense_temp);
+        for c in [up(pond), up(covered)] {
+            assert!(w.layer(c, LayerId::Temperature) < ct);
+            w.eco_put_layer(c, steam, 80);
+        }
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut cond = Condensation::new(&f.t).expect("steam role");
+        let gas_set = SWEEP_GAS + usize::from(st);
+
+        run_sweep(&mut w, &mut cond, &mut ledger);
+
+        // Sky-open steam stays steam, in the steam sweep, for its vent step
+        // (§7.4); under the overhang it condenses.
+        assert_eq!((w.layer(up(pond), steam), fill(&w, up(pond))), (80, 0));
+        assert!(in_set(&w, up(pond), gas_set));
+        assert_eq!(
+            (w.layer(up(covered), steam), fill(&w, up(covered))),
+            (0, 80)
+        );
+        assert_eq!(ledger.condense_from_steam, 80);
+        checker.check(&w, &ledger).expect("conserved");
+
+        // The open pond's own evaporation does not come back either. The
+        // covered pond (at 0 °C, bucket 0) evaporates into the moist air
+        // under the overhang, and that steam condenses again.
+        let warm = i32::from(p.evap_bucket) * 5;
+        w.eco_put_layer(pond, LayerId::Temperature, warm);
+        let e = table[5];
+        run_sweep(&mut w, &mut Evaporation::new(&f.t).unwrap(), &mut ledger);
+        assert_eq!(w.layer(up(pond), steam), 80 + e);
+        assert_eq!(fill(&w, pond), 255 - e);
+        run_sweep(&mut w, &mut cond, &mut ledger);
+        assert_eq!(w.layer(up(pond), steam), 80 + e);
+        assert_eq!(fill(&w, up(pond)), 0);
+        assert_eq!(w.layer(up(covered), steam), 0);
+        assert_eq!(ledger.condense_from_steam, 80 + i64::from(table[0]));
+        checker.check(&w, &ledger).expect("conserved");
+    }
+
+    /// A seed whose rain pattern is at least half strength on every column
+    /// of `cols` in `season`.
+    fn strong_seed(season: u32, cols: &[(i32, i32)]) -> u64 {
+        (0..1 << 16)
+            .find(|&s| {
+                cols.iter()
+                    .all(|&(x, z)| rain_pattern(s, season, x, z) >= 128)
+            })
+            .expect("a seed with strong rain on the test columns")
+    }
+
+    /// The rain a column gets before the room cap: `rain · pattern / 256`.
+    fn rain_of(rain: u8, seed: u64, season: u32, x: i32, z: i32) -> i32 {
+        i32::from(rain) * i32::from(rain_pattern(seed, season, x, z)) / 256
+    }
+
+    /// Every cell's moisture, in global order.
+    fn moistures(w: &World) -> Vec<(CellPos, i32)> {
+        global_order(w.bounds()).map(|c| (c, fill(w, c))).collect()
+    }
+
+    #[test]
+    fn rain_targets_surface_plus_one_or_anchor_never_overhang() {
+        let f = Fix::new();
+        let stone = f.t.materials().id("stone").unwrap();
+        let t = f.t.with_season_override(SeasonOverride {
+            rain: Some(u8::MAX),
+            air_temp: None,
+        });
+        let season = 2;
+        let open = (4, 4);
+        let overhang = (8, 8);
+        let plant = (12, 12);
+        let bare_plant = (16, 16);
+        let top = (20, 20);
+        let pond = (24, 24);
+        let seed = strong_seed(season, &[open, overhang, plant, pond]);
+        let c = |(x, z): (i32, i32), y: i32| CellPos::new(x, y, z);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (c(overhang, SLAB_Y + 4), stone, 0),
+                (c(plant, SLAB_Y), f.loam, 0),
+                (c(plant, SLAB_Y + 1), f.moss, 0),
+                (c(bare_plant, SLAB_Y + 1), f.moss, 0),
+                (c(top, 31), stone, 0),
+                (c(pond, SLAB_Y), f.water, 100),
+            ],
+        );
+        assert_eq!(
+            i32::from(w.surface_y(plant.0, plant.1)),
+            SLAB_Y,
+            "the plant is passable"
+        );
+        let before = moistures(&w);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let rain = Rain::new(&t, season, seed);
+
+        let columns = rain.run(&mut w, &mut ledger);
+
+        // Where each column's rain lands and how much: the cell above the
+        // surface, the anchor under a plant (within its field capacity),
+        // nowhere when the plant stands on stone or the surface is the
+        // world's top.
+        let target = |xz: (i32, i32)| -> Option<(CellPos, i32)> {
+            let r = rain_of(u8::MAX, seed, season, xz.0, xz.1);
+            if xz == overhang {
+                Some((c(xz, SLAB_Y + 5), r))
+            } else if xz == plant {
+                Some((c(xz, SLAB_Y), r.min(LOAM_CAP)))
+            } else if xz == bare_plant || xz == top {
+                None
+            } else {
+                Some((c(xz, SLAB_Y + 1), r))
+            }
+        };
+        let mut rained = 0;
+        let mut total = 0;
+        for (cell, was) in before {
+            let gained = fill(&w, cell) - was;
+            let want = target((cell.0.x, cell.0.z))
+                .filter(|&(at, _)| at == cell)
+                .map_or(0, |(_, r)| r);
+            assert_eq!(gained, want, "{cell:?}");
+            if want > 0 {
+                rained += 1;
+                total += want;
+            }
+        }
+        assert_eq!(columns, rained);
+        assert_eq!(ledger.rain_in, i64::from(total));
+        // Rain on air makes water; the anchor and the plant keep their
+        // materials; under the overhang it stays dry air.
+        assert_eq!(w.get_cell(c(open, SLAB_Y + 1)), Some(f.water));
+        assert_eq!(w.get_cell(c(overhang, SLAB_Y + 5)), Some(f.water));
+        for y in SLAB_Y + 1..SLAB_Y + 4 {
+            assert_eq!(w.get_cell(c(overhang, y)), Some(f.air), "y {y}");
+        }
+        assert_eq!(fill(&w, c(plant, SLAB_Y)), LOAM_CAP);
+        assert_eq!(w.get_cell(c(plant, SLAB_Y)), Some(f.loam));
+        assert_eq!(w.get_cell(c(plant, SLAB_Y + 1)), Some(f.moss));
+        assert_eq!(fill(&w, c(pond, SLAB_Y)), 100, "rain lands above the pond");
+        assert_eq!(w.get_cell(c(pond, SLAB_Y + 1)), Some(f.water));
+        checker
+            .check(&w, &ledger)
+            .expect("rain_in explains the water");
+    }
+
+    #[test]
+    fn rain_ledger_records_actual() {
+        let f = Fix::new();
+        let rain_amount = 200;
+        let t = f.t.with_season_override(SeasonOverride {
+            rain: Some(rain_amount),
+            air_temp: None,
+        });
+        let season = 0;
+        let (damp, soaked, plant) = ((4, 4), (8, 8), (12, 12));
+        let seed = strong_seed(season, &[damp, soaked, plant]);
+        let c = |(x, z): (i32, i32), y: i32| CellPos::new(x, y, z);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (c(damp, SLAB_Y + 1), f.air, 250),
+                (c(soaked, SLAB_Y + 1), f.air, 255),
+                (c(plant, SLAB_Y), f.loam, LOAM_CAP - 2),
+                (c(plant, SLAB_Y + 1), f.moss, 0),
+            ],
+        );
+        let total = |w: &World| -> i64 { moistures(w).iter().map(|&(_, m)| i64::from(m)).sum() };
+        let before = total(&w);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let rain = Rain::new(&t, season, seed);
+
+        rain.run(&mut w, &mut ledger);
+
+        // Room left 5, 0 and 2: those columns take that much, every other
+        // column its whole share.
+        let mut requested = 0;
+        let mut actual = 0;
+        for z in 0..32 {
+            for x in 0..32 {
+                let r = rain_of(rain_amount, seed, season, x, z);
+                requested += r;
+                actual += match (x, z) {
+                    xz if xz == damp => 5,
+                    xz if xz == soaked => 0,
+                    xz if xz == plant => 2,
+                    _ => r,
+                };
+            }
+        }
+        assert_eq!(fill(&w, c(damp, SLAB_Y + 1)), 255);
+        assert_eq!(w.get_cell(c(damp, SLAB_Y + 1)), Some(f.water));
+        assert_eq!(fill(&w, c(soaked, SLAB_Y + 1)), 255);
+        assert_eq!(fill(&w, c(plant, SLAB_Y)), LOAM_CAP);
+        assert!(actual < requested);
+        let want = SeasonLedger {
+            rain_in: i64::from(actual),
+            ..SeasonLedger::default()
+        };
+        assert_eq!(ledger, want, "the ledger books the actual amounts");
+        assert_eq!(total(&w) - before, ledger.rain_in);
+        checker
+            .check(&w, &ledger)
+            .expect("rain_in explains the water");
+
+        // A second sub-step's rain lands on top of the new puddles and adds
+        // to the same term.
+        let first = ledger.rain_in;
+        rain.run(&mut w, &mut ledger);
+        assert!(ledger.rain_in > first);
+        assert_eq!(total(&w) - before, ledger.rain_in);
+        assert_eq!(
+            fill(&w, c(damp, SLAB_Y + 2)),
+            rain_of(rain_amount, seed, season, 4, 4)
+        );
+        checker
+            .check(&w, &ledger)
+            .expect("rain_in explains the water");
+
+        // A dry season rains nothing.
+        let dry = f.t.with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: None,
+        });
+        let hash = w.hash();
+        let mut l = SeasonLedger::default();
+        assert_eq!(Rain::new(&dry, season, seed).run(&mut w, &mut l), 0);
+        assert_eq!(w.hash(), hash);
+        assert_eq!(l, SeasonLedger::default());
+    }
+
+    #[test]
+    fn rain_pattern_is_seeded() {
+        let cols: Vec<(i32, i32)> = (0..32).flat_map(|z| (0..32).map(move |x| (x, z))).collect();
+        let pattern = |seed, season| -> Vec<u8> {
+            cols.iter()
+                .map(|&(x, z)| rain_pattern(seed, season, x, z))
+                .collect()
+        };
+        let base = pattern(1, 0);
+        assert_eq!(base, pattern(1, 0), "a pure function");
+        // Another seed, another season (also the same row a year later):
+        // different patterns.
+        for (seed, season) in [(2, 0), (1, 1), (1, 4)] {
+            let other = pattern(seed, season);
+            let same = base.iter().zip(&other).filter(|(a, b)| a == b).count();
+            assert!(
+                same < cols.len() / 16,
+                "seed {seed} season {season}: {same} equal"
+            );
+        }
+        // Spread over the whole range, not a constant or a narrow band.
+        let distinct: std::collections::BTreeSet<u8> = base.iter().copied().collect();
+        assert!(distinct.len() > 200, "{} distinct values", distinct.len());
+        assert!(*distinct.first().unwrap() < 16 && *distinct.last().unwrap() > 240);
+        let mean = base.iter().map(|&v| u32::from(v)).sum::<u32>() / cols.len() as u32;
+        assert!((96..160).contains(&mean), "mean {mean}");
+
+        // Rain follows it: on the open slab, every column's cell above the
+        // surface gets exactly `rain · pattern / 256`; another seed gives
+        // another world, the same seed the same one.
+        let f = Fix::new();
+        let season = 0;
+        let rain = f.t.seasons().seasons[0].rain;
+        let run = |seed| {
+            let (mut w, _) = pocket_world(&f, &[]);
+            Rain::new(&f.t, season, seed).run(&mut w, &mut SeasonLedger::default());
+            w
+        };
+        let a = run(1);
+        for &(x, z) in &cols {
+            let cell = CellPos::new(x, SLAB_Y + 1, z);
+            assert_eq!(fill(&a, cell), rain_of(rain, 1, season, x, z), "{x} {z}");
+        }
+        assert_eq!(a.hash(), run(1).hash());
+        assert_ne!(a.hash(), run(2).hash());
     }
 
     fn cases() -> u32 {

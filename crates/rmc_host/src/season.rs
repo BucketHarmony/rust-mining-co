@@ -132,6 +132,7 @@ impl Host {
     /// `SeasonDone` (see the module docs). Returns the season's report;
     /// `None`, with nothing run or sent, without the Phase 2 tables.
     pub fn advance_season(&mut self) -> Option<SeasonReport> {
+        let seed = self.config().seed;
         let Some(eco) = self.eco.as_mut() else {
             warn!("AdvanceSeason ignored: the host has no Phase 2 tables");
             return None;
@@ -145,6 +146,7 @@ impl Host {
             &mut self.world,
             &eco.tables,
             season,
+            seed,
             &mut eco.activity,
             Exec::Parallel,
         );

@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(bits(&w), marked.len());
         let hash = w.hash();
         let mut activity = Activity::new(t.params().quiet_skip);
-        season_tick(&mut w, &t, WINTER, &mut activity, Exec::Parallel);
+        season_tick(&mut w, &t, WINTER, 0, &mut activity, Exec::Parallel);
         assert_eq!(w.hash(), hash, "nothing to compute");
         assert_eq!(bits(&w), 0);
 
@@ -387,7 +387,7 @@ mod tests {
         });
         let air: Vec<CellPos> = cells(&w).into_iter().filter(|c| c.0.y > 7).collect();
         let mut activity = Activity::new(t.params().quiet_skip);
-        season_tick(&mut w, &t, WINTER, &mut activity, Exec::Parallel);
+        season_tick(&mut w, &t, WINTER, 0, &mut activity, Exec::Parallel);
         for &c in &air {
             assert!(temp(&w, c) < 0);
             assert!(bit(&w, c), "{c:?}: the crossing's bit lasts the season");
@@ -395,7 +395,7 @@ mod tests {
         // The next winter (row 3 again) starts with every bit clear. The air
         // stays at its clamp, so it does not cross again and ends the season
         // without a bit.
-        season_tick(&mut w, &t, WINTER + 4, &mut activity, Exec::Parallel);
+        season_tick(&mut w, &t, WINTER + 4, 0, &mut activity, Exec::Parallel);
         for &c in &air {
             assert!(!bit(&w, c), "{c:?}: an earlier season's bit is cleared");
         }
@@ -609,6 +609,7 @@ mod tests {
             &mut w,
             &no_rain(&f.t),
             SUMMER,
+            0,
             &mut activity,
             Exec::Parallel,
         );
@@ -718,6 +719,7 @@ mod tests {
             &mut w,
             &no_rain(&f.t),
             SUMMER,
+            0,
             &mut activity,
             Exec::Parallel,
         );
@@ -1095,7 +1097,7 @@ mod tests {
         w.eco_put_layer(cell, LayerId::Regolith, 255 - 16);
         let checker = InvariantChecker::new(&w);
         let mut activity = Activity::new(f.t.params().quiet_skip);
-        let report = season_tick(&mut w, &f.t, SUMMER, &mut activity, Exec::Parallel);
+        let report = season_tick(&mut w, &f.t, SUMMER, 0, &mut activity, Exec::Parallel);
         assert_eq!(w.get_cell(cell), Some(r.dirt));
         assert_eq!(regolith(&w, cell), 0);
         assert_eq!(report.ledger.weathered_cells, 1);
@@ -1156,7 +1158,7 @@ mod tests {
         w.eco_put_layer(a, LayerId::Substance(r.cu), 200);
         let checker = InvariantChecker::new(&w);
         let mut activity = Activity::new(f.t.params().quiet_skip);
-        let report = season_tick(&mut w, &f.t, SUMMER, &mut activity, Exec::Parallel);
+        let report = season_tick(&mut w, &f.t, SUMMER, 0, &mut activity, Exec::Parallel);
         let l = &report.ledger;
         assert_eq!(sub(&w, a, r.cu), 255, "rich stone saturates");
         let cu = usize::from(r.cu);
