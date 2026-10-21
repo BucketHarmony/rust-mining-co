@@ -3076,3 +3076,34 @@ Next:
   - If the SAD's "a channel neutralizes the water that passes through it" should hold more strongly, the levers are data: the dissolve threshold or amount in `reactions.ron`, or limestone's `weathering_rate`.
 - Ready next: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 19:10 — F151 Venting to sky and emission from exposed emitters (coal → firedamp) — passed
+Done:
+- `GasPass` step 3 (SAD-P2 §7.4): after drift and diffusion, a sky-open cell (`y > surface_y`) vents what it still holds. The ledger gets `vent_out[g]`, and for the steam role also `steam_vent_out`, so the two are equal as §7 asks.
+- `gases::Emission` (step 4) runs once per sub-step after the gas sweeps, as `PassId::Emission`.
+  - Each cell whose material has `emits` and an air face neighbor adds `min(amount, room)` to its first air neighbor in sorted order (below first). `emit_in` records the actual amount.
+  - Emitters are collected from chunks whose palette holds an emitter, then sorted into global order, so two seams sharing one air cell fill it in that order.
+- `assets/materials.ron`: `coal_seam` emits `[("firedamp", 2)]` (SAD-P2 §8).
+- `reference::flat_sweep_gas` vents too and returns the amount. A cell is sky-open when no cell above it in the box forms a surface.
+Tests added:
+- `gases::tests::vent_only_sky_open`: an open shaft, a sealed pocket, and a column with a roof (gas above it vents, below it stays), all four gases. The ledger is exact. It also checks that the random worlds of the proptest do vent steam and firedamp and do emit.
+- `gases::tests::emission_only_when_exposed_actual_amounts`: these cases emit nothing: buried coal, coal beside water only, and coal whose first air neighbor is full (the next one gets nothing). Coal with air below and above emits below. Room-capped amounts, a shared air cell, and a cross-chunk neighbor are covered, plus a second sub-step.
+- `gases::tests::invariant_per_kind_including_steam_terms_proptest`: gas sweeps plus emission on random worlds with coal and sky-open air. Every kind balances after every pass (steam through the water terms), and `steam_vent_out == vent_out[steam]`.
+- `gases::tests::sealed_pocket_drains_through_shaft`: a sealed 4×4×4 firedamp pocket vents nothing over 2 seasons. A one-cell shaft to the top of the world is opened with `eco_set`. Within 12 seasons of sweeps the pocket and its roof layer fall below 10%. The total never rises, and `vent_out` equals the drop after every sweep.
+- Extended:
+  - `check_random` (the F150 gas oracle) now requires the ledger to equal the reference's vents. Before, it required an empty ledger.
+  - The whole-tick tests expect `PassId::Emission` in the pass list and `vent_out`, `steam_vent_out` and `emit_in` among the terms the random worlds exercise.
+Decisions:
+- `test-fix:` commit d1bd5c0. `tick::tests::gas_sweeps_run_after_water` put its firedamp pocket in open air, which now vents. It now picks an air cell under an overhang. The assertions are unchanged.
+- The vent step runs on the visited cell after its own drift and diffusion (§7.4 order 1, 2, 3). Gas that neighbors push into a sky-open cell after its visit vents in the next sweep.
+- Emission scans every chunk whose palette holds an emitter (32³ cells per coal chunk per sub-step). It uses no active set. F173 (performance) can add one if it shows up in the benches.
+- No material emits steam. §7 counts only evaporation and boiling as steam's source, so a steam emitter would break the water invariant. This is not guarded. The invariant proptest asserts `emit_in[steam] == 0` with the shipped tables.
+Next:
+- F152, F154, F155 and F160 are ready. F153 (ignition) needs only F131, which passes, and is now unblocked.
+- For F156 (`firedamp_vented_by_shaft`): venting is diffusion-limited.
+  - A 64-cell pocket under a one-cell shaft takes about 7 seasons to fall below 10%. A 384-cell chamber takes about 21 seasons, at 8 sub-steps per season and firedamp diffusion 24/64.
+  - "Ceiling concentration < 10% after 1 season" holds right under the shaft (that column is sky-open and vents every sweep), not across a large cave.
+  - The F156 session should measure at the shaft, or use a small cave or wide shaft, and must not tune rates to pass (rule 19 data only).
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
+- Another session was editing `rmc_client`, `rmc_app` and `rmc_testkit` (tile textures) in this working tree during this session. I did not stage or touch those files. Its leftover uncommitted edits are still in the tree.
