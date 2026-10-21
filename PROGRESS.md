@@ -2362,3 +2362,52 @@ Decisions:
 - The tests are written to stay valid once contact boiling (F131) sets magma in place: they assert melt_in = edit = 0 and count = before − magma_set, not count = before.
 Next: F132 (worldgen magma chambers), the first unpassed feature whose blockers all pass. F140, F150 and F160 are also ready.
 Blockers: none.
+
+## 2026-10-21 18:00 — F132 Worldgen magma chambers with cores, never touching bedrock — passed
+Done:
+- `rmc_worldgen::magma`:
+  - `MagmaInit::new(&EcoTables)` resolves the eco roles `magma` and `magma_source`. A core without a `heat_source` counts as missing.
+  - `Chambers::plan(seed, params, bounds, floor_cells, wall_cells)` places the chambers once per world:
+    - `count_min..=count_max` chambers; each one's center and radius come from `cell_hash(seed, LAYER_MAGMA, i, k, 0)`;
+    - centers lie in a box that keeps each chamber's whole reach (`radius_max + amplitude` around the center) more than `shell_clearance` cells from the shell on each axis, and below `chamber_max_y`;
+    - a world with no room for that has no chambers.
+  - `Chambers::cell(c)`: a cell within `core_radius` of a center is core, which wins over another chamber's magma. A cell within `radius + offset_3d(noise, amplitude)` of a center is magma.
+- `GenParams.magma_chambers: Option<MagmaChamberParams>` (serde default `None`), with validation:
+  - `count_min ≤ count_max`, `radius_min ≤ radius_max`;
+  - `amplitude < radius_min`, so every chamber holds its center;
+  - `core_radius ≤ radius_min − amplitude`;
+  - cell ranges and the noise are checked too.
+  - `fit_to` scales `chamber_max_y` along with the world's height.
+- `Generator::with_magma(MagmaInit)`, `chambers()`, `chamber_reach()`. The new step runs after ores and before the shell (`shell_volume`). It turns every chamber cell to magma or core, over the 34³ volume, whatever was there before (rock, ore or cave). Chunks whose volume no chamber reaches skip it.
+- Nothing else in the pipeline changes:
+  - the temperature layer already gives magma `magma_init_temp` and cores their `heat_source` clamp;
+  - the water table floods only air, so it never replaces magma.
+- `noise::NoiseLayer::offset_3d`, `LAYER_MAGMA` (0x0700), `LAYER_MAGMA_BLOB` (0x0701).
+- `assets/worldgen.ron` `magma_chambers`: count 1..=3, `chamber_max_y` 56, radius 3..=5, amplitude 1, noise 0.3/m, core_radius 1, shell_clearance 8. `assets/eco.ron` gains the role `"magma_source": "magma_source"`.
+- `rmc_app::session::generate_world` and the testkit's `generate_world` call `with_magma`.
+Tests added:
+- `magma::tests::chambers_have_source_core_and_init_temp`. The fixture appends SAD-P2 §5's `magma` and `magma_source` rows when the table lacks them. Checked:
+  - 1..=3 chambers, every count seen over 64 seeds; the plan is deterministic and differs across seeds;
+  - on two full 64×128×64 worlds with temperature, water table and magma:
+    - every cell within core_radius of a center is core at 13000;
+    - every magma cell is inside a chamber's reach, at `magma_init_temp`, with no moisture;
+    - no cell inside `radius − amplitude` is anything else;
+    - only chamber cells differ from the plain world, and all lie below `chamber_max_y`;
+    - each core is enclosed by magma or core;
+  - without `with_magma`, without chamber params, or with a core that has no heat source, there are no chambers.
+- `magma::tests::chambers_clear_of_bedrock`. Checked:
+  - on four worlds (shipped 256×128×256, 64×128×64, the `fit_to` 64-high world, and a non-aligned box with floor 5 / wall 3 and clearance 10), over 64 seeds each, every chamber's reach box is clear of the shell on each axis and below `chamber_max_y`;
+  - on generated cells, a brute-force scan finds no shell cell within the clearance of any magma/core cell, and the shell is untouched;
+  - a world with no room has no chambers and generates as the plain one;
+  - a world with room for one center puts every chamber on it;
+  - `fit_to` halves `chamber_max_y`.
+- `params::tests`: seven new invalid-chamber cases and two hash-moving edits.
+Decisions:
+- Materials by eco role, not by worldgen key. Chambers are off unless both roles resolve, so tables without magma (the shipped one, Phase 1 fixtures) keep generating as before. The core needs a new role `magma_source` (the eco loader allows extra roles; `magma_source` was already in the "later materials" list).
+- `materials.ron` still has no `magma`/`magma_source` rows, as in F130's decision. F133 ("Materials: magma, obsidian, basalt colors") ships them with alpha 255. Until then shipped worlds have no chambers and nothing about them changes. The tests use SAD-P2 §5 fixture rows, added only if the table lacks the key, so they keep working once F133 ships the rows.
+- "Never within 8 cells of the bedrock shell" means more than `shell_clearance` (8) cells on each axis: a Chebyshev ball of radius 8 around any chamber cell holds no shell cell. The planner enforces it for the whole reach box, not only for the cells it fills.
+- `chamber_max_y` 56 lies below the water table (64). A chamber therefore borders rock or flooded caves, never air, so B6 has nowhere to move it (contact boiling is F131). In the 64-high world it scales to 28, which still leaves room (centers y 16..=21) for a chamber of the largest radius.
+- The chamber step overwrites caves and ores inside the blob. It runs before the shell (which it never reaches) and before crystals, so crystals never form against magma.
+- Chamber positions are planned per world in `Generator::new`, so each cell is a pure function of its world position. Chunks stay independent and border cells agree.
+Next: F140 (substance layers), F150 (gases) or F160 (light), the first unpassed features whose blockers all pass. F131 still waits on F125 and F150.
+Blockers: none.
