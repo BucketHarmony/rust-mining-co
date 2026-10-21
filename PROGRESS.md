@@ -2027,3 +2027,22 @@ Done:
 Measured after the change: a cold full gate took 13 min with build processes peaking at 4.6 GB; `scripts/e2e.sh boot_renders` peaked at about 4 GB. Before, the same e2e step reached about 30 GB.
 Next: F094. Run `git stash pop` (stash@{0}), then re-run `scripts/verify-features.sh F094` and pass it.
 Blockers: none.
+
+## 2026-10-20 23:15 — F094 Narrower player box: 0.45 m wide so the player drops into a one-cell hole and fits a one-cell shaft — passed
+Done:
+- Resumed from the owner's stash "F094 near-done": `git stash pop`, then re-ran the gate and the e2e tests. All are green.
+- `PLAYER_WIDTH_M` (rmc_protocol) is now 0.45. Every use goes through the constant: controller collision and sweep, the host box skip, step-up and the bots. Spawn search places feet at cell centers, so it needs no change. No 0.6/0.3 width literal is left in non-test code.
+- `TunnelBot` digs `width_cells()` columns (now 1) when the box, `SKIN_M` clear on each side, already fits in that many columns where it stands. Otherwise it digs one column wider and steps to the middle. The reason: a walk step (about 0.07 m) is wider than a one-cell tunnel's spare width (0.05 m), so the bot could not step into one. `TunnelReport.width` reports which width it dug.
+Tests added:
+- `controller::tests::{player_drops_into_one_cell_hole, player_fits_one_cell_shaft}`.
+- E2E `dig_straight_down`. It digs 4 cells straight down, and the feet follow, with a penetration check every frame. Then it climbs out a one-cell stair: two step-ups and a jump. Screenshot `docs/screens/dig_straight_down-359.png`.
+- `dig_tunnel` now also asserts the tunnel is one column wide, and its screenshot was re-shot (`dig_tunnel-905.png` replaces `-1747`).
+- `bots::tests::tunnel_bot_digs_and_walks_in` asserts the straddling case digs 2 wide.
+- The test-fix for the 0.6 m literals is its own commit, 0b604cc.
+- Reviewer: PASS, no gaps.
+Decisions:
+- Owner override of SAD §11.4: the box is 0.45 m wide. Height 1.7 m and eye 1.55 m are unchanged. docs/SAD.md is not edited; the F094 notes are the record.
+- `PROTOCOL_VERSION` stays 2. The width is a shared constant, not a wire field.
+- Two older stashes, "F094 test-fix" and "F094 WIP", are superseded by this commit and by 0b604cc. They are left for the owner to drop, because dropping a stash cannot be undone.
+Next: F095.
+Blockers: none.
