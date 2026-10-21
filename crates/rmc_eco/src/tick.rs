@@ -21,6 +21,7 @@ use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
 use crate::transitions::TransitionsPass;
 use crate::water::WaterPass;
+use crate::weathering::WeatheringPass;
 
 /// What one season tick did. Everything but `substep_ms` is a function of
 /// the world, the tables, the season and the activity state.
@@ -43,6 +44,7 @@ struct Passes {
     temperature: TemperaturePass,
     transitions: TransitionsPass,
     water: WaterPass,
+    weathering: WeatheringPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -64,6 +66,7 @@ pub fn season_tick(
         temperature: TemperaturePass::new(tables, season),
         transitions: TransitionsPass::new(tables),
         water: WaterPass::new(tables),
+        weathering: WeatheringPass::new(tables),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
@@ -115,6 +118,14 @@ fn substep(
             .active_cells_per_sweep
             .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
     }
+    jacobi(
+        JacobiKind::Weathering,
+        &passes.weathering,
+        world,
+        activity,
+        exec,
+        report,
+    );
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -253,10 +264,11 @@ mod tests {
                     "seed {seed}: revisions of {pos:?}"
                 );
             }
-            // One Jacobi entry per Jacobi pass per sub-step (temperature
-            // and transitions so far), never more chunks than the world has.
+            // One Jacobi entry per Jacobi pass per sub-step (temperature,
+            // transitions and weathering so far), never more chunks than the
+            // world has.
             for r in &ra {
-                assert_eq!(r.active_chunks_per_jacobi.len(), 2 * substeps);
+                assert_eq!(r.active_chunks_per_jacobi.len(), 3 * substeps);
                 assert!(r.active_chunks_per_jacobi.iter().all(|&n| n <= 2));
             }
             // The season row matters: the next row's `air_temp` gives a

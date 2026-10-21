@@ -25,3 +25,4 @@ pub use temperature::{Profile, TemperaturePass};
 pub use tick::{TickReport, season_tick};
 pub use transitions::TransitionsPass;
 pub use water::WaterPass;
+pub use weathering::WeatheringPass;
