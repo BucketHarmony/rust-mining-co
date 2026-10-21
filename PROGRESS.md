@@ -2180,3 +2180,24 @@ Next: F126 (worldgen water table) or F127 / F130 / F150 / F160: the next unpasse
   - Open from F107's review: an end-to-end host check that a real season's material change (now possible via freezing) reaches clients as a `ChunkSnapshot`.
 Blockers: none.
 - Correction to the F125 block's Next: the next feature is F110 (freeze-thaw season bitset), the first unpassed entry in features.json whose blockers all pass.
+
+## 2026-10-21 11:00 — F110 Freeze-thaw season bitset — passed
+Done:
+- `rmc_eco::weathering` (new module, home of the §7.5 pass F111 adds): `crossed_zero(before, after)` is `(T_before < 0) != (T_after < 0)`.
+- The temperature pass compares each computed cell's stored temperature (before the clamps) with its new one, and lists crossings in the new `JacobiOut::freeze_thaw`.
+  - `run_jacobi` sets those bits through the new `World::eco_mark_freeze_thaw`, after materials, layers and plants.
+  - Setting a bit is not a change: the bits are not hashed, so they do not count toward `JacobiReport::changed` or activity.
+- `season_tick` clears every chunk's bits (the new `World::eco_clear_freeze_thaw`) before the season boundary and the sub-steps. The bits stay set for the rest of the season.
+Tests added:
+- `weathering::tests::freeze_thaw_bit_set_on_zero_crossing`: four random near-0 worlds over two chunks, three winter temperature passes each.
+  - After every pass, each cell's bit equals "crossed 0 in this or an earlier pass", for both directions.
+  - Serial and parallel runs give the same bits.
+  - A sky air cell stored at +5 °C gets the bit from its winter clamp; one stored at −5 °C does not.
+- `weathering::tests::freeze_thaw_bit_cleared_at_season_start`:
+  - A quiet all-stone world with hand-set bits ends a season with none.
+  - In a topsoil world, every air cell crosses in the first winter and keeps its bit to the season's end. It has none after the next winter, where it stays at the clamp.
+Decisions:
+- A cell a pass does not compute (a chunk `Activity` skips, out-of-bounds or non-resident cells) gets no bit. Its temperature does not change, so it cannot cross.
+- The bit is set through a `JacobiOut` field applied by the runner, not written by the pass. The pass stays a pure function of the previous state, and chunks write only their own cells.
+Next: F111 (weathering pass), now unblocked (F110 and F122 pass).
+Blockers: none.
