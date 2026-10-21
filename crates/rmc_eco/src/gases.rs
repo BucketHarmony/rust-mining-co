@@ -19,16 +19,27 @@
 //! moves between air cells (the one `Phase::Air` material): solids,
 //! liquids, the bounds and non-resident chunks block it. Moves stay inside
 //! the gas's total, so they book no ledger term; the invariant checker is
-//! the proof. Venting, emission and ignition (§7.4 steps 3 to 5) take
-//! their places after diffusion. [`reference::flat_sweep_gas`] is the
-//! flat-array oracle.
+//! the proof.
+//!
+//! 3. **vent**: a sky-open cell (`y > surface_y` of its column) loses
+//!    what it still holds; ledger `vent_out`, and for the steam role also
+//!    the water total's `steam_vent_out` (SAD-P2 §7: steam's `vent_out`
+//!    equals `steam_vent_out`).
+//!
+//! [`Emission`] (step 4) runs once after every gas's sweep. Ignition (step
+//! 5) takes its place in the flammable gas's sweep.
+//! [`reference::flat_sweep_gas`] is the flat-array oracle of steps 1 to 3.
 //!
 //! [`reference::flat_sweep_gas`]: crate::reference::flat_sweep_gas
 
-use rmc_world::coords::CellPos;
+use rmc_world::chunk::ChunkStorage;
+use rmc_world::coords::{CHUNK_VOLUME, CellPos, LocalPos};
 use rmc_world::layers::{LayerId, SWEEP_GAS};
-use rmc_world::materials::Phase;
+use rmc_world::ledger::SeasonLedger;
+use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
+
+use crate::reference::order_key;
 
 use crate::runner::{SweepCtx, SweepPass};
 use crate::tables::EcoTables;
@@ -45,6 +56,9 @@ pub struct GasPass {
     diffusion: u32,
     /// `eco.diff_shift`.
     diff_shift: u8,
+    /// Whether the gas is the `steam` role, whose vent is also the water
+    /// total's `steam_vent_out`.
+    steam: bool,
     /// Per material id: whether it is `Phase::Air`.
     air: Vec<bool>,
 }
@@ -76,6 +90,7 @@ impl GasPass {
             drift,
             diffusion: u32::from(def.diffusion),
             diff_shift: params.diff_shift,
+            steam: tables.role_gas("steam") == Some(gas),
             air: tables
                 .materials()
                 .iter()
@@ -169,6 +184,15 @@ impl SweepPass for GasPass {
             let amount = (share as i32).min(FULL - c_n).min(c);
             c = self.give(ctx, (cell, c), (n, c_n), amount);
         }
+        // 3. Vent what is left of a sky-open cell's gas.
+        if c > 0 && cell.0.y > i32::from(ctx.world.surface_y(cell.0.x, cell.0.z)) {
+            ctx.world.eco_put_layer(cell, self.layer(), 0);
+            let c = i64::from(c);
+            ctx.ledger.vent_out[usize::from(self.gas)] += c;
+            if self.steam {
+                ctx.ledger.steam_vent_out += c;
+            }
+        }
     }
 
     /// Air cells holding the gas. Other cells never hold gas: the
@@ -176,6 +200,106 @@ impl SweepPass for GasPass {
     /// air.
     fn holds(&self, world: &World, cell: CellPos) -> bool {
         self.is_air(world, cell) && self.conc(world, cell) > 0
+    }
+}
+
+/// Step 4, emission (SAD-P2 §7.4), once per sub-step after every gas's
+/// sweep: each cell of a material with `emits` that has an air face
+/// neighbor adds, per `(gas, amount)` row, `min(amount, room)` to its first
+/// air neighbor in sorted (y, z, x) order, below first; ledger `emit_in`
+/// records the actual amount. Emitters are visited in the global order,
+/// so two that share an air cell fill it in that order. The receiver joins
+/// the gas's sweep.
+#[derive(Clone, Debug)]
+pub struct Emission {
+    /// Per material id: its `emits` rows as `(gas layer index, amount)`.
+    emits: Vec<Vec<(u8, i32)>>,
+    /// Per material id: whether it is `Phase::Air`.
+    air: Vec<bool>,
+}
+
+impl Emission {
+    pub fn new(tables: &EcoTables) -> Self {
+        let materials = tables.materials();
+        Self {
+            emits: materials
+                .iter()
+                .map(|d| {
+                    d.emits
+                        .iter()
+                        .filter_map(|(key, amount)| {
+                            Some((tables.gas_index(key)?, i32::from(*amount)))
+                        })
+                        .collect()
+                })
+                .collect(),
+            air: materials.iter().map(|d| d.phase == Phase::Air).collect(),
+        }
+    }
+
+    fn emits(&self, m: MaterialId) -> &[(u8, i32)] {
+        self.emits.get(usize::from(m.0)).map_or(&[], Vec::as_slice)
+    }
+
+    fn is_air(&self, world: &World, cell: CellPos) -> bool {
+        world
+            .get_cell(cell)
+            .is_some_and(|m| self.air.get(usize::from(m.0)).copied().unwrap_or(false))
+    }
+
+    /// Emits from every exposed emitter of `world`; returns how many
+    /// emitters added gas.
+    pub fn run(&self, world: &mut World, ledger: &mut SeasonLedger) -> u32 {
+        let bounds = world.bounds();
+        let mut cells = Vec::new();
+        for (pos, chunk) in world.iter_chunks_sorted() {
+            // The palette lists every material the chunk may hold.
+            let any = match &chunk.storage {
+                ChunkStorage::Uniform(m) => !self.emits(*m).is_empty(),
+                ChunkStorage::Paletted { palette, .. } => {
+                    palette.iter().any(|&m| !self.emits(m).is_empty())
+                }
+            };
+            if !any {
+                continue;
+            }
+            cells.extend(
+                (0..CHUNK_VOLUME as u16)
+                    .map(LocalPos::from_index)
+                    .filter(|&l| !self.emits(chunk.storage.get(l)).is_empty())
+                    .map(|l| CellPos::from_chunk_local(pos, l))
+                    .filter(|&c| bounds.contains(c)),
+            );
+        }
+        cells.sort_by_key(|&c| order_key(c));
+        let mut emitted = 0;
+        for cell in cells {
+            // Emission changes no material, so the cell still emits.
+            let Some(m) = world.get_cell(cell) else {
+                continue;
+            };
+            let Some(n) = SIX
+                .iter()
+                .map(|&d| offset(cell, d))
+                .find(|&n| self.is_air(world, n))
+            else {
+                continue;
+            };
+            let mut any = false;
+            for &(g, amount) in self.emits(m) {
+                let layer = LayerId::Gas(g);
+                let c_n = world.layer(n, layer);
+                let add = amount.min(FULL - c_n);
+                if add > 0 {
+                    // The receiver joins the gas's sweep (`eco_put_layer`).
+                    world.eco_put_layer(n, layer, c_n + add);
+                    ledger.emit_in[usize::from(g)] += i64::from(add);
+                    any = true;
+                }
+            }
+            emitted += u32::from(any);
+        }
+        emitted
     }
 }
 
@@ -189,7 +313,6 @@ mod tests {
     use proptest::prelude::*;
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::{CellAabb, ChunkPos};
-    use rmc_world::ledger::SeasonLedger;
     use rmc_world::materials::MaterialId;
 
     use crate::invariants::InvariantChecker;
@@ -234,7 +357,18 @@ mod tests {
     /// Stone over `bounds` with `air` cells carved out, chunks inserted in
     /// reverse sorted order.
     fn carved(t: &EcoTables, bounds: CellAabb, air: impl Fn(CellPos) -> bool) -> World {
-        let (stone, air_id) = (id(t, "stone"), t.role_material("air").unwrap());
+        let air_id = t.role_material("air").unwrap();
+        built(t, bounds, |c| air(c).then_some(air_id))
+    }
+
+    /// Stone over `bounds` with the cells `mat` names set to its material,
+    /// chunks inserted in reverse sorted order.
+    fn built(
+        t: &EcoTables,
+        bounds: CellAabb,
+        mat: impl Fn(CellPos) -> Option<MaterialId>,
+    ) -> World {
+        let stone = id(t, "stone");
         let mut w = World::new(Arc::clone(t.materials()), bounds);
         w.set_eco_rules(t.displacement_rules());
         let mut chunks: BTreeMap<ChunkPos, Chunk> = bounds
@@ -242,9 +376,9 @@ mod tests {
             .map(|p| (p, Chunk::uniform(stone)))
             .collect();
         for cell in global_order(bounds) {
-            if air(cell) {
+            if let Some(m) = mat(cell) {
                 let (pos, local) = cell.split();
-                chunks.get_mut(&pos).unwrap().storage.set(local, air_id);
+                chunks.get_mut(&pos).unwrap().storage.set(local, m);
             }
         }
         for (pos, chunk) in chunks.into_iter().rev() {
@@ -503,9 +637,11 @@ mod tests {
 
     /// A random 8 × 8 × 8 world around a chunk corner (eight chunks,
     /// negative coordinates included): a stone floor, then stone, water
-    /// and air; air cells hold each gas at a random concentration (often
-    /// 0, sometimes 255). Gas holders are active.
-    fn random_world(t: &EcoTables, seed: u64) -> World {
+    /// and air (with `coal`, some of the stone is that material instead);
+    /// air cells hold each gas at a random concentration (often 0,
+    /// sometimes 255). Gas holders are active. Columns whose cells above
+    /// some air are all air are sky-open there.
+    fn random_world(t: &EcoTables, seed: u64, coal: Option<MaterialId>) -> World {
         let (stone, water, air) = (
             id(t, "stone"),
             t.role_material("water").unwrap(),
@@ -522,7 +658,8 @@ mod tests {
             let r = next(&mut s);
             let m = match r % 8 {
                 _ if cell.0.y == bounds.min.0.y => stone,
-                0 | 1 => stone,
+                0 => stone,
+                1 => coal.unwrap_or(stone),
                 2 => water,
                 _ => air,
             };
@@ -562,30 +699,42 @@ mod tests {
             diffusion: i32::from(def.diffusion),
             drift_shift: t.params().drift_shift,
             diff_shift: t.params().diff_shift,
+            surface: t.materials().iter().map(|d| d.forms_surface()).collect(),
+        }
+    }
+
+    /// Books `vented` units of gas `g` as the vent step does: steam's vent
+    /// is also the water total's `steam_vent_out` (SAD-P2 §7).
+    fn book_vent(t: &EcoTables, ledger: &mut SeasonLedger, g: u8, vented: i64) {
+        ledger.vent_out[usize::from(g)] += vented;
+        if t.role_gas("steam") == Some(g) {
+            ledger.steam_vent_out += vented;
         }
     }
 
     /// `rounds` rounds of every gas sweep on a random world: after each
-    /// sweep, conservation, gas only on air, holders active and the flat
-    /// reference equal.
+    /// sweep, conservation, gas only on air, holders active, the flat
+    /// reference equal, and the ledger holding only the reference's vents.
     fn check_random(t: &EcoTables, seed: u64, rounds: usize) -> Result<(), String> {
-        let mut w = random_world(t, seed);
+        let mut w = random_world(t, seed, None);
         let ids: Vec<LayerId> = (0..t.gases().len() as u8).map(LayerId::Gas).collect();
         let mut flat = FlatWorld::from_world(&w, &ids);
         let checker = InvariantChecker::new(&w);
         let mut ledger = SeasonLedger::default();
+        let mut want = SeasonLedger::default();
         let mut passes = GasPass::all(t);
         for round in 0..rounds {
             for pass in &mut passes {
                 let g = pass.gas();
                 run_sweep(&mut w, pass, &mut ledger);
-                flat_sweep_gas(&mut flat, &gas_ref(t, g));
+                let vented = flat_sweep_gas(&mut flat, &gas_ref(t, g));
+                book_vent(t, &mut want, g, vented);
                 let at = format!("round {round}, gas {g}");
                 checker
                     .check(&w, &ledger)
                     .map_err(|v| format!("{at}: {v}"))?;
-                if ledger != SeasonLedger::default() {
-                    return Err(format!("{at}: ledger {ledger:?}"));
+                if ledger != want {
+                    return Err(format!("{at}: ledger {ledger:?}, want {want:?}"));
                 }
                 if let Some(d) = flat.first_difference(&w) {
                     return Err(format!("{at}: reference differs at {d:?}"));
@@ -604,6 +753,283 @@ mod tests {
         Ok(())
     }
 
+    /// Test gases that neither drift nor diffuse, so a visit only vents.
+    const STILL: &str = r#"[
+        (key: "steam", density: 0, diffusion: 0, flammable: false,
+         ignite_min: 0, ignite_radius_per_64: 0, visible: true),
+        (key: "firedamp", density: 0, diffusion: 0, flammable: true,
+         ignite_min: 64, ignite_radius_per_64: 2, visible: false),
+        (key: "chokedamp", density: 0, diffusion: 0, flammable: false,
+         ignite_min: 0, ignite_radius_per_64: 0, visible: false),
+        (key: "smoke", density: 0, diffusion: 0, flammable: false,
+         ignite_min: 0, ignite_radius_per_64: 0, visible: true),
+    ]"#;
+
+    #[test]
+    fn vent_only_sky_open() {
+        let t = tables_with_gases(STILL);
+        let p = |x, y, z| CellPos::new(x, y, z);
+        let bounds = CellAabb::new(p(0, 0, 0), p(31, 31, 31));
+        // A shaft open to the top of the world; a sealed pocket; a column
+        // with a stone roof at y = 21 and air above and below it.
+        let shaft = |c: CellPos| c.0.x == 4 && c.0.z == 4 && c.0.y >= 10;
+        let pocket = p(10, 10, 10);
+        let roofed = |c: CellPos| c.0.x == 16 && c.0.z == 4 && c.0.y >= 10 && c.0.y != 21;
+        let mut w = carved(&t, bounds, |c| shaft(c) || c == pocket || roofed(c));
+        assert_eq!(w.surface_y(4, 4), 9);
+        assert_eq!(w.surface_y(16, 4), 21);
+        let open = [p(4, 10, 4), p(4, 31, 4), p(16, 22, 4)];
+        let covered = [pocket, p(16, 20, 4), p(16, 10, 4)];
+        let v = |g: u8| 50 + 10 * i32::from(g);
+        let n_gas = t.gases().len() as u8;
+        for c in open.into_iter().chain(covered) {
+            for g in 0..n_gas {
+                w.eco_put_layer(c, LayerId::Gas(g), v(g));
+            }
+        }
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut passes = GasPass::all(&t);
+        sweep_all(&mut w, &mut passes, &mut ledger);
+
+        let mut want = SeasonLedger::default();
+        for g in 0..n_gas {
+            book_vent(&t, &mut want, g, open.len() as i64 * i64::from(v(g)));
+            for c in open {
+                assert_eq!(w.layer(c, LayerId::Gas(g)), 0, "gas {g} vents at {c:?}");
+                assert!(!active(&w, c, &passes[usize::from(g)]), "{c:?} leaves");
+            }
+            for c in covered {
+                assert_eq!(w.layer(c, LayerId::Gas(g)), v(g), "gas {g} stays at {c:?}");
+                assert!(active(&w, c, &passes[usize::from(g)]), "{c:?} stays");
+            }
+        }
+        assert_eq!(ledger, want, "vent_out per gas; steam also steam_vent_out");
+        let steam = usize::from(t.role_gas("steam").unwrap());
+        assert_eq!(ledger.steam_vent_out, ledger.vent_out[steam]);
+        assert!(ledger.steam_vent_out > 0);
+        checker.check(&w, &ledger).expect("vents balance");
+
+        // Nothing more vents: the covered cells keep their gas.
+        sweep_all(&mut w, &mut passes, &mut ledger);
+        assert_eq!(ledger, want);
+        checker.check(&w, &ledger).expect("vents balance");
+
+        // The random worlds of the invariant proptest vent steam and the
+        // other gases and emit firedamp, so its checks are not vacuous.
+        let t = tables();
+        let mut sum = SeasonLedger::default();
+        for seed in 0..8 {
+            let l = check_vent_emit(&t, seed, 2).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            crate::ledger::merge(&mut sum, &l);
+        }
+        let fd = usize::from(t.gas_index("firedamp").unwrap());
+        assert!(sum.steam_vent_out > 0, "{sum:?}");
+        assert!(sum.vent_out[fd] > 0, "{sum:?}");
+        assert!(sum.emit_in[fd] > 0, "{sum:?}");
+    }
+
+    #[test]
+    fn emission_only_when_exposed_actual_amounts() {
+        let t = tables();
+        let coal = id(&t, "coal_seam");
+        let water = t.role_material("water").unwrap();
+        let air = t.role_material("air").unwrap();
+        let fd = t.gas_index("firedamp").unwrap();
+        // SAD-P2 §8: coal seams emit firedamp 2 per sub-step.
+        assert_eq!(
+            t.materials().get(coal).unwrap().emits,
+            [("firedamp".to_string(), 2)]
+        );
+        let p = |x, y, z| CellPos::new(x, y, z);
+        let mats: Vec<(CellPos, MaterialId)> = vec![
+            // Buried: no air face.
+            (p(4, 4, 4), coal),
+            // Air below and above: the first in sorted order (below) gets it.
+            (p(10, 10, 10), coal),
+            (p(10, 9, 10), air),
+            (p(10, 11, 10), air),
+            // Room 1 in the only air neighbor.
+            (p(16, 10, 10), coal),
+            (p(17, 10, 10), air),
+            // The first air neighbor (+x) is full; the one above is empty
+            // but is not the first.
+            (p(22, 10, 10), coal),
+            (p(23, 10, 10), air),
+            (p(22, 11, 10), air),
+            // Only water beside it.
+            (p(4, 20, 4), coal),
+            (p(4, 19, 4), water),
+            // Two seams share one air cell holding 252: the first in order
+            // adds 2, the second the 1 left.
+            (p(10, 20, 10), coal),
+            (p(11, 20, 10), air),
+            (p(12, 20, 10), coal),
+            // Across the chunk face at x = 32.
+            (p(31, 10, 20), coal),
+            (p(32, 10, 20), air),
+        ];
+        let mut w = built(&t, two_chunks(), |c| {
+            mats.iter().find(|&&(q, _)| q == c).map(|&(_, m)| m)
+        });
+        let g = LayerId::Gas(fd);
+        w.eco_put_layer(p(4, 19, 4), LayerId::Moisture, 200);
+        w.eco_put_layer(p(17, 10, 10), g, 254);
+        w.eco_put_layer(p(23, 10, 10), g, 255);
+        w.eco_put_layer(p(11, 20, 10), g, 252);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let emission = Emission::new(&t);
+
+        assert_eq!(emission.run(&mut w, &mut ledger), 5, "emitting cells");
+        let at = |w: &World, c: CellPos| w.layer(c, g);
+        assert_eq!((at(&w, p(10, 9, 10)), at(&w, p(10, 11, 10))), (2, 0));
+        assert_eq!(at(&w, p(17, 10, 10)), 255);
+        assert_eq!((at(&w, p(23, 10, 10)), at(&w, p(22, 11, 10))), (255, 0));
+        assert_eq!(at(&w, p(11, 20, 10)), 255);
+        assert_eq!(at(&w, p(32, 10, 20)), 2);
+        assert_eq!(at(&w, p(4, 19, 4)), 0, "no gas on water");
+        let mut want = SeasonLedger::default();
+        want.emit_in[usize::from(fd)] = 2 + 1 + 3 + 2;
+        assert_eq!(ledger, want, "emit_in records the actual amounts");
+        checker.check(&w, &ledger).expect("emission balances");
+        let pass = GasPass::new(&t, fd);
+        for c in [p(10, 9, 10), p(17, 10, 10), p(11, 20, 10), p(32, 10, 20)] {
+            assert!(active(&w, c, &pass), "{c:?} joins the firedamp sweep");
+        }
+
+        // Every sub-step emits again, into what room is left.
+        assert_eq!(emission.run(&mut w, &mut ledger), 2);
+        assert_eq!((at(&w, p(10, 9, 10)), at(&w, p(32, 10, 20))), (4, 4));
+        want.emit_in[usize::from(fd)] += 4;
+        assert_eq!(ledger, want);
+        checker.check(&w, &ledger).expect("emission balances");
+    }
+
+    /// `rounds` rounds of every gas sweep (vent step included), then
+    /// emission, on a random world with coal seams and sky-open air: after
+    /// each, every gas kind balances (steam through the water total's
+    /// terms), steam's two vent terms agree, nothing emits steam, and gas
+    /// sits only on air. Returns the ledger.
+    fn check_vent_emit(t: &EcoTables, seed: u64, rounds: usize) -> Result<SeasonLedger, String> {
+        let mut w = random_world(t, seed, Some(id(t, "coal_seam")));
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut passes = GasPass::all(t);
+        let emission = Emission::new(t);
+        let steam = t.role_gas("steam").map(usize::from);
+        for round in 0..rounds {
+            for pass in &mut passes {
+                let g = pass.gas();
+                run_sweep(&mut w, pass, &mut ledger);
+                checker
+                    .check(&w, &ledger)
+                    .map_err(|v| format!("round {round}, gas {g}: {v}"))?;
+            }
+            emission.run(&mut w, &mut ledger);
+            checker
+                .check(&w, &ledger)
+                .map_err(|v| format!("round {round}, emission: {v}"))?;
+            if let Some(st) = steam {
+                if ledger.steam_vent_out != ledger.vent_out[st] {
+                    return Err(format!("round {round}: steam vent terms differ"));
+                }
+                if ledger.emit_in[st] != 0 {
+                    return Err(format!("round {round}: steam emitted"));
+                }
+            }
+            for cell in global_order(w.bounds()) {
+                for g in 0..t.gases().len() as u8 {
+                    let v = w.layer(cell, LayerId::Gas(g));
+                    if v > 0 && !passes[usize::from(g)].is_air(&w, cell) {
+                        return Err(format!("round {round}: gas {g} {v} on non-air {cell:?}"));
+                    }
+                }
+            }
+        }
+        Ok(ledger)
+    }
+
+    #[test]
+    fn sealed_pocket_drains_through_shaft() {
+        let t = tables();
+        let fd = t.gas_index("firedamp").unwrap();
+        let g = LayerId::Gas(fd);
+        // A 4 × 4 × 4 pocket across the chunk face at x = 32.
+        let (xs, ys, zs) = (30..=33, 8..=11, 12..=15);
+        let in_pocket =
+            |c: CellPos| xs.contains(&c.0.x) && ys.contains(&c.0.y) && zs.contains(&c.0.z);
+        let mut w = carved(&t, two_chunks(), in_pocket);
+        let pocket: Vec<CellPos> = global_order(two_chunks())
+            .filter(|&c| in_pocket(c))
+            .collect();
+        for &c in &pocket {
+            w.eco_put_layer(c, g, 120);
+        }
+        let total = |w: &World| -> i64 {
+            global_order(w.bounds())
+                .map(|c| i64::from(w.layer(c, g)))
+                .sum()
+        };
+        let top = |w: &World| -> i64 {
+            pocket
+                .iter()
+                .filter(|c| c.0.y == *ys.end())
+                .map(|&c| i64::from(w.layer(c, g)))
+                .sum()
+        };
+        let before = total(&w);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut pass = GasPass::new(&t, fd);
+        let substeps = usize::from(t.seasons().substeps);
+        // Sealed, for two seasons: it settles under the ceiling and
+        // nothing leaves.
+        for _ in 0..2 * substeps {
+            run_sweep(&mut w, &mut pass, &mut ledger);
+        }
+        assert_eq!(total(&w), before);
+        assert_eq!(
+            ledger,
+            SeasonLedger::default(),
+            "a sealed pocket vents nothing"
+        );
+        let ceiling = top(&w);
+        assert!(ceiling * 4 > before, "light gas collects under the roof");
+
+        // A one-cell shaft from the pocket's roof to the top of the world.
+        let air = t.role_material("air").unwrap();
+        let (sx, sz) = (31, 13);
+        for y in ys.end() + 1..=two_chunks().max.0.y {
+            w.eco_set(CellPos::new(sx, y, sz), air, &mut ledger);
+        }
+        assert_eq!(i32::from(w.surface_y(sx, sz)), ys.start() - 1);
+        checker.check(&w, &ledger).expect("the shaft moves no gas");
+        let mut last = before;
+        for sweep in 0..SHAFT_SEASONS * substeps {
+            run_sweep(&mut w, &mut pass, &mut ledger);
+            checker
+                .check(&w, &ledger)
+                .unwrap_or_else(|v| panic!("sweep {sweep}: {v}"));
+            let now = total(&w);
+            assert!(now <= last, "sweep {sweep}: gas grew {last} -> {now}");
+            assert_eq!(ledger.vent_out[usize::from(fd)], before - now);
+            last = now;
+        }
+        let (after, ceiling_after) = (total(&w), top(&w));
+        assert!(
+            after * 10 < before,
+            "pocket kept {after} of {before} after {SHAFT_SEASONS} seasons"
+        );
+        assert!(
+            ceiling_after * 10 < ceiling,
+            "roof layer {ceiling_after}, was {ceiling}"
+        );
+    }
+
+    /// Seasons of sweeps [`sealed_pocket_drains_through_shaft`] allows.
+    const SHAFT_SEASONS: usize = 12;
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(cases()))]
 
@@ -613,6 +1039,15 @@ mod tests {
         fn oracle_equivalence_flat_sweep_gas_proptest(seed in any::<u64>()) {
             let t = tables();
             let r = check_random(&t, seed, 2);
+            prop_assert!(r.is_ok(), "{:?}", r);
+        }
+
+        /// [`check_vent_emit`] on random seeds with the shipped gases, two
+        /// rounds (for time).
+        #[test]
+        fn invariant_per_kind_including_steam_terms_proptest(seed in any::<u64>()) {
+            let t = tables();
+            let r = check_vent_emit(&t, seed, 2);
             prop_assert!(r.is_ok(), "{:?}", r);
         }
     }

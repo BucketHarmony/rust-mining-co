@@ -292,15 +292,21 @@ pub struct GasRef {
     pub drift_shift: u8,
     /// `eco.diff_shift`.
     pub diff_shift: u8,
+    /// Per material id: whether it forms a column's surface
+    /// (`MaterialDef::forms_surface`).
+    pub surface: Vec<bool>,
 }
 
 /// The most gas a cell holds.
 const REF_GAS_FULL: i32 = u8::MAX as i32;
 
-/// One sweep of one gas (SAD-P2 §7.4 steps 1 and 2) over every cell of
+/// One sweep of one gas (SAD-P2 §7.4 steps 1 to 3) over every cell of
 /// `flat` in global order, written directly on the flat arrays for the
-/// oracle tests of [`GasPass`](crate::gases::GasPass).
-pub fn flat_sweep_gas(flat: &mut FlatWorld, ids: &GasRef) {
+/// oracle tests of [`GasPass`](crate::gases::GasPass). Returns the gas
+/// vented. A cell is sky-open when no cell above it in the box forms a
+/// surface.
+pub fn flat_sweep_gas(flat: &mut FlatWorld, ids: &GasRef) -> i64 {
+    let mut vented = 0;
     let layer = LayerId::Gas(ids.gas);
     let is_air = |flat: &FlatWorld, c: CellPos| flat.material(c) == Some(ids.air);
     let rate = ids.density.abs() * (1 << ids.drift_shift);
@@ -351,7 +357,19 @@ pub fn flat_sweep_gas(flat: &mut FlatWorld, ids: &GasRef) {
                 give(flat, cell, n, amount);
             }
         }
+        // 3. Vent a sky-open cell.
+        let top = flat.bounds().max.0.y;
+        let sky_open = (c.y + 1..=top).all(|y| {
+            let m = flat.material(CellPos::new(c.x, y, c.z)).unwrap_or_default();
+            !ids.surface.get(usize::from(m.0)).copied().unwrap_or(false)
+        });
+        let v = flat.layer(cell, layer);
+        if sky_open && v > 0 {
+            flat.set_layer(cell, layer, 0);
+            vented += i64::from(v);
+        }
     });
+    vented
 }
 
 /// The constants the transport reference reads (SAD-P2 §7.6).

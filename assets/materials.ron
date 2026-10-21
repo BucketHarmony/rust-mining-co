@@ -26,7 +26,8 @@
      composition: [("lime", 40), ("fe", 40), ("p", 20)]),
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
-     hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0),
+     hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0,
+     emits: [("firedamp", 2)]),
     // Phase 2 (SAD-P2 §5): copper_ore became sulfide_ore. Breaking it
     // yields crushed_sulfide, which weathers; the ore itself does not. Not
     // tagged stone, so ores and crystals never overwrite it (Phase 1 rule).

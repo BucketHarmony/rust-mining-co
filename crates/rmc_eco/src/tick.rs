@@ -17,7 +17,7 @@ use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
 use crate::chemistry::{ReactionsPass, Transport};
-use crate::gases::GasPass;
+use crate::gases::{Emission, GasPass};
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
@@ -55,6 +55,8 @@ pub enum PassId {
     Rain,
     /// The sweep of gas row `g` (§7.4).
     Gas(u8),
+    /// Emission, once after every gas's sweep (§7.4 step 4).
+    Emission,
     Weathering,
     /// Chemistry transport, replaying the sub-step's water moves (§7.6).
     Transport,
@@ -80,6 +82,8 @@ struct Passes {
     rain: Rain,
     /// One sweep per gas row, in row order.
     gases: Vec<GasPass>,
+    /// §7.4 step 4, after the gas sweeps.
+    emission: Emission,
     weathering: WeatheringPass,
     /// §7.6 transport over the water pass's move log.
     transport: Transport,
@@ -136,6 +140,7 @@ pub fn season_tick_observed(
         evaporation: Evaporation::new(tables),
         rain: Rain::new(tables, season, seed),
         gases: GasPass::all(tables),
+        emission: Emission::new(tables),
         weathering: WeatheringPass::new(tables),
         transport: Transport::new(tables),
         reactions: ReactionsPass::new(tables),
@@ -164,6 +169,7 @@ pub fn season_tick_observed(
 
 /// One sub-step: the passes in SAD-P2 §3 order. The water pass runs its
 /// §7.3 steps in order: condensation, the flow sweeps, evaporation, rain.
+/// The gases (§7.4) run one sweep per gas row, then emission.
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
 /// this sub-step. Only the flow and gas sweeps add an
@@ -221,6 +227,8 @@ fn substep(
         let g = u8::try_from(g).expect("gas rows fit the gas layers");
         after(PassId::Gas(g), world, &report.ledger);
     }
+    passes.emission.run(world, &mut report.ledger);
+    after(PassId::Emission, world, &report.ledger);
     jacobi(
         JacobiKind::Weathering,
         &passes.weathering,
@@ -727,6 +735,7 @@ mod tests {
                     want.extend([(i, PassId::Evaporation), (i, PassId::Rain)]);
                     want.extend((0..t.gases().len() as u8).map(|g| (i, PassId::Gas(g))));
                     want.extend([
+                        (i, PassId::Emission),
                         (i, PassId::Weathering),
                         (i, PassId::Transport),
                         (i, PassId::Reactions),
@@ -745,6 +754,9 @@ mod tests {
             ("boil_to_steam", sum(&|l| l.boil_to_steam)),
             ("magma_set", sum(&|l| l.magma_set)),
             ("magma_melt_in", sum(&|l| l.magma_melt_in)),
+            ("vent_out", sum(&|l| l.vent_out.iter().sum())),
+            ("steam_vent_out", sum(&|l| l.steam_vent_out)),
+            ("emit_in", sum(&|l| l.emit_in.iter().sum())),
             ("weather_in", sum(&|l| l.weather_in.iter().sum())),
             (
                 "react_delta",
