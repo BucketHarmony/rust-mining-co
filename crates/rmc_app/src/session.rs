@@ -26,8 +26,8 @@ use bevy::prelude::{
     App, AppExit, IntoScheduleConfigs, Last, MessageReader, Plugin, Res, ResMut, Resource,
     SystemSet, Update,
 };
-use rmc_client::{EditorState, EditorSystems, HostLink};
-use rmc_eco::EcoTables;
+use rmc_client::{ClientEco, EditorState, EditorSystems, HostLink};
+use rmc_eco::{EcoTables, ToxKind};
 use rmc_host::{ClientEndpoint, Host, HostConfig, HostHandle, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
@@ -389,6 +389,18 @@ fn save_on_exit(mut exit: MessageReader<AppExit>, host: Option<ResMut<GameHost>>
     exit.clear();
     if let Some(Err(e)) = host.and_then(|mut h| h.quit_save()) {
         error!("{e:#}");
+    }
+}
+
+/// What the client reads of the eco tables (SAD-P2 §10): substance and gas
+/// keys, the pH rule and the toxicity profiles.
+pub fn client_eco(eco: &EcoTables) -> ClientEco {
+    ClientEco {
+        substances: eco.substance_layers().clone(),
+        gases: eco.gases().iter().map(|g| g.key.clone()).collect(),
+        ph: eco.ph_rule(),
+        player_tox: eco.tox_profile(ToxKind::Player),
+        plant_tox: eco.tox_profile(ToxKind::Plant),
     }
 }
 

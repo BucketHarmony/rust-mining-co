@@ -25,6 +25,11 @@
 //! fly camera while it is on, else from the player's eye. The brush sends
 //! one normal [`EditCommand`] ([`brush_command`]); the host decides what
 //! changes. The pickaxe does not swing while the editor is open.
+//!
+//! While the editor is open, [`EditorReadout`] holds what the replica has at
+//! the cell that ray hits (SAD-P2 §10 targeted-cell readout: temperature,
+//! moisture, regolith, light, pH, substances, gases, and which toxicity
+//! profiles it exceeds); the panel shows its lines.
 
 use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -36,6 +41,7 @@ use rmc_world::world::World;
 use rmc_world::{Hit, raycast};
 
 use crate::controller::{Aabb, ControllerSystems, EYE_HEIGHT_M, Player, blocks};
+use crate::eco::{ClientEco, EditorReadout, cell_readout, readout_lines};
 use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::gizmo::EditorGizmoPlugin;
 use crate::interp::InterpolatedEye;
@@ -431,6 +437,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<EditorState>()
             .init_resource::<CommandSeq>()
             .init_resource::<EditorStats>()
+            .init_resource::<EditorReadout>()
             .init_resource::<HostTickTime>()
             .add_plugins(EditorGizmoPlugin)
             .add_systems(
@@ -440,6 +447,10 @@ impl Plugin for EditorPlugin {
                     editor_keys,
                     request_season.after(editor_keys),
                     sample_stats,
+                    sample_readout
+                        .after(editor_keys)
+                        .after(FlyCamSystems)
+                        .after(ControllerSystems::Look),
                     drop_player_after_flying
                         .after(FlyCamSystems)
                         .before(ControllerSystems::Look),
@@ -554,6 +565,37 @@ pub(crate) fn brush_hit(
 ) -> Option<Hit> {
     let (origin, dir) = view_ray(fly, cameras, players)?;
     raycast(world, origin, dir, BRUSH_REACH_M)
+}
+
+/// Samples [`EditorReadout`] at the cell the brush ray hits while the
+/// editor is open; clears it otherwise.
+#[allow(clippy::too_many_arguments)]
+fn sample_readout(
+    state: Res<EditorState>,
+    replica: Option<Res<Replica>>,
+    materials: Option<Res<ClientMaterials>>,
+    eco: Option<Res<ClientEco>>,
+    fly: Option<Res<FlyCam>>,
+    cameras: Query<&Transform, With<GameCamera>>,
+    players: Query<&Player>,
+    mut out: ResMut<EditorReadout>,
+) {
+    let readout = replica
+        .as_deref()
+        .filter(|_| state.open)
+        .and_then(|replica| {
+            let world = replica.world();
+            let hit = brush_hit(world, fly.as_deref(), &cameras, &players)?;
+            cell_readout(world, hit.cell, eco.as_deref())
+        });
+    let materials = replica
+        .as_deref()
+        .map(|r| r.world().materials().as_ref())
+        .or(materials.as_deref().map(|m| m.0.as_ref()));
+    let lines = readout
+        .as_ref()
+        .map_or_else(Vec::new, |r| readout_lines(r, materials, eco.as_deref()));
+    out.set_if_neq(EditorReadout { readout, lines });
 }
 
 /// When the fly camera turns off, moves the player under the camera (see
@@ -974,6 +1016,7 @@ mod tests {
     fn draw_panel(app: &mut App, ctx: &egui::Context) -> (bool, Vec<String>, bool) {
         let table = materials();
         let stats = app.world().resource::<EditorStats>().clone();
+        let readout = app.world().resource::<EditorReadout>().lines.clone();
         let mut state = state(app);
         let mut fly = false;
         let mut shown = false;
@@ -983,6 +1026,7 @@ mod tests {
                 let view = PanelView {
                     stats: &stats,
                     materials: Some(&table),
+                    readout: &readout,
                 };
                 shown = editor_panel(ui.ctx(), &mut state, &mut fly, view, |_| {});
             });

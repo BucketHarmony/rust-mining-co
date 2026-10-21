@@ -13,13 +13,14 @@ use std::sync::Arc;
 use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
+use rmc_world::query::{PhRule, ToxProfile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Layer counts live with the chunk layers in `rmc_world` (SAD-P2 §6).
 pub use rmc_world::layers::{N_GASES, N_SUBSTANCES};
 /// Upper end of the derived pH scale (SAD-P2 §7.6 clamps to `0..=14`).
-pub const PH_MAX: u8 = 14;
+pub use rmc_world::query::PH_MAX;
 /// Largest accepted `*_shift` constant; keeps `x / 2^shift` inside `i32`.
 pub const MAX_SHIFT: u8 = 30;
 /// Largest accepted `seep_num`; the threshold is `field_capacity · seep_num / 256`.
@@ -38,6 +39,15 @@ pub const REACTIONS_FILE: &str = "reactions.ron";
 pub const PLANTS_FILE: &str = "plants.ron";
 pub const SEASONS_FILE: &str = "seasons.ron";
 pub const ECO_FILE: &str = "eco.ron";
+
+/// Whose toxicity profile [`EcoTables::tox_profile`] builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ToxKind {
+    /// `tox_plant`.
+    Plant,
+    /// `tox_player`: the HUD's spoil indicator.
+    Player,
+}
 
 /// One row of `substances.ron` (SAD-P2 §7.6). Row order is the layer index.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -741,6 +751,29 @@ impl EcoTables {
         self.substance_index(self.roles.substances.get(role)?)
     }
 
+    /// The toxicity profile of `kind` (SAD-P2 §7.6, §10): per substance
+    /// row, its `tox_plant` or `tox_player`, absent meaning never toxic.
+    pub fn tox_profile(&self, kind: ToxKind) -> ToxProfile {
+        let mut limits = [None; N_SUBSTANCES];
+        for (slot, s) in limits.iter_mut().zip(&self.substances) {
+            *slot = match kind {
+                ToxKind::Plant => s.tox_plant,
+                ToxKind::Player => s.tox_player,
+            };
+        }
+        ToxProfile::new(limits)
+    }
+
+    /// What pH reads (SAD-P2 §7.6): the `acid` and `lime` substance roles
+    /// and `eco.ph_shift`.
+    pub fn ph_rule(&self) -> PhRule {
+        PhRule {
+            acid: self.role_substance("acid").map(LayerId::Substance),
+            lime: self.role_substance("lime").map(LayerId::Substance),
+            ph_shift: self.params.ph_shift,
+        }
+    }
+
     /// The roles and constants `World::apply` and `World::eco_set` read for
     /// the displacement rules (SAD-P2 §7.0). Roles whose material the table
     /// lacks yet resolve to `None`, which leaves their rule inert.
@@ -886,6 +919,34 @@ mod tests {
         let materials =
             Arc::new(MaterialTable::load(Path::new(ASSETS).join(MATERIALS_FILE)).unwrap());
         (materials, EcoSources::read(ASSETS).unwrap())
+    }
+
+    #[test]
+    fn tox_profiles_and_ph_rule_follow_the_tables() {
+        let t = shipped();
+        let (plant, player) = (
+            t.tox_profile(ToxKind::Plant),
+            t.tox_profile(ToxKind::Player),
+        );
+        for (i, s) in (0u8..).zip(t.substances()) {
+            let id = LayerId::Substance(i);
+            assert_eq!(plant.limit(id), s.tox_plant, "{}", s.key);
+            assert_eq!(player.limit(id), s.tox_player, "{}", s.key);
+        }
+        for i in t.substances().len()..N_SUBSTANCES {
+            let id = LayerId::Substance(u8::try_from(i).unwrap());
+            assert_eq!((plant.limit(id), player.limit(id)), (None, None));
+        }
+        assert!(!player.is_empty(), "the shipped rows protect the player");
+        assert_eq!(
+            player.limit(t.substance_layers().layer("cu").unwrap()),
+            Some(80)
+        );
+
+        let rule = t.ph_rule();
+        assert_eq!(rule.ph_shift, t.params().ph_shift);
+        assert_eq!(rule.acid, t.substance_layers().layer("acid"));
+        assert_eq!(rule.lime, t.substance_layers().layer("lime"));
     }
 
     #[test]

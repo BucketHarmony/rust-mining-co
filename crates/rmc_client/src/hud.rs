@@ -22,6 +22,11 @@
 //!   replica's layers follow `ChunkSnapshot`, `LayerSnapshot` and
 //!   `ChunkDelta::Layers`. Nothing is shown without a player or outside
 //!   the resident chunks.
+//! - Spoil (SAD-P2 §10): when the targeted cell is spoil for the player's
+//!   toxicity profile ([`ClientEco::player_tox`], `tox_player` in
+//!   `substances.ron`), [`SPOIL_LABEL`] shows under the material name in
+//!   [`SPOIL_COLOR`]. It reads the replica's substance layers, so it follows
+//!   seasons and layer edits. Without [`ClientEco`] it never shows.
 //! - Inventory: the host sends an `Inventory` message with the new totals
 //!   after every `Applied` result that yields (SAD §8.4). [`ClientInventory`]
 //!   holds the last totals; `Welcome` empties it. Yields in `Applied` are
@@ -73,6 +78,7 @@ use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::World;
 
 use crate::controller::Player;
+use crate::eco::ClientEco;
 use crate::editor::EditorState;
 use crate::flycam::FlyCam;
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
@@ -99,6 +105,12 @@ pub const OUTLINE_SCALE: f32 = 1.02;
 
 /// Size of the HUD text, in logical pixels.
 pub const HUD_FONT_SIZE: f32 = 16.0;
+
+/// What the spoil indicator says.
+pub const SPOIL_LABEL: &str = "SPOIL";
+
+/// The spoil indicator's text color: a sickly yellow-green.
+pub const SPOIL_COLOR: Color = Color::srgb(0.78, 0.92, 0.22);
 
 /// The damage bar's size, in logical pixels.
 pub const DAMAGE_BAR_SIZE: Vec2 = Vec2::new(120.0, 6.0);
@@ -280,6 +292,9 @@ pub struct HudState {
     pub selected: Option<MaterialId>,
     /// The temperature of the player's cell in the replica, in 0.1 °C.
     pub temperature: Option<i16>,
+    /// Whether the targeted cell is spoil for the player's toxicity
+    /// profile.
+    pub spoil: bool,
 }
 
 /// The material right mouse places, if one is selected. It may no longer
@@ -377,6 +392,10 @@ pub(crate) struct CrosshairArm {
 
 #[derive(Component, Debug)]
 struct TargetText;
+
+/// The spoil indicator under the material name.
+#[derive(Component, Debug)]
+pub struct SpoilIndicator;
 
 #[derive(Component, Debug)]
 struct DamageBar;
@@ -603,6 +622,7 @@ fn update_state(
     target: Res<PickTarget>,
     replica: Option<Res<Replica>>,
     client_materials: Option<Res<ClientMaterials>>,
+    eco: Option<Res<ClientEco>>,
     estimate: Res<DamageEstimate>,
     inventory: Res<ClientInventory>,
     selected: Res<SelectedMaterial>,
@@ -663,6 +683,9 @@ fn update_state(
     {
         next.target = Some(hit.cell);
         next.material = Some(material_name(materials, id));
+        next.spoil = eco
+            .as_deref()
+            .is_some_and(|eco| eco.player_tox.is_spoil(world, hit.cell));
         let dealt = estimate.get(hit.cell);
         if dealt > 0 {
             let hardness = materials.and_then(|m| m.get(id)).map_or(0, |d| d.hardness);
@@ -751,6 +774,17 @@ fn spawn_hud(mut commands: Commands) {
                 children![
                     (TargetText, text()),
                     (
+                        SpoilIndicator,
+                        Text::new(SPOIL_LABEL),
+                        TextFont::from_font_size(HUD_FONT_SIZE),
+                        TextColor(SPOIL_COLOR),
+                        TextShadow {
+                            offset: Vec2::splat(1.0),
+                            ..default()
+                        },
+                        Visibility::Hidden,
+                    ),
+                    (
                         DamageBar,
                         Node {
                             width: Val::Px(DAMAGE_BAR_SIZE.x),
@@ -814,8 +848,30 @@ fn attach_to_camera(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn show_state(
     hud: Res<HudState>,
-    mut crosshair: Query<&mut Visibility, (With<CrosshairNode>, Without<DamageBar>)>,
-    mut bar: Query<&mut Visibility, (With<DamageBar>, Without<CrosshairNode>)>,
+    mut crosshair: Query<
+        &mut Visibility,
+        (
+            With<CrosshairNode>,
+            Without<DamageBar>,
+            Without<SpoilIndicator>,
+        ),
+    >,
+    mut bar: Query<
+        &mut Visibility,
+        (
+            With<DamageBar>,
+            Without<CrosshairNode>,
+            Without<SpoilIndicator>,
+        ),
+    >,
+    mut spoil: Query<
+        &mut Visibility,
+        (
+            With<SpoilIndicator>,
+            Without<CrosshairNode>,
+            Without<DamageBar>,
+        ),
+    >,
     mut fill: Query<&mut Node, With<DamageFill>>,
     mut arms: Query<(&CrosshairArm, &mut Node, &mut BackgroundColor), Without<DamageFill>>,
     mut target_text: Query<
@@ -870,6 +926,9 @@ fn show_state(
     }
     for mut v in &mut bar {
         v.set_if_neq(shown(hud.damage.is_some()));
+    }
+    for mut v in &mut spoil {
+        v.set_if_neq(shown(hud.spoil));
     }
     let percent = hud.damage.map_or(0.0, |d| d.fraction() * 100.0);
     for mut node in &mut fill {
@@ -1322,6 +1381,7 @@ mod tests {
                 last_break: None,
                 selected: None,
                 temperature: Some(0),
+                spoil: false,
             }
         );
 
@@ -1385,6 +1445,117 @@ mod tests {
         rig.app.world_mut().despawn(player);
         rig.frames(1);
         assert_eq!(rig.hud(), HudState::default());
+    }
+
+    /// Eco tables shaped like the shipped ones: substances `cu, fe, acid`;
+    /// the player's limits are cu 80 and acid 128, fe has none.
+    fn client_eco() -> crate::eco::ClientEco {
+        use rmc_world::layers::{N_SUBSTANCES, SubstanceLayers};
+        use rmc_world::query::{PhRule, ToxProfile};
+        let mut player = [None; N_SUBSTANCES];
+        player[0] = Some(80);
+        player[2] = Some(128);
+        let mut plant = [None; N_SUBSTANCES];
+        plant[0] = Some(40);
+        crate::eco::ClientEco {
+            substances: SubstanceLayers::new(["cu", "fe", "acid"]).unwrap(),
+            gases: vec!["steam".into()],
+            ph: PhRule {
+                acid: Some(LayerId::Substance(2)),
+                lime: None,
+                ph_shift: 2,
+            },
+            player_tox: ToxProfile::new(player),
+            plant_tox: ToxProfile::new(plant),
+        }
+    }
+
+    /// What the host answers to the local player setting `layer` of `cell`
+    /// to `value`.
+    fn set_layer(host: &mut World, cell: CellPos, layer: LayerId, value: i32) -> ServerMsg {
+        let result = host.apply(&EditCommand {
+            id: CommandId::default(),
+            issuer: PlayerId(1),
+            op: EditOp::SetLayer { layer, value },
+            shape: Shape::Cell(cell),
+        });
+        assert_eq!(result.status, EditStatus::Applied);
+        ServerMsg::Applied(result)
+    }
+
+    #[test]
+    fn spoil_indicator_follows_target() {
+        let (cu, fe, acid) = (
+            LayerId::Substance(0),
+            LayerId::Substance(1),
+            LayerId::Substance(2),
+        );
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::new(world("granite", "stone"));
+        rig.app.insert_resource(client_eco());
+        rig.frames(1);
+        let indicator = |rig: &mut Rig| {
+            let mut q = rig
+                .app
+                .world_mut()
+                .query_filtered::<(&Visibility, &Text), With<SpoilIndicator>>();
+            let (v, t) = q.single(rig.app.world()).expect("one spoil indicator");
+            assert_eq!(t.0, SPOIL_LABEL);
+            *v == Visibility::Inherited
+        };
+
+        // A clean wall is not spoil.
+        let hud = rig.hud();
+        assert_eq!(hud.target, Some(WALL_CELL));
+        assert!(!hud.spoil);
+        assert!(!indicator(&mut rig));
+
+        // One below the player's limit is not spoil; at the limit it is,
+        // and the material name stays.
+        rig.deliver([set_layer(&mut host, WALL_CELL, cu, 79)]);
+        assert!(!rig.hud().spoil);
+        rig.deliver([set_layer(&mut host, WALL_CELL, cu, 80)]);
+        let hud = rig.hud();
+        assert!(hud.spoil);
+        assert_eq!(hud.material.as_deref(), Some("stone"));
+        assert!(indicator(&mut rig), "the indicator shows");
+
+        // The floor below is clean; a substance without a player limit
+        // leaves it clean; acid at its limit spoils it.
+        rig.player_mut().pitch = -1.0;
+        rig.frames(1);
+        let floor = rig.hud().target.expect("the floor is in reach");
+        assert_eq!(floor.0.y, 3);
+        assert!(!rig.hud().spoil);
+        assert!(!indicator(&mut rig), "the indicator hides");
+        rig.deliver([set_layer(&mut host, floor, fe, 255)]);
+        assert!(!rig.hud().spoil, "fe has no player limit");
+        rig.deliver([set_layer(&mut host, floor, acid, 128)]);
+        assert!(rig.hud().spoil);
+
+        // At the sky nothing is targeted, so nothing is spoil.
+        rig.player_mut().pitch = 1.2;
+        rig.frames(1);
+        assert_eq!((rig.hud().target, rig.hud().spoil), (None, false));
+
+        // Back at the wall: spoil until the host clears the copper.
+        rig.player_mut().pitch = 0.0;
+        rig.frames(1);
+        assert!(rig.hud().spoil);
+        rig.deliver([set_layer(&mut host, WALL_CELL, cu, 0)]);
+        assert_eq!(rig.hud().target, Some(WALL_CELL));
+        assert!(!rig.hud().spoil);
+        assert!(!indicator(&mut rig));
+
+        // Without the eco tables there is no profile and no indicator.
+        rig.deliver([set_layer(&mut host, WALL_CELL, cu, 255)]);
+        assert!(rig.hud().spoil);
+        rig.app
+            .world_mut()
+            .remove_resource::<crate::eco::ClientEco>();
+        rig.frames(1);
+        assert!(!rig.hud().spoil);
+        assert!(!indicator(&mut rig));
     }
 
     impl Rig {

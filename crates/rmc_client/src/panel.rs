@@ -2,7 +2,8 @@
 //!
 //! [`editor_panel`] draws the panel into an egui context while
 //! [`EditorState::open`] is set: the brush (op, shape, size, material), the
-//! fly camera, the gizmo toggles, the [`EditorStats`], the worldgen seed with
+//! fly camera, the gizmo toggles, the [`EditorStats`], the targeted-cell
+//! readout ([`EditorReadout`](crate::eco::EditorReadout)), the worldgen seed with
 //! Regenerate, Advance season, Save / Load, and a `bevy-inspector-egui` world inspector. It
 //! edits the same [`EditorState`] the editor keys do; its buttons apply the
 //! same [`EditorAction`]s. F1 opens and closes it.
@@ -23,6 +24,7 @@ use rmc_protocol::ServerMsg;
 use rmc_world::edit::EditStatus;
 use rmc_world::materials::MaterialTable;
 
+use crate::eco::EditorReadout;
 use crate::editor::{
     ADVANCE_SEASON_LABEL, BrushOp, BrushShape, EditorAction, EditorState, MAX_BRUSH_SIZE,
     brush_materials,
@@ -74,6 +76,9 @@ pub struct PanelView<'a> {
     /// The material table, for the material picker and names. Without it the
     /// picker is hidden.
     pub materials: Option<&'a MaterialTable>,
+    /// The targeted-cell readout's lines ([`EditorReadout`]); the Cell
+    /// section is hidden when empty.
+    pub readout: &'a [String],
 }
 
 /// One line describing the brush: op, shape, size and material.
@@ -211,6 +216,14 @@ fn panel_body(
     });
     ui.label(format!("Edits/s: {:.1}", stats.edits_per_s));
 
+    if !view.readout.is_empty() {
+        ui.separator();
+        ui.strong("Cell");
+        for line in view.readout {
+            ui.label(line);
+        }
+    }
+
     ui.separator();
     ui.strong("Worldgen");
     ui.horizontal(|ui| {
@@ -327,12 +340,17 @@ fn draw_panel(world: &mut World) {
         .cloned()
         .unwrap_or_default();
     let materials = world.get_resource::<ClientMaterials>().map(|m| m.0.clone());
+    let readout = world
+        .get_resource::<EditorReadout>()
+        .map(|r| r.lines.clone())
+        .unwrap_or_default();
     let fly_was = world.get_resource::<FlyCam>().map(|f| f.enabled);
     let mut fly = fly_was.unwrap_or(false);
     world.resource_scope(|world, mut state: Mut<EditorState>| {
         let view = PanelView {
             stats: &stats,
             materials: materials.as_deref(),
+            readout: &readout,
         };
         editor_panel(&ctx, &mut state, &mut fly, view, |ui| {
             bevy_inspector_egui::bevy_inspector::ui_for_world(world, ui);

@@ -15,16 +15,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use rmc_client::{CommandSeq, FromHost, ToHost};
+use rmc_client::{ClientEco, CommandSeq, FromHost, ToHost};
 use rmc_protocol::{ClientMsg, SeasonReport, ServerMsg};
 use rmc_world::coords::{CellAabb, CellPos, ChunkPos};
 use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS};
 use rmc_world::layers::LayerId;
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
+use rmc_world::query::{self, ToxProfile};
 use rmc_world::shape::Shape;
 
-pub use rmc_eco::SeasonOverride;
+use rmc_eco::EcoTables;
+pub use rmc_eco::{SeasonOverride, ToxKind};
 
 use crate::app::TestApp;
 
@@ -371,6 +373,13 @@ impl TestApp {
             .sum()
     }
 
+    /// The spoil cells of `region` on the host for `profile` (SAD-P2 §3,
+    /// §11), sorted by `(y, z, x)`. Build a profile with
+    /// `eco_tables().tox_profile(ToxKind::Plant)` or `ToxKind::Player`.
+    pub fn spoil_cells(&self, region: CellAabb, profile: ToxProfile) -> Vec<CellPos> {
+        query::spoil(self.host_world(), region, &profile)
+    }
+
     /// From the next season on, every season row's `rain` and `air_temp`
     /// are the override's where it gives them, else `assets/seasons.ron`'s.
     /// Each call replaces the previous override; the default restores the
@@ -598,6 +607,19 @@ fn region_cells(region: CellAabb) -> impl Iterator<Item = CellPos> {
         max: region.max,
     }
     .cells()
+}
+
+/// What the client reads of the eco tables (SAD-P2 §10), as the game
+/// inserts it: substance and gas keys, the pH rule and the toxicity
+/// profiles.
+pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
+    ClientEco {
+        substances: eco.substance_layers().clone(),
+        gases: eco.gases().iter().map(|g| g.key.clone()).collect(),
+        ph: eco.ph_rule(),
+        player_tox: eco.tox_profile(ToxKind::Player),
+        plant_tox: eco.tox_profile(ToxKind::Plant),
+    }
 }
 
 #[cfg(test)]
@@ -856,6 +878,33 @@ mod tests {
         assert_eq!(t.layer_u8(cell, LayerId::Moisture), 77);
         assert_eq!(t.sum_layer(LayerId::Moisture, floor), 77);
         assert_eq!(replica_hash(&t), t.host_world().hash());
+    }
+
+    #[test]
+    fn spoil_cells_follow_layer_edits() {
+        let mut t = joined();
+        let eco = t.eco_tables().clone();
+        let player = eco.tox_profile(ToxKind::Player);
+        let (id, limit) = player.limits().next().expect("a player limit");
+        let site = t.fixture(Fixture::Pit);
+        let region = site.site;
+        let before = t.spoil_cells(region, player);
+        let (a, b) = (
+            CellPos(site.feature.min.0 - IVec3::Y),
+            CellPos(site.feature.min.0 - IVec3::Y + IVec3::X),
+        );
+        assert!(!before.contains(&a) && !before.contains(&b));
+        t.set_layer(a, id, i32::from(limit));
+        t.set_layer(b, id, i32::from(limit) - 1);
+        let after = t.spoil_cells(region, player);
+        assert!(after.contains(&a) && !after.contains(&b));
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(t.spoil_cells(region, ToxProfile::default()), vec![]);
+
+        // The client got the same tables the host runs.
+        let client = t.app().world().resource::<ClientEco>();
+        assert_eq!(client, &client_eco(&eco));
+        assert_eq!(client.player_tox, player);
     }
 
     #[test]

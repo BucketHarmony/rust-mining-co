@@ -34,7 +34,8 @@ use tracing::info;
 
 use crate::cli::{Cli, DEFAULT_WORLD_SIZE, WorldSize};
 use crate::session::{
-    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, has_save, start_world,
+    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, client_eco, has_save,
+    start_world,
 };
 
 /// The window's title.
@@ -125,6 +126,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
         app.add_plugins((EditorPanelPlugin, CursorPlugin));
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))
+        .insert_resource(client_eco(&assets.eco))
         .insert_resource(Pickaxe(assets.tools.pickaxe))
         .insert_resource(HostConnection::new(EndpointLink(endpoint)))
         .insert_resource(GameHost::new(handle, Arc::new(assets), save_dir));

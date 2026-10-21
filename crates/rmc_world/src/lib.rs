@@ -12,6 +12,7 @@ pub mod inventory;
 pub mod layers;
 pub mod ledger;
 pub mod materials;
+pub mod query;
 pub mod raycast;
 pub mod save;
 pub mod shape;

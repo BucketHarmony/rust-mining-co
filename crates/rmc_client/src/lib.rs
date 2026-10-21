@@ -3,6 +3,7 @@
 
 pub mod controller;
 pub mod cursor;
+pub mod eco;
 pub mod editor;
 pub mod flycam;
 pub mod gizmo;
@@ -26,6 +27,7 @@ pub use cursor::{
     CursorGrab, CursorPlugin, CursorSystems, GRAB_BUTTON, GRABBED_MODE, RELEASE_KEY, look_allowed,
     swing_allowed,
 };
+pub use eco::{CellReadout, ClientEco, EditorReadout, cell_readout, readout_lines};
 pub use editor::{
     ADVANCE_SEASON_LABEL, BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS,
     EditorAction, EditorPlugin, EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE,
@@ -40,7 +42,8 @@ pub use hud::{
     BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, ClientInventory,
     CrackOverlay, DamageEstimate, DamageProgress, HUD_GIZMO_DEPTH_BIAS, HudGizmos, HudItem,
     HudPlugin, HudRoot, HudState, HudSystems, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK,
-    SelectedMaterial, crack_color, flash_scale, step_selection,
+    SPOIL_COLOR, SPOIL_LABEL, SelectedMaterial, SpoilIndicator, crack_color, flash_scale,
+    step_selection,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{

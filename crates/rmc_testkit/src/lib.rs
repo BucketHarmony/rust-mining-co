@@ -14,7 +14,8 @@ pub use app::{
     frame_duration,
 };
 pub use eco::{
-    Fixture, FixtureSite, MAX_EDIT_STEPS, MAX_SEASON_STEPS, SeasonFrames, SeasonOverride,
+    Fixture, FixtureSite, MAX_EDIT_STEPS, MAX_SEASON_STEPS, SeasonFrames, SeasonOverride, ToxKind,
 };
 pub use player::PlayerSnapshot;
+pub use rmc_world::query::ToxProfile;
 pub use screenshot::{MAX_SCREENSHOT_STEPS, ScreenshotError};

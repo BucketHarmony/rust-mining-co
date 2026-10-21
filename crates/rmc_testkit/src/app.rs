@@ -222,6 +222,7 @@ impl TestApp {
                 SeasonLogPlugin,
             ))
             .insert_resource(ClientMaterials(materials))
+            .insert_resource(crate::eco::client_eco(&eco))
             .insert_resource(Pickaxe(tools.pickaxe))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
 

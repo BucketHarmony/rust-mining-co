@@ -61,7 +61,7 @@ use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
 
 use crate::runner::{ChunkView, JacobiOut, JacobiPass, Queued};
-use crate::tables::{CoatTarget, Condition, EcoTables, PH_MAX, SideEffect};
+use crate::tables::{CoatTarget, Condition, EcoTables, SideEffect};
 
 /// One water move of the flow sweeps (SAD-P2 §7.3): `amount` units went
 /// from `from` to `to`, out of the `fill_from` the donor held just before.
@@ -103,20 +103,13 @@ impl MoveLog {
     }
 }
 
-/// The neutral pH, the `7` of `pH = clamp(7 + (lime − acid) / 2^ph_shift,
-/// 0, 14)` (§7.6).
-pub const PH_NEUTRAL: i32 = 7;
+/// pH lives with the other derived readings in `rmc_world::query`, so the
+/// client's HUD and editor read the same formula (§7.6).
+pub use rmc_world::query::{PH_NEUTRAL, ph};
 /// The divisor of the transported share, `(x · mob · amount) / 256`.
 const MOBILITY_DEN: u32 = 256;
 /// The most of a substance a cell holds.
 const FULL: i32 = u8::MAX as i32;
-
-/// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):
-/// `clamp(7 + (lime − acid) / 2^ph_shift, 0, 14)`, dividing with
-/// truncation toward zero.
-pub fn ph(lime: i32, acid: i32, ph_shift: u8) -> i32 {
-    (PH_NEUTRAL + (lime - acid) / (1 << ph_shift)).clamp(0, i32::from(PH_MAX))
-}
 
 /// The transport replay. Built once per season from the tables.
 #[derive(Clone, Debug)]
@@ -518,7 +511,7 @@ mod tests {
     use crate::invariants::InvariantChecker;
     use crate::reference::{FlatWorld, TransportRef, flat_transport, global_order};
     use crate::runner::{Exec, activate_holders, run_jacobi, run_sweep};
-    use crate::tables::{EcoSources, MAX_SHIFT, ReactionDef, SeasonOverride, SubstanceDef};
+    use crate::tables::{EcoSources, MAX_SHIFT, PH_MAX, ReactionDef, SeasonOverride, SubstanceDef};
     use crate::water::WaterPass;
 
     const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
