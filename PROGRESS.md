@@ -2411,3 +2411,56 @@ Decisions:
 - Chamber positions are planned per world in `Generator::new`, so each cell is a pure function of its world position. Chunks stay independent and border cells agree.
 Next: F140 (substance layers), F150 (gases) or F160 (light), the first unpassed features whose blockers all pass. F131 still waits on F125 and F150.
 Blockers: none.
+
+## 2026-10-21 19:30 — F140 Substance layers, composition, substances.ron with yield materials; sulfide_ore, limestone (porous, carbonate), crushed_sulfide, copper_dust — passed
+Done:
+- `rmc_world::layers::SubstanceLayers`: the substance keys of `substances.ron` in row order. Row `i` is `LayerId::Substance(i)`.
+  - Construction checks 1..=10 unique, non-empty keys.
+  - Methods: `layer(key)`, `key(id)`, `iter()`, and `composition(def)`, which turns a material's composition into `(layer, amount)` or `None` for an unknown key.
+  - `EcoTables` builds one (`substance_layers()`), and `substance_index` reads it.
+- `materials.ron` (SAD-P2 §5):
+  - `copper_ore` → `sulfide_ore`: tags `ore`, `sulfide`; composition cu 60, fe 40, s 80; `yield_material: crushed_sulfide`.
+  - New `limestone` (15): stone, carbonate, porous; permeability 32, field_capacity 24, weathering_rate 2, lime 120; rock heat 16/32.
+  - New `crushed_sulfide` (16): sulfide, porous, placeable; 96 / 48 / 48; the ore's composition; soil heat 64/8.
+  - New `copper_dust`, `iron_dust`, `salt_dust` (17–19): placeable, each holding only its substance at 255.
+- Worldgen: the strata code moved from `gen.rs` into the new `rmc_worldgen::strata` module (`Strata::new`, `column_ends`, `material`); the output is unchanged. `worldgen.ron` strata are now stone→24, limestone→34, granite→56, basalt.
+- Commits:
+  - `test-fix:` the key rename alone (f640f8b);
+  - `test-fix:` `yields_match_table` (27ce5fe);
+  - `test-fix:` the Phase 1 tests that assumed things about the shipped assets (db133c6);
+  - the feature.
+Tests added:
+- `layers::tests::substance_layers_index_by_table`:
+  - the shipped rows map to layers 0..9 in order;
+  - each layer is its own store and compacts away separately;
+  - every shipped composition resolves (sulfide_ore, crushed_sulfide and limestone checked by value);
+  - each substance's yield material is a placeable diggable solid holding only that substance;
+  - bad key lists are refused.
+- `strata::tests::limestone_band_present_and_porous`:
+  - limestone row fields; it sits between stone and granite, and its gap exceeds twice the amplitude;
+  - on a 128³ world every column has one band, stone right above and granite right below, starting and ending within the noise of its boundaries; the start and thickness each take ≥3 values;
+  - in the generated world, limestone below the water table holds 24 and above it is 0 (>1000 cells each).
+- `damage::tests::sulfide_yields_crushed_sulfide`:
+  - the sulfide_ore and crushed_sulfide rows;
+  - a sulfide cell takes ⌈hardness/dmg⌉ hits and yields crushed_sulfide, also when soft;
+  - an area over a chunk border aggregates sulfide and crushed under crushed_sulfide;
+  - nothing ever yields sulfide_ore.
+Test-fixes (rule 6; each passes on both the old and the new assets):
+- `edit.rs` / `materials.rs` Phase 1 row helpers drop `yield_material` / `weathers_to` references to rows past row 13.
+- `yields_match_table`, `assert_breaks_after_ceil` and host `inventory_accumulates_yields` expect the row's `yield_material` (F113 behaviour) when it has one.
+- params `loads_and_validates` checks the Phase 1 strata in order instead of a count of 3, and "bounded last" edits the last stratum instead of `[2]`.
+- worldgen `caves_below_table_flooded`: "nothing shipped is porous" became "only porous cells below the table are wet, at field_capacity". The roleless-water case compares storage exactly and checks the same moisture rule.
+- eco `oracle_equivalence_flat_sweep_proptest`: asserted exactly two porous rows; it now asserts that the oracle knows the test loam and hardpan.
+Decisions:
+- sulfide_ore is not tagged `stone`, although SAD-P2 §5 lists `stone, sulfide, ore`.
+  - Phase 1 keeps ores un-stoned so that ore placement and glowcrystals (which replace `stone` cells) never overwrite them (docs/REPORT.md). Two Phase 1 tests pin this: `loads_phase1_table` (stone = stone/granite/basalt) and the strata `MissingTag` case.
+  - Nothing in Phase 2 needs the tag on the ore except `Coat` targets (a crust can't form on a bare sulfide floor).
+  - It has `ore` + `sulfide`, so `oxidize` (`Tag("sulfide")`) still matches.
+- sulfide_ore has no `weathering_rate` (§5 gives none): the ore in place releases nothing. crushed_sulfide does (48).
+- limestone and crushed_sulfide have no `weathers_to` (§5 gives none). They stop at regolith 255, which still halves hardness.
+- Yield materials hold their substance at 255. §5 says only "matching composition", and with weathering_rate 0 the value is inert until a later feature reads it.
+- The limestone band is a plain stratum in `worldgen.ron`, not a new parameter. Its boundaries are 10 cells apart with amplitude 4, so it is 2..=18 cells thick and present in every column. Inserting it moves granite's boundary noise seed (`LAYER_STRATA + 2`), so shipped worlds change. No golden worldgen hashes exist.
+- New hardness and colors (limestone 25, crushed 10, dusts 5) are my picks. F133 owns the look of the Phase 2 materials.
+- `crates/rmc_world/proptest-regressions/edit.txt` (a seed from the helper panic before the test-fix) is committed, as the repo does with the others. The case passes.
+Next: F150 (gases) or F160 (light), the first unpassed features whose blockers all pass. F141 waits on F124.
+Blockers: none.
