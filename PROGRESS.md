@@ -2570,3 +2570,31 @@ Decisions:
 - `season_tick_observed` is `pub` (and re-exported) so that the F174 soak can check the invariants per pass too.
 Next: F128, F131, F141, F151, F154 and F160 are ready. E2 now lacks only F128 (E2E season_swale_fills) and F129 (pit_becomes_pond).
 Blockers: none.
+
+## 2026-10-21 08:55 — F128 E2E: season_swale_fills — passed
+Done:
+- `tests/e2e/tests/season_swale_fills.rs`. The scenario builds `Fixture::Swale(5)` on a 64 × 128 × 64 world and digs a sump under the slope's low end: the last 2 steps, 40 cells deep. It then runs two seasons with rain overridden to 160.
+- After each season it asserts:
+  - `count(water)` in the swale ≥ `eco_test.swale_min` (8);
+  - water cells in the swale's columns ≥ the control's + `swale_min`;
+  - Moisture fill in the swale's columns > the control's;
+  - the inside of the sump has no water level with the swale.
+- A dry season (rain 0) follows. The swale still holds ≥ `swale_min` water cells and more fill than the control. Then the second screenshot.
+- Both shots are taken from 7 m downhill and 6 m above the swale, looking up the slope. The test asserts liquid quads > 0 and no render failure.
+- Measured: after season 1 the swale's columns hold 448 water cells and 113519 fill; the control holds 224 cells and 51293 fill. After the dry season: 445 / 107487 against 196 / 30848.
+- The reviewer's gaps are addressed: rain was 64, the screenshot was too close, the count margin was missing, and the pond level was unchecked.
+Tests added: `e2e:season_swale_fills` (about 67 s).
+Decisions:
+- Rain "high" is 160, the wettest `seasons.ron` row (autumn).
+  - The fixture site is a closed basin of non-porous soil, so it keeps every drop. Without a sink, rains of 96, 160 and 255 flood the low end over both the swale and the control within two seasons.
+  - The sump (2 steps × 32 × 40 cells, downhill of the berm) holds the runoff. After 2 seasons its pond is about 15 of 42 cells deep.
+- The control region is the swale's column shape, not just the air band over the slope:
+  - The swale's columns run from the floor up to `SWALE_DEPTH` cells above the contour (4 cells tall). The control is the same shape one step uphill, raised with the surface, so its bottom 2 cells are slope soil.
+  - Why not compare the bare air band: rain is the last pass of every sub-step and lands at `surface_y + 1`, and `surface_y` counts water. So every slope column ends a season with a sheet-flow cell plus a fresh rain cell above it.
+  - An air band over the slope therefore counts about 222 of 224 cells, the same as a full swale. That comparison would only test the rain pattern's zero columns.
+  - The fill comparison (`sum_layer(Moisture)`) is the stronger discriminator. The test asserts both.
+- The pond check leaves out the sump's rim cells. Runoff from the slope, and from the generated terrain around the site, falls down the sump walls as one-cell waterfalls, and those cells are in mid-air at the swale's level when the season ends.
+- Look (rule 21): rain sheets cover every slope step, so in both screenshots the swale's pool does not stand out from the sheets on the terraces. The playtester judges. A clearer pool would need a look or rain-model change (sheet cells drawn at fill height already).
+- Machine: `.claude/hooks/stop-guard.sh` runs `cargo test --workspace` whenever a turn ends with a dirty tree. Ending a turn while a background gate ran started a second test run alongside it (rule 23), and the first background gate hit its 10-minute limit. Later runs waited in the same turn.
+Next: F129 (E2E pit_becomes_pond) is now unblocked and is the last E2 feature. Run the playtester after it. F131, F141, F151, F154 and F160 are also ready.
+Blockers: none.
