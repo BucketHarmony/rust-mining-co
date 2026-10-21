@@ -2873,3 +2873,47 @@ Decisions:
 - The four tests passed on first run for three of them; the fourth failed for the reason above before the tuning. No pass code changed.
 Next: F144 (Coat side effect: ochre and salt crusts) is unblocked. Also ready: F145, F146, F151, F152, F154, F160. E2's playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 12:47 — F144 Coating and crusts: ochre on floors at pH>5, salt on evaporation; crusts dig back to substances — passed
+Done:
+- `rmc_eco::runner`: Jacobi outputs can now queue layer deltas for any resident cell, including one in another chunk (`JacobiOut.queued`, `Queued { target, layer, amount, then_set }`).
+  - After every chunk's output is applied, the queued deltas are summed per (target, layer) in global cell order (`reference::order_key`). Deltas to one target therefore add up, whichever chunk computed them.
+  - Each sum is applied through `put_delta`, the per-layer clamp `apply_out` already used, now a separate function. The excess goes to `*saturation_loss`.
+  - Then, in the same order, a target whose layer reaches the `then_set` threshold changes material through `World::eco_set`, which runs the §7.0 rules.
+  - Chunks changed by the queue are added to `JacobiReport.changed`.
+- `rmc_eco::chemistry`: the `Coat(Floor, crust, x, amount)` side.
+  - A firing coating row queues `amount` of `x` into the cell below and books it as `react_delta`. The consume was already booked as a negative, so a row that consumes what it coats is net 0.
+  - The floor becomes the crust when it is air, `porous` or `stone` and not already a `crust`, and its `x` reaches `eco.crust_threshold` (64).
+- `assets/materials.ron`: `ochre_crust` (id 23; tags crust, porous; fe 60; hardness 10) and `salt_crust` (id 24; tag crust; salt 80; hardness 5). Both are diggable with yield_count 0, so digging leaves the cell's substances in place (§7.0).
+Tests added:
+- `rmc_eco::chemistry::tests::ochre_crust_forms_on_submerged_floor`:
+  - A neutral iron-laden pool over stone: the stone floor turns to ochre_crust at sub-step 7 (fe 64), and the layer below stays stone with fe 0.
+  - Total fe is conserved: `react_delta[fe]` 0, no saturation loss.
+  - An acid pool forms no crust.
+- `rmc_eco::chemistry::tests::salt_crust_on_floor_under_drying_pool`:
+  - A shallow salty pool at 600 (rate 8) dries in 4 sub-steps. The floor gets salt 64 and becomes salt_crust, and the dried cells keep the rest of the salt.
+  - Salt is conserved.
+  - A deep pool forms no crust.
+- `rmc_eco::chemistry::tests::coat_across_chunk_border_queued_additive`:
+  - A coat from the chunk above lands on the floor in the chunk below, combined with that chunk's own same-pass delta (−3 +8), and converts. Parallel equals serial, and the result equals the same layout inside one chunk.
+  - A second pass adds to a crust and does not re-convert it.
+  - Several chunks' deltas to one target sum before the threshold check.
+  - A near-full target clamps to 255, with the excess booked as `saturation_loss`.
+  - Invariants are checked throughout.
+- `rmc_world::damage::tests::digging_crust_leaves_substance_on_cell`:
+  - The crust-tagged materials are exactly ochre_crust and salt_crust, and they are solid, diggable and have a composition.
+  - Hits to break follow hardness.
+  - The breaking hit yields nothing, books nothing, sends no layer delta, and leaves every layer on the cell.
+- Test updates:
+  - `chemistry::tests::each_reaction_fires_only_on_condition` (in the feature commit, as F125, F140 and F142 did): coating rows now need a floor. The fixture reacts them on an AIR cell over the solid, and the test expects the deposit below and `react_delta` += amount.
+  - `test-fix:` 46f0d8d, `rmc_host replica::tests::equivalence_after_three_seasons_with_edits_between`: the test asserted at least one LayerSnapshot per season. Its seeded random edits come from the material table, so adding two materials changed the edit stream; afterwards every chunk's revision changed in season 3, which is legitimate. The test now checks that each chunk's snapshot kind matches what changed (ChunkSnapshot when `revision` changed, LayerSnapshot when only `eco_revision` changed), and that some LayerSnapshot appears across the three seasons. That is a stronger per-chunk check than before.
+Decisions:
+- Only a non-solid reacting cell has a floor: a water cell, or a cell that dried to air in this sub-step. On a solid cell, or one with no resident cell below, a coating row does not fire and passes the cell on to the next row.
+  - Why: otherwise the iron in a submerged solid floor would coat the cell under it, and that one the cell under it, relaying iron one cell deeper each sub-step, and the crust would form under the floor.
+  - Consequence: ochre's `Submerged` clause ("water directly above") is now redundant in practice. The row is unchanged.
+- The coat carries the consumed amount out of the water, and the deposit is booked as `react_delta`, so the shipped rows conserve fe and salt exactly.
+- Whether the floor may convert is decided from the previous state, at compute time. The threshold is checked after the deltas are applied. A crust never converts into another crust.
+- The queue is generic in the runner and not specific to chemistry, so F155 (EmitGas) or later passes can reuse it.
+- The crusts keep the default permeability and field_capacity (0). Ochre is tagged porous so that §7.0 digging and later rows treat it as soft rock.
+Next: F145, F146, F151, F152, F154, F155 and F160 are ready. E2's playtester run is still outstanding.
+Blockers: none.
