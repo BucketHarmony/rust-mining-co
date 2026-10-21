@@ -2227,3 +2227,26 @@ Decisions:
 - Activity skipping is safe with the freeze-thaw bits, which are not hashed and do not bump revisions: a chunk goes quiet only when no cell can grow (no eligible cell, or all at 255), and a bit cannot change that.
 Next: F112 (gradual composition release, conversion at 255) or F113 (regolith halves pickaxe hardness): both are now unblocked; F112 comes first in features.json.
 Blockers: none.
+
+## 2026-10-21 13:00 — F112 Gradual composition release during weathering; conversion at 255 — passed
+Done:
+- `rmc_eco::weathering::WeatheringPass` now also does the rest of SAD-P2 §7.5.
+  - It is built with each material's `composition` (as substance indices) and its `weathers_to` id.
+  - Release: with each growth Δ, each `(x, total)` releases `rel = total · Δ / 256` (truncating, `RELEASE_DIV`) onto the cell's own `Substance(x)` layer. The cell gains `min(rel, 255 − x)`.
+  - Conversion: an exposed, moist weathering cell whose `regolith + Δ == 255` becomes `weathers_to` (the change goes through `World::eco_set` via `JacobiOut::materials`). Its regolith goes to 0 and it counts in `ledger.weathered_cells`. That includes a cell already at 255 (Δ = 0).
+  - A cell at 255 whose material has no `weathers_to` is skipped, as before.
+Tests added:
+- `weathering::tests::{release_proportional_to_actual_delta, release_complete_within_rounding, converts_at_255, ledger_weather_in_and_saturation_loss}`. Each checks serial against parallel (world and ledger) and checks the `InvariantChecker` substance invariant.
+  - `release_complete_within_rounding` runs 11 rates, each with and without the freeze-thaw bit, through a full 0..255 cycle. Per substance it asserts:
+    - the release equals the sum of the truncated per-step releases exactly;
+    - the release is at most `total`;
+    - `256 · Σrel ≥ 255 · total − 255 · n_steps`.
+  - `converts_at_255` includes a summer `season_tick` in which a cell one step short converts.
+Decisions:
+- Ledger terms: `weather_in` books the full release `rel`, and `saturation_loss` books `rel − gained`. §7.5 says "weather_in records the actual, saturation_loss the remainder". Booking only the gained part in `weather_in` and the remainder in `saturation_loss` would break the §7 substance invariant (`Σx = before + weather_in − saturation_loss`), because the remainder would be subtracted twice. This is the same convention the Jacobi runner uses for clamped deltas.
+- Rounding bound: the test asserts `256 · Σrel ≥ 255 · total − 255 · n_steps`, not the SAD's `total − 255 · n_steps / 256`. A full cycle is 255 units of regolith, not 256, so even a single step of Δ = 255 releases `⌊total · 255 / 256⌋ < total`. The SAD's bound is off by `total / 256`. The test also asserts the exact sum of truncated releases, which is stronger.
+- Conversion follows the literal structure of §7.5: only a cell that weathers this pass (exposed and moist) converts. A buried cell at 255 stays at 255 until it is exposed and moist. It converts in the same pass that brings it to 255.
+- `test-fix:` commit bf58812: the F111 fixture materials `weatherstone` / `weatherchalk` lose `weathers_to`. With conversion, F111's cap assertions (cells at 255) would see dirt at regolith 0. The assertions are unchanged; F112 uses its own fixture materials (`releasestone`, `releasechalk`, `keepstone`, `richstone`, `cycle<rate>`).
+- No shipped material weathers before F140, so shipped worlds are unchanged.
+Next: F113 (regolith halves pickaxe hardness; yield_material), now the first unpassed feature whose blockers all pass. F140 is unblocked as well.
+Blockers: none.
