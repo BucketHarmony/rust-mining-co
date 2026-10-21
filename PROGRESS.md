@@ -2917,3 +2917,54 @@ Decisions:
 - The crusts keep the default permeability and field_capacity (0). Ochre is tagged porous so that §7.0 digging and later rows treat it as soft rock.
 Next: F145, F146, F151, F152, F154, F155 and F160 are ready. E2's playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 13:12 — F145 Spoil query and toxicity profiles; HUD spoil indicator; editor cell readout — passed
+Done:
+- `rmc_world::query` (new), for the readings that are derived and never stored:
+  - `ToxProfile`: a limit per substance layer.
+  - `spoil(world, region, profile)`: every resident cell in the region (clipped to the bounds) where a limited substance reaches its limit, sorted by (y, z, x). Chunks with none of the limited layers are skipped.
+  - `ToxProfile::{is_spoil, exceeded, limit, limits}`.
+  - `PhRule { acid, lime, ph_shift }` with `at(world, cell)`.
+  - The pH formula, `PH_NEUTRAL` and `PH_MAX`. `rmc_eco::chemistry::ph` and `tables::PH_MAX` now re-export these, so there is still one formula. The reference oracle keeps its own copy on purpose.
+- `rmc_eco`:
+  - `EcoTables::tox_profile(ToxKind::{Plant, Player})` builds the profile from the `tox_plant` / `tox_player` substance rows.
+  - `EcoTables::ph_rule()` reads the acid and lime roles and `ph_shift`.
+- `rmc_client`:
+  - `eco::ClientEco` resource: substance and gas keys, `PhRule`, and the player and plant profiles. The game (`rmc_app::session::client_eco`) and the testkit insert it.
+  - HUD: `HudState.spoil` is true when the targeted cell is spoil for the player profile. While it is true, a `SpoilIndicator` text node reading "SPOIL" (`SPOIL_COLOR`) shows under the material name.
+  - Editor: `EditorReadout` is sampled each frame while the editor is open, at the cell the brush ray hits. It holds temperature, moisture, regolith, light, pH, nonzero substances and gases, and the substances over each profile's limit. The panel shows it in a new "Cell" section.
+- `rmc_testkit`: `TestApp::spoil_cells(region, profile)` (SAD-P2 §11), plus re-exports of `ToxKind` and `ToxProfile`.
+Tests added:
+- `rmc_world::query::tests::spoil_cells_match_profile`:
+  - At the limit is spoil; one below is not; a substance with no limit at 255 is not.
+  - Results are sorted across two chunks.
+  - Region clipping: a single chunk, a single cell, a box across the chunk border, a box over the absent chunk and past the bounds.
+  - The empty profile finds nothing; another profile uses its own limits.
+  - Clearing a substance clears the spoil.
+  - A seeded scatter of 400 values agrees with a cell-by-cell brute force.
+- `rmc_world::query::tests::ph_reads_roles_and_shift`.
+- `rmc_client::hud::tests::spoil_indicator_follows_target`:
+  - A clean wall is not spoil. Copper 79 is not; 80 is, the material name stays, and the indicator node shows.
+  - The floor is clean. Iron 255 (no player limit) leaves it clean; acid at its limit spoils it.
+  - At the sky, nothing is targeted and nothing is spoil.
+  - When the host clears the copper, the wall is clean again.
+  - With `ClientEco` removed, no indicator shows.
+  - Every layer change arrives as a host `Applied(SetLayer)`.
+- `rmc_client::eco::tests::readout_lists_layers_ph_and_spoil`.
+- `rmc_eco::tables::tests::tox_profiles_and_ph_rule_follow_the_tables`.
+- `rmc_testkit::eco::tests::spoil_cells_follow_layer_edits`: the client's `ClientEco` equals the host's tables.
+- E2E `spoil_indicator_shows` (not in the feature's list; added for rule 21):
+  - Looks at a wall cell, sets the player's first limited substance to its limit, and asserts `HudState.spoil` and the indicator node, then the reverse after clearing.
+  - Coarse check only: the two frames differ.
+  - Screenshots: `docs/screens/spoil_indicator_shows-44.png` (the "SPOIL" label under "stone") and `spoil_indicator_shows-clear-49.png`.
+- Test updates (mechanical, a new struct field):
+  - `hud::tests::hudstate_reflects_target`'s full `HudState` literal gains `spoil: false`.
+  - The editor tests' `draw_panel` helper passes `readout` in `PanelView`.
+Decisions:
+- Spoil is "any limited substance ≥ its limit", following the `substances.ron` comment "amount at or above which the cell is spoil". It applies to any material, including water and air. Cells outside resident chunks are never spoil.
+- `rmc_client` does not depend on `rmc_eco`. Whoever builds the app converts the tables into `ClientEco`. Without it, the HUD shows no spoil and the readout names layers by index and shows "pH: n/a". The conversion is about 10 lines and is duplicated in `rmc_app` and `rmc_testkit`, because neither depends on the other.
+- The HUD indicator follows `PickTarget`, so it never shows in fly mode. The editor readout follows the brush ray, so it works from the fly camera.
+- The readout does not show plant species, stage or held amounts yet. Plants arrive in F165, and F169 (editor eco panel) lists the readout again with plant fields.
+- Rule 21: semantic assertions on `HudState.spoil` and the node's `Visibility`/`Text`, plus screenshots. No pixel thresholds.
+Next: F146 (water tint) is ready; F147 then needs only F146. Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
+Blockers: none.
