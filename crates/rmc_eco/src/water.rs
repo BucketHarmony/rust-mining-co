@@ -25,7 +25,12 @@
 //!    horizontal neighbors in sorted order, taking its temperature along
 //!    (§7.1). It never enters water, porous solids or another liquid.
 //!    Magma is conserved as a cell count; a swap neither sets nor melts
-//!    any.
+//!    any;
+//! 7. contact boiling, on every iteration: magma that is still in place
+//!    after step 6 and has a water face neighbor (the first of the 6 in
+//!    sorted order, below first) boils that cell's whole fill to steam on
+//!    the cell, which becomes air, and sets as obsidian in place; ledger
+//!    `boil_to_steam` and `magma_set`. One event per visit.
 //!
 //! A porous solid is a `Solid` material tagged `porous`; its moisture is
 //! the water it holds, up to its `field_capacity` (`cap_left` is the
@@ -33,8 +38,8 @@
 //! room from the current state just before it is applied, and the
 //! receiver joins the active set. Moves inside the water total need no
 //! ledger entry: water that changes cells is neither a source nor a sink.
-//! Contact boiling (7) takes its place after magma;
-//! [`reference::flat_sweep_water`] is the flat-array oracle (without magma).
+//! [`reference::flat_sweep_water`] is the flat-array oracle (without magma
+//! and contact boiling).
 //!
 //! Around the flow sweeps, once per sub-step, run the other §7.3 steps:
 //! [`Condensation`] (A) before them, then [`Evaporation`] (C) and
@@ -78,6 +83,8 @@ pub struct WaterPass {
     porous: Vec<Option<Porous>>,
     /// Role `magma`.
     magma: Option<MaterialId>,
+    /// Role `obsidian`: what magma sets to by contact boiling.
+    obsidian: Option<MaterialId>,
     /// Magma's `viscosity + 1`: it moves on iterations that are a multiple
     /// of this.
     magma_period: u16,
@@ -108,6 +115,15 @@ const SIDEWAYS: [[i32; 3]; 4] = [[0, 0, -1], [-1, 0, 0], [1, 0, 0], [0, 0, 1]];
 /// Where seepage goes, in the order it is offered: below first, then the
 /// 4 horizontal neighbors in sorted order (§7.3 B4).
 const SEEP_ORDER: [[i32; 3]; 5] = [BELOW, SIDEWAYS[0], SIDEWAYS[1], SIDEWAYS[2], SIDEWAYS[3]];
+/// The 6 face neighbors in sorted (y, z, x) order (§7.3 B7).
+const FACES: [[i32; 3]; 6] = [
+    BELOW,
+    SIDEWAYS[0],
+    SIDEWAYS[1],
+    SIDEWAYS[2],
+    SIDEWAYS[3],
+    [0, 1, 0],
+];
 
 fn offset(cell: CellPos, d: [i32; 3]) -> CellPos {
     CellPos::new(cell.0.x + d[0], cell.0.y + d[1], cell.0.z + d[2])
@@ -153,6 +169,7 @@ impl WaterPass {
             seep_shift: params.seep_shift,
             porous,
             magma,
+            obsidian: tables.role_material("obsidian"),
             magma_period: u16::from(viscosity) + 1,
             iter: 0,
         }
@@ -263,6 +280,28 @@ impl WaterPass {
         ctx.receive(to);
     }
 
+    /// Step 7, contact boiling: magma at `cell` with a water face neighbor
+    /// boils the first one's whole fill to steam on that cell, which
+    /// becomes air, and sets as obsidian. `eco_set` runs the §7.0 rules
+    /// for both changes: water → air by a pass converts the fill (ledger
+    /// `boil_to_steam`), magma → obsidian leaves the magma count (ledger
+    /// `magma_set`); both keep their temperatures.
+    fn contact_boil(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, water: MaterialId) {
+        let Some(obsidian) = self.obsidian else {
+            return;
+        };
+        let Some(wet) = FACES
+            .iter()
+            .map(|&d| offset(cell, d))
+            .find(|&n| ctx.world.get_cell(n) == Some(water))
+        else {
+            return;
+        };
+        let air = self.air.expect("flow runs only with an air role");
+        ctx.world.eco_set(wet, air, ctx.ledger);
+        ctx.world.eco_set(cell, obsidian, ctx.ledger);
+    }
+
     /// Step 4, seepage: a porous cell above its threshold sheds the
     /// excess, at most `perm / 2^seep_shift`, to the first neighbor with
     /// room.
@@ -333,6 +372,9 @@ impl SweepPass for WaterPass {
         }
         if Some(m) == self.magma {
             self.flow_magma(ctx, cell, air);
+            if ctx.world.get_cell(cell) == Some(m) {
+                self.contact_boil(ctx, cell, water);
+            }
             return;
         }
         // 1. Air with moisture becomes water.
@@ -712,12 +754,15 @@ mod tests {
         brine: MaterialId,
         /// A passable plant material (plants.ron's `moss` row).
         moss: MaterialId,
+        /// Role `obsidian`: what magma sets to by contact boiling.
+        obsidian: MaterialId,
     }
 
     impl Fix {
         /// The shipped tables, with two porous test materials, magma (the
-        /// SAD-P2 §5 row) and a test liquid appended to the shipped material
-        /// table (it has no porous or magma row yet).
+        /// SAD-P2 §5 row), a test liquid and, if the table lacks it,
+        /// obsidian appended to the shipped material table (it has no
+        /// porous or magma row yet).
         fn new() -> Self {
             let base = std::fs::read_to_string(format!("{ASSETS}/materials.ron")).unwrap();
             let n = MaterialTable::from_ron_str(&base).unwrap().len();
@@ -742,9 +787,18 @@ mod tests {
                      emissive: 0.0, passable: true),\n"
                 )
             };
+            let obsidian = if base.contains("key: \"obsidian\"") {
+                String::new()
+            } else {
+                format!(
+                    "(id: {}, key: \"obsidian\", phase: Solid, tags: [], hardness: 70,                      diggable: true, yield_count: 1, color: (30, 20, 40, 255),                      emissive: 0.0),
+",
+                    n + 5
+                )
+            };
             let end = base.rfind(']').expect("material list closes");
             let text = format!(
-                "{}{}{}{}{}{}]",
+                "{}{}{}{}{}{}{}]",
                 &base[..end],
                 row(n, "test_loam", LOAM_PERM),
                 row(n + 1, "test_hardpan", 0),
@@ -755,6 +809,7 @@ mod tests {
                 ),
                 liquid(n + 3, "test_brine", ""),
                 plant(n + 4, "moss"),
+                obsidian,
             );
             let m = Arc::new(MaterialTable::from_ron_str(&text).expect("test table loads"));
             let t = EcoTables::load_with_materials(m, ASSETS).expect("Phase 2 tables load");
@@ -765,6 +820,9 @@ mod tests {
             let magma = t.role_material("magma").expect("the magma row resolves");
             let brine = t.materials().id("test_brine").unwrap();
             let moss = t.materials().id("moss").unwrap();
+            let obsidian = t
+                .role_material("obsidian")
+                .expect("the obsidian row resolves");
             Self {
                 t,
                 air,
@@ -774,6 +832,7 @@ mod tests {
                 magma,
                 brine,
                 moss,
+                obsidian,
             }
         }
 
@@ -1489,6 +1548,159 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn contact_boiling_whole_fill_obsidian_one_event() {
+        let f = Fix::new();
+        let st = steam_gas(&f);
+        let steam = LayerId::Gas(st);
+        let hot = 12_000;
+        // Pockets in the slab top: magma with water under it (fill 200) and
+        // full water beside it (+x). Below comes first in sorted order.
+        let magma = CellPos::new(10, SLAB_Y, 10);
+        let under = CellPos::new(10, SLAB_Y - 1, 10);
+        let beside = CellPos::new(11, SLAB_Y, 10);
+        // Two magma cells with one water cell between them: the first in
+        // global order boils it; the second then has no water neighbor.
+        let first = CellPos::new(20, SLAB_Y, 10);
+        let between = CellPos::new(21, SLAB_Y, 10);
+        let second = CellPos::new(22, SLAB_Y, 10);
+        // Magma whose only water neighbor is full: the whole 255 boils.
+        let full = CellPos::new(10, SLAB_Y, 20);
+        let full_under = CellPos::new(10, SLAB_Y - 1, 20);
+        let (mut w, mut pass) = pocket_world(
+            &f,
+            &[
+                (magma, f.magma, 0),
+                (under, f.water, 200),
+                (beside, f.water, 255),
+                (first, f.magma, 0),
+                (between, f.water, 120),
+                (second, f.magma, 0),
+                (full, f.magma, 0),
+                (full_under, f.water, 255),
+            ],
+        );
+        for c in [magma, first, second, full] {
+            w.eco_put_layer(c, LayerId::Temperature, hot);
+        }
+        w.eco_put_layer(under, LayerId::Temperature, 300);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let rev = revision(&w);
+
+        // An iteration on which magma does not move: boiling is not gated
+        // by viscosity.
+        pass.set_iter(1);
+        assert_ne!(1 % pass.magma_period, 0);
+        run_sweep(&mut w, &mut pass, &mut ledger);
+
+        // The water under the magma became air holding its whole fill as
+        // steam; the magma set as obsidian in place, keeping its
+        // temperature.
+        assert_eq!(w.get_cell(under), Some(f.air));
+        assert_eq!(fill(&w, under), 0);
+        assert_eq!(w.layer(under, steam), 200, "the whole fill boils");
+        assert_eq!(temp(&w, under), 300);
+        assert!(
+            in_set(&w, under, SWEEP_GAS + usize::from(st)),
+            "steam joins its sweep"
+        );
+        assert_eq!(w.get_cell(magma), Some(f.obsidian));
+        assert_eq!(temp(&w, magma), hot);
+        assert!(!active(&w, magma), "obsidian leaves the water sweep");
+        // One event per visit: the full water beside it is untouched.
+        assert_eq!(w.get_cell(beside), Some(f.water));
+        assert_eq!(fill(&w, beside), 255);
+        assert_eq!(w.layer(beside, steam), 0);
+        // The shared water cell boiled once, by the first magma cell.
+        assert_eq!(w.get_cell(first), Some(f.obsidian));
+        assert_eq!(w.get_cell(between), Some(f.air));
+        assert_eq!(w.layer(between, steam), 120);
+        assert_eq!(w.get_cell(second), Some(f.magma), "nothing left to boil");
+        assert_eq!(w.get_cell(full), Some(f.obsidian));
+        assert_eq!(w.layer(full_under, steam), 255);
+        assert!(revision(&w) > rev);
+
+        assert_eq!(ledger.boil_to_steam, 200 + 120 + 255, "actual amounts");
+        assert_eq!(ledger.magma_set, 3, "one cell per event");
+        assert_eq!((ledger.magma_melt_in, ledger.magma_edit), (0, 0));
+        assert_eq!(ledger.water_saturation_loss, 0);
+        checker
+            .check(&w, &ledger)
+            .expect("water, steam and magma conserved");
+
+        // Obsidian boils nothing: further sweeps leave the water beside it.
+        for i in 0..pass.flow_iters() {
+            pass.set_iter(i);
+            run_sweep(&mut w, &mut pass, &mut ledger);
+        }
+        assert_eq!(fill(&w, beside), 255);
+        assert_eq!(ledger.magma_set, 3);
+        assert!(
+            !active(&w, under),
+            "visited dry, the air left the water sweep"
+        );
+        checker.check(&w, &ledger).expect("conserved");
+
+        // Face order after below: −z, −x, +x, +z, then above. Each magma
+        // pocket has water in two of its faces; the earlier one boils.
+        let p = |x, z| CellPos::new(x, SLAB_Y, z);
+        let (mz, mx, mp) = (p(5, 5), p(15, 5), p(25, 5));
+        // Moving magma does not boil on that visit: on iteration 0 it drops
+        // into the air pocket under it, away from the water beside it.
+        let (drop_from, drop_to, drop_side) =
+            (p(10, 20), CellPos::new(10, SLAB_Y - 1, 20), p(11, 20));
+        let (mut w, mut pass) = pocket_world(
+            &f,
+            &[
+                (mz, f.magma, 0),
+                (p(5, 4), f.water, 40),
+                (p(4, 5), f.water, 41),
+                (mx, f.magma, 0),
+                (p(14, 5), f.water, 42),
+                (p(16, 5), f.water, 43),
+                (mp, f.magma, 0),
+                (p(26, 5), f.water, 44),
+                (p(25, 6), f.water, 45),
+                (drop_from, f.magma, 0),
+                (drop_to, f.air, 0),
+                (drop_side, f.water, 200),
+            ],
+        );
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        pass.set_iter(0);
+        assert_eq!(0 % pass.magma_period, 0, "magma moves on iteration 0");
+        run_sweep(&mut w, &mut pass, &mut ledger);
+        for (m, boiled, kept) in [
+            (mz, p(5, 4), p(4, 5)),
+            (mx, p(14, 5), p(16, 5)),
+            (mp, p(26, 5), p(25, 6)),
+        ] {
+            assert_eq!(w.get_cell(m), Some(f.obsidian), "{m:?}");
+            assert_eq!(w.get_cell(boiled), Some(f.air), "{boiled:?} boils first");
+            assert_eq!(w.get_cell(kept), Some(f.water), "{kept:?} comes later");
+        }
+        assert_eq!(w.get_cell(drop_to), Some(f.magma), "the magma dropped");
+        assert_eq!(w.get_cell(drop_side), Some(f.water), "and boiled nothing");
+        assert_eq!(ledger.boil_to_steam, 40 + 42 + 44);
+        assert_eq!(ledger.magma_set, 3);
+        // The water beside flowed into the pocket the magma left, over the
+        // magma: next visit, the magma's only water face is above it.
+        let over = drop_from;
+        assert_eq!(w.get_cell(over), Some(f.water));
+        let poured = fill(&w, over);
+        assert!(poured > 0);
+        pass.set_iter(1);
+        run_sweep(&mut w, &mut pass, &mut ledger);
+        // (The boiled cell is air again only until the water beside it,
+        // later in order, flows back in.)
+        assert_eq!(w.get_cell(drop_to), Some(f.obsidian));
+        assert_eq!(ledger.boil_to_steam, 40 + 42 + 44 + i64::from(poured));
+        assert_eq!(ledger.magma_set, 4);
+        checker.check(&w, &ledger).expect("conserved");
     }
 
     // §7.3 A, C and D: condensation, evaporation and rain.
