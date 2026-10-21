@@ -2968,3 +2968,45 @@ Decisions:
 - Rule 21: semantic assertions on `HudState.spoil` and the node's `Visibility`/`Text`, plus screenshots. No pixel thresholds.
 Next: F146 (water tint) is ready; F147 then needs only F146. Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 14:05 — F146 Water tint by dissolved substances — passed
+Done:
+- `assets/eco.ron` has a new `tint` section (SAD-P2 §10 `eco.tint`). Each row gives a substance, an sRGB `color`, `full` (the amount at and above which the tint is at full strength) and `strength` (the share of the color at full strength, out of 255). Shipped rows:
+  - fe: rust (184, 98, 36), full 32, strength 192.
+  - cu: blue-green (60, 170, 150), full 32, strength 160.
+- `rmc_world::query::SubstanceTint { layer, color, full, strength }`, with an integer `share(amount) = min(amount, full) · strength / full`.
+- `rmc_eco::tables`:
+  - `TintDef` rows, parsed with `#[serde(default)]`, so an `eco.ron` without the section still loads.
+  - Validation: each row names a known substance, at most once, with `full` > 0.
+  - `EcoTables::tint()` and `substance_tints()`, which resolve the rows to layers.
+  - The hash covers the rows only when there are some (see Decisions).
+- `rmc_client`:
+  - `ClientEco.tint`, filled by `rmc_app::session::client_eco` and the testkit's `client_eco`.
+  - `MeshInput` gains `tint` and `dissolved`, with `with_tint`, `from_world_tinted`, `substance` and `set_substance`. Only liquid-pass cells bring their amounts. `from_world` is unchanged: no tint.
+  - `liquid_tint` (the F127 hook) applies the rows in order. Each moves the linear RGB toward the row's color by `share / 255`, and the opacity is kept. The color stays in `LiquidKey`, so only equally tinted water merges.
+  - `meshpipe::start_jobs` reads `Option<Res<ClientEco>>` and meshes with its rows. Layer changes already remesh chunks that hold liquid (F127), so a `LayerSnapshot` or `ChunkDelta::Layers` re-tints them.
+Tests added:
+- `rmc_client::mesher::tests::water_color_shifts_with_fe`:
+  - The share curve, and that a row with full 0 never tints.
+  - Without rows, iron does nothing. With the iron row, clean water is unchanged, and the color moves monotonically toward rust up to `full`, flat after. It is redder and less blue, with opacity kept.
+  - All six faces carry the tint, shaded.
+  - A substance without a row does not tint, and the rows compose in order (fe, then cu).
+  - Merging: equal iron merges; unequal iron does not; two cells both at full strength merge.
+  - `from_world_tinted` brings water's iron, but not a wet stone's and not salt's.
+- `rmc_client::meshpipe::tests::liquid_mesh_follows_dissolved_tint`: with `ClientEco` inserted, a `LayerSnapshot` that dissolves iron in a pool re-uploads the same liquid entity. Its colors are the tinted mesher's, and they differ from the clean pool's.
+- `rmc_eco::tables::tests::tint_rows_resolve_to_substance_layers`: shipped rows resolve, fe is among them, the hash moves with a row edit, a file without the section has no tint, and an unknown substance, a duplicate row or full 0 are rejected.
+- E2E `water_tint_shows` (not in the feature's list; added for rule 21):
+  - The client's `ClientEco.tint` equals the host tables' rows.
+  - Before the edit, the pool's chunks mesh untinted. A `SetLayer` of the first row's substance at `full` across the pool reaches the replica, the pool's chunks are meshed again (`jobs_started`), and their tinted liquid colors differ from the untinted ones. The frames differ.
+  - Screenshots: `docs/screens/water_tint_shows-clean-14.png` and `water_tint_shows-23.png`.
+Decisions:
+- The `eco.ron` section is named `tint`, after SAD-P2 §10's "`eco.tint`". It is a list of rows (substance, color, full, strength) applied in order, with a linear-RGB lerp per row.
+  - Only fe and cu ship rows. Iron gives acid mine drainage its orange; copper gives blue-green.
+  - Acid, salt and the rest leave water clear.
+- `EcoTables::hash` folds in the tint rows only when there are some. Tables without the section hash exactly as before F146, so the F100 golden-hash test (`tables_hash_is_stable`, whose fixture has no tint) and the `tables_hash` in older save headers still match. The shipped tables now have rows, so their hash moved, as with any table edit.
+- `rmc_client` still does not depend on `rmc_eco`. The rows travel as `rmc_world::query::SubstanceTint`, so `rmc_app` and `rmc_testkit` each fill `ClientEco.tint` with one line.
+- Rule 21: the semantic assertions are on the mesher's vertex colors (unit tests) and on `ClientEco`, the replica and the remesh (E2E), plus the screenshots. No pixel thresholds.
+  - Render-mode mesh assets are extracted to the render world and cannot be read in the E2E. The upload path is covered by the meshpipe unit test.
+  - At full strength the pool reads mauve-pink over the grass rather than rust orange: the water's blue is still a quarter of the mix. I did not tune it. If the playtester wants orange, raising fe's `strength` or warming its `color` in `eco.ron` is a data-only change.
+Next: F147 (E2E tailings_acidify_downslope) is now unblocked. Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
+Blockers: none.
