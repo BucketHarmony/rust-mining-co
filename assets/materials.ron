@@ -57,11 +57,11 @@
 
     // Limestone (SAD-P2 §5, §8): the band between stone and granite. Porous,
     // so acid water seeps in and dissolve_carbonate fires there; it weathers
-    // slowly and releases lime.
+    // slowly, releases lime, and leaves its residue, clay (§7.5).
     (id: 15, key: "limestone", phase: Solid, tags: ["stone", "carbonate", "porous"],
      hardness: 25, diggable: true, yield_count: 1, color: (196, 188, 160, 255), emissive: 0.0,
      conductivity: 16, heat_capacity: 32, permeability: 32, field_capacity: 24,
-     weathering_rate: 2, composition: [("lime", 120)]),
+     weathering_rate: 2, weathers_to: Some("clay"), composition: [("lime", 120)]),
     // Crushed sulfide (SAD-P2 §5): what sulfide_ore yields. Placeable tailings
     // that hold water and weather fast, releasing the ore's composition.
     (id: 16, key: "crushed_sulfide", phase: Solid, tags: ["sulfide", "porous", "placeable"],
