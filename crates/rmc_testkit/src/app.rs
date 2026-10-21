@@ -308,6 +308,17 @@ impl TestApp {
         self.host.world()
     }
 
+    /// `water_table_y` of column `(x, z)` as worldgen laid it down from
+    /// `assets/worldgen.ron` and `config.seed` (SAD-P2 §8): cells with a
+    /// lower y started below the table. `None` when the params have no
+    /// water table.
+    pub fn water_table_y(&self, x: i32, z: i32) -> Option<i32> {
+        let params = gen_params(&self.config);
+        Generator::new(self.config.seed, &params, self.host_world().materials())
+            .expect("worldgen params fit the table")
+            .water_table_y(x, z)
+    }
+
     pub fn player_id(&self) -> PlayerId {
         self.player
     }
