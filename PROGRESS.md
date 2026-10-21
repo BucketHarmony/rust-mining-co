@@ -2306,3 +2306,32 @@ Decisions:
 - Ran `scripts/e2e.sh dig_straight_down` (passes). The Phase 1 scenarios dig near y 100, far above the table.
 Next: F127 (liquid mesh pass), the first unpassed feature whose blockers all pass.
 Blockers: none.
+
+## 2026-10-21 16:00 — F127 Liquid mesh pass: fill-height top faces, translucency, substance tint hook — passed
+Done:
+- `mesher::is_liquid_pass(def)`: a `Liquid` whose color alpha is below 255. `is_opaque(def)`: a `Solid`, or a `Liquid` outside the liquid pass. The opaque pass culls faces and computes AO against `is_opaque`, so water no longer hides the faces of cells next to it.
+- `MeshInput` carries `fills` (the `Moisture` layer of liquid-pass cells, with the border). `ChunkMesher::mesh_liquid` (default: empty) builds the second `MeshData`. `GreedyMesher` implements it:
+  - the top face sits at `y + fill/255`. It is hidden under the same liquid, or under an opaque cell when the fill is 255;
+  - sides are clipped to the fill. Toward the same liquid, only the part above the neighbour's fill is drawn, and nothing is drawn toward an opaque cell;
+  - the bottom face is drawn only above a cell that is neither opaque nor the same liquid. A cell with fill 0 has no faces;
+  - faces are greedy-merged by (material, color, extent). A partial-height side keeps its row, so stacked partial sides never merge.
+- The greedy merge loop is shared by both passes (`merge_rects`).
+- Color: linear base color with alpha `a/255`, shaded per face, through `liquid_tint(input, cell, base)`, which is the identity until F146.
+- `meshpipe` builds both meshes in one job. Each chunk gets a `LiquidMesh` entity beside its `ChunkMesh`. It is replaced on remesh and despawned when the chunk empties or on Welcome. `MeshStats` gains `chunks_with_liquid` and `liquid_quads`, and `mesh_bytes` counts both passes.
+- `render`: `LiquidMaterial` is one shared `StandardMaterial` (alpha `Blend`, double-sided, low roughness), created when the first `LiquidMesh` appears. Liquid entities get `NotShadowCaster`.
+- `replica`: a `LayerSnapshot` or a `Layers` delta marks a chunk dirty when it holds a liquid-pass material, together with each of its 26 neighbours that does.
+Tests added:
+- `mesher::tests::liquid_top_face_at_fill_height`: top faces at fill/255 for several fills, sides clipped, faces between liquids of different fills, hidden faces under the same liquid and under opaque cells, fill 0 has no faces.
+- `mesher::tests::liquid_faces_in_second_mesh`: water is absent from the opaque mesh and present in the liquid one. A wall beside water keeps its face. An opaque liquid (alpha 255, emissive) stays in the opaque pass, full-cell, with emissive in the alpha channel.
+- `meshpipe::tests::liquid_mesh_uploads_on_its_own_entity`, `render::tests::liquid_meshes_get_shared_blended_material`, `replica::tests::layer_change_marks_chunks_with_liquid`.
+- E2E `liquid_pass_pool` (passes): the testkit pool fixture's water is on `LiquidMesh` entities with the blended `LiquidMaterial`. Screenshot `docs/screens/liquid_pass_pool-14.png`.
+Decisions:
+- Liquid-pass criterion: `phase == Liquid && color[3] < 255`, from data (rule 5). Water (alpha 160) is translucent. Magma (F133) should ship alpha 255 to stay opaque and full-cell in the normal pass, as §10 says.
+- Liquid faces get no AO. Water is lit by the material, and AO would darken the surface along the shore.
+- A top face under an opaque cell is hidden only at fill 255. A partly filled cell under a ceiling shows its surface.
+- One `LiquidMesh` entity per chunk, beside the `ChunkMesh`, not a second mesh on the same entity. Bevy draws one mesh per entity, and blended meshes sort per entity.
+- Layer messages remesh the chunks that hold liquid. §10 says layer messages remesh only while an overlay is active, but fill height is meshed, so a moisture change must reach the water surface. Chunks without liquid still ignore layer messages.
+- The material is created lazily, so worlds without water keep one material asset (an existing render test counts them).
+- Rule 21: the semantic assertions are the mesher, meshpipe and render tests plus the E2E's material and entity checks; the screenshot is for the playtester. No pixel checks.
+Next: F130 (magma as whole-cell liquid), the first unpassed feature whose blockers all pass. F140, F150 and F160 are also ready. F128 waits on F124.
+Blockers: none.
