@@ -251,6 +251,8 @@ pub struct TunnelReport {
     /// The lowest cell coordinate of the tunnel's columns on the axis
     /// across the heading.
     pub first_column: i32,
+    /// How many columns wide the tunnel is.
+    pub width: i32,
     pub swings: u64,
     pub frames: u32,
     /// The feet when the bot started.
@@ -261,10 +263,15 @@ pub struct TunnelReport {
 /// forward, walking in as it goes.
 ///
 /// The heading is the player's yaw snapped to the nearest world axis. The
-/// tunnel is [`TunnelBot::width_cells`] wide, centered as near the
-/// player's feet as the grid allows, and [`TunnelBot::height_cells`] high
-/// from the cell layer the feet stand in. It starts at the first cell
-/// layer ahead with a solid cell in that cross-section.
+/// tunnel is [`TunnelBot::width_cells`] wide if the box, [`SKIN_M`] clear
+/// on each side, already fits in that many columns where it stands, and
+/// is dug around it. Otherwise it is one column wider, centered as near
+/// the player's feet as the grid allows, and the bot steps sideways to its
+/// middle: a walk step (about 0.07 m) is wider than the spare width of a
+/// one-cell tunnel (0.05 m), so the bot could not step into one. The
+/// tunnel is [`TunnelBot::height_cells`] high from the cell layer the feet
+/// stand in. It starts at the first cell layer ahead with a solid cell in
+/// that cross-section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TunnelBot {
     pub length: u32,
@@ -279,6 +286,8 @@ struct Tunnel {
     /// Sign of the player's right on the `across` axis.
     right: i32,
     first_column: i32,
+    /// Columns across.
+    width: i32,
     floor_row: i32,
     start: i32,
 }
@@ -295,7 +304,7 @@ impl Tunnel {
     fn slice(&self, k: i32) -> impl Iterator<Item = CellPos> + '_ {
         (0..TunnelBot::height_cells())
             .rev()
-            .flat_map(move |row| (0..TunnelBot::width_cells()).map(move |c| self.cell(k, c, row)))
+            .flat_map(move |row| (0..self.width).map(move |c| self.cell(k, c, row)))
     }
 
     /// How far along the heading slice `k`'s near face lies, in meters.
@@ -312,7 +321,7 @@ impl Tunnel {
 
     /// The middle of the tunnel on the `across` axis, in meters.
     fn middle(&self) -> f32 {
-        (self.first_column as f32 + TunnelBot::width_cells() as f32 / 2.0) * CELL_SIZE_M
+        (self.first_column as f32 + self.width as f32 / 2.0) * CELL_SIZE_M
     }
 }
 
@@ -364,6 +373,7 @@ impl TunnelBot {
         Ok(TunnelReport {
             cells,
             first_column: tunnel.first_column,
+            width: tunnel.width,
             swings: swings(t) - swings0,
             frames: t.frame() - frame0,
             start,
@@ -382,13 +392,25 @@ impl TunnelBot {
         let along = if forward.x != 0 { 0 } else { 2 };
         let across = 2 - along;
         let feet = t.player().pos;
-        let width_m = Self::width_cells() as f32 * CELL_SIZE_M;
+        // The columns the box, SKIN_M clear on each side, covers now.
+        let half = PLAYER_WIDTH_M / 2.0 + SKIN_M;
+        let covered = |edge: f32| ((feet[across] + edge) / CELL_SIZE_M).floor() as i32;
+        let (lo, hi) = (covered(-half), covered(half));
+        let (first_column, width) = if hi - lo < Self::width_cells() {
+            (lo, Self::width_cells())
+        } else {
+            let width = Self::width_cells() + 1;
+            let width_m = width as f32 * CELL_SIZE_M;
+            let first = ((feet[across] - width_m / 2.0) / CELL_SIZE_M).round() as i32;
+            (first, width)
+        };
         let mut tunnel = Tunnel {
             along,
             sign: forward[along],
             across,
             right: right[across],
-            first_column: ((feet[across] - width_m / 2.0) / CELL_SIZE_M).round() as i32,
+            first_column,
+            width,
             // Grounded feet rest SKIN_M above the floor; allow as much below.
             floor_row: ((feet.y + SKIN_M) / CELL_SIZE_M).floor() as i32,
             start: 0,
@@ -410,9 +432,14 @@ impl TunnelBot {
     }
 
     /// Steps sideways until the box is clear of the tunnel's side walls by
-    /// at least half the spare width on each side.
+    /// at least a quarter of the spare width on each side. A tunnel of
+    /// [`TunnelBot::width_cells`] is laid out only where the box already
+    /// fits, [`SKIN_M`] clear, and needs no step.
     fn center(&self, t: &mut TestApp, tunnel: &Tunnel) -> Result<(), BotError> {
-        let spare = Self::width_cells() as f32 * CELL_SIZE_M - PLAYER_WIDTH_M;
+        if tunnel.width == Self::width_cells() {
+            return Ok(());
+        }
+        let spare = tunnel.width as f32 * CELL_SIZE_M - PLAYER_WIDTH_M;
         let tolerance = spare / 4.0;
         let offset = |t: &TestApp| tunnel.middle() - t.player().pos[tunnel.across];
         if offset(t).abs() <= tolerance {
@@ -1190,6 +1217,10 @@ mod tests {
 
         let report = TunnelBot::new(3).run(&mut t).expect("the bot digs");
         assert_eq!(report.first_column, 34);
+        // At x = 17.3 m the box straddles columns 34 and 35: one wider
+        // than the fewest cells it fits.
+        assert_eq!(report.width, TunnelBot::width_cells() + 1);
+        assert_eq!(report.width, 2);
         assert_eq!(report.start.x, 17.3);
         let mut want: Vec<CellPos> = (0..3)
             .flat_map(|k| {

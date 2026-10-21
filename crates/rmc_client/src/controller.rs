@@ -1185,6 +1185,118 @@ mod tests {
         assert!(player.grounded && (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M);
     }
 
+    /// Whether the box's footprint lies inside cell column (`x`, `z`).
+    fn inside_column(player: &Player, x: i32, z: i32) -> bool {
+        let b = player.aabb();
+        let (lo_x, lo_z) = (x as f32 * S, z as f32 * S);
+        b.min.x >= lo_x && b.max.x <= lo_x + S && b.min.z >= lo_z && b.max.z <= lo_z + S
+    }
+
+    #[test]
+    fn player_drops_into_one_cell_hole() {
+        // The box is narrower than a cell (owner change F094), so a player
+        // over a one-cell hole falls into it instead of resting on the rims.
+        // Digging straight down: the player stands in the middle of cell
+        // column (32, 32); the floor cell under it goes, then the next one.
+        let mut world = floor_world();
+        let mut player = Player::at(Vec3::new(16.25, 2.0, 16.25));
+        run(&world, &mut player, MoveInput::default(), 5);
+        assert!(player.grounded);
+        for (cell_y, floor_m) in [(3, 1.5), (2, 1.0)] {
+            fill(
+                &mut world,
+                (32, cell_y, 32),
+                (32, cell_y, 32),
+                MaterialId::AIR,
+            );
+            run(&world, &mut player, MoveInput::default(), 60);
+            assert!(player.grounded, "lands in the hole: {:?}", player.feet);
+            assert!(
+                (player.feet.y - floor_m).abs() <= 2.0 * SKIN_M,
+                "feet on the hole floor at {floor_m} m: {}",
+                player.feet.y
+            );
+            assert!(inside_column(&player, 32, 32), "{:?}", player.feet);
+        }
+
+        // Dropped from above, a player over an open one-cell hole falls to
+        // its bottom.
+        let mut world = floor_world();
+        fill(&mut world, (32, 2, 32), (32, 3, 32), MaterialId::AIR);
+        let mut player = Player::at(Vec3::new(16.25, 3.0, 16.25));
+        run(&world, &mut player, MoveInput::default(), 120);
+        assert!(player.grounded);
+        assert!(
+            (player.feet.y - 1.0).abs() <= 2.0 * SKIN_M,
+            "at the bottom of the hole: {}",
+            player.feet.y
+        );
+    }
+
+    #[test]
+    fn player_fits_one_cell_shaft() {
+        // A stone block with its top at 12.0 m, a one-cell shaft down its
+        // cell column (32, 32) to a floor at 2.0 m, and a one-cell-wide,
+        // four-cell-tall corridor from the shaft's bottom along -Z to a
+        // face at z = 10.0 m.
+        let mut world = air_world(64);
+        let id = stone(&world);
+        fill(&mut world, (24, 0, 16), (40, 23, 40), id);
+        fill(&mut world, (32, 4, 32), (32, 23, 32), MaterialId::AIR);
+        fill(&mut world, (32, 4, 20), (32, 7, 31), MaterialId::AIR);
+
+        // Dropped at the shaft's mouth, the player falls all the way down,
+        // never touching the walls.
+        let mut player = Player::at(Vec3::new(16.25, 12.5, 16.25));
+        run(&world, &mut player, MoveInput::default(), 240);
+        assert!(player.grounded);
+        assert!(
+            (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M,
+            "at the shaft's bottom: {:?}",
+            player.feet
+        );
+        assert!(inside_column(&player, 32, 32), "{:?}", player.feet);
+
+        // Walking back and strafing into the shaft's walls stops at them (forward
+        // is the corridor); a jump rises inside the shaft and lands back on
+        // its floor.
+        for (forward, right) in [(-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            let input = MoveInput {
+                forward,
+                right,
+                ..MoveInput::default()
+            };
+            run(&world, &mut player, input, 30);
+            assert!(
+                inside_column(&player, 32, 32),
+                "{input:?}: {:?}",
+                player.feet
+            );
+            assert!(player.grounded);
+        }
+        let floor = player.feet.y;
+        run(&world, &mut player, JUMP, 1);
+        assert!(!player.grounded && player.feet.y > floor);
+        run(&world, &mut player, MoveInput::default(), 120);
+        assert!(player.grounded && (player.feet.y - floor).abs() <= 2.0 * SKIN_M);
+        assert!(inside_column(&player, 32, 32), "{:?}", player.feet);
+
+        // Forward (-Z) the corridor leads out of the shaft to its end face.
+        run(&world, &mut player, FORWARD, 180);
+        let b = player.aabb();
+        assert!(
+            (b.min.z - 10.0).abs() <= 2.0 * SKIN_M,
+            "walked to the corridor's end: {:?}",
+            player.feet
+        );
+        assert!(
+            b.min.x >= 16.0 && b.max.x <= 16.5,
+            "stays in the corridor: {:?}",
+            player.feet
+        );
+        assert!(player.grounded && (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M);
+    }
+
     #[test]
     fn embedded_player_is_pushed_out() {
         let config = ControllerConfig::default();

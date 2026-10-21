@@ -197,6 +197,7 @@ fn dig(t: &mut TestApp) {
     // centered on the player's column, the bot's height up from the floor.
     let (width, height) = (TunnelBot::width_cells(), TunnelBot::height_cells());
     let first_column = report.first_column;
+    assert_eq!(report.width, width, "the box fits one column: no wider");
     let tunnel: Vec<CellPos> = (0..LENGTH as i32)
         .flat_map(|k| {
             (0..width).flat_map(move |i| {

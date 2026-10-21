@@ -15,9 +15,11 @@ use serde::{Deserialize, Serialize};
 /// Version 2 is Phase 2: snapshots carry layers and plants, and seasons.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// Width and depth of a player's box, in meters (SAD §11.4). The box's
-/// bottom face is centered on `PlayerState::pos`, the feet.
-pub const PLAYER_WIDTH_M: f32 = 0.6;
+/// Width and depth of a player's box, in meters. The box's bottom face is
+/// centered on `PlayerState::pos`, the feet. Narrower than a cell, so the
+/// player fits a one-cell hole or shaft: an owner change (F094) to SAD
+/// §11.4's 0.6 m.
+pub const PLAYER_WIDTH_M: f32 = 0.45;
 /// Height of a player's box, in meters (SAD §11.4).
 pub const PLAYER_HEIGHT_M: f32 = 1.7;
 
