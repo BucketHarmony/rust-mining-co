@@ -21,6 +21,8 @@ pub const LAYER_CAVE_WORM_B: u32 = 0x0302;
 pub const LAYER_ORE: u32 = 0x0400;
 /// Layer id of the crystal placement hash.
 pub const LAYER_CRYSTAL: u32 = 0x0500;
+/// Layer id of the water table's offset (SAD-P2 §8).
+pub const LAYER_WATER_TABLE: u32 = 0x0600;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in

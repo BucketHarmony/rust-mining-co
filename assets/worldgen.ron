@@ -71,4 +71,16 @@
     // floor_cells layers and the wall_cells columns at each x and z edge,
     // full height. The material must be solid and not diggable.
     bedrock: (material: "bedrock", floor_cells: 2, wall_cells: 1),
+    // SAD-P2 §8: below each column's water_table_y = level + offset (offset
+    // in [-amplitude, amplitude] from the noise), porous solids start at
+    // their field_capacity and caves are flooded (fill 255). Applied last,
+    // after the shell. Amplitude 0 keeps the table level, so the flooded
+    // caves start at rest. The level sits 22..42 cells under the surface,
+    // where the initial temperature is above freezing; fit_to scales it with
+    // the world's height.
+    water_table: Some((
+        level: 64,
+        amplitude: 0,
+        noise: (frequency: 0.02, octaves: 2),
+    )),
 )

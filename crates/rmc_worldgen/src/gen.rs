@@ -13,10 +13,11 @@ use rmc_world::materials::{MaterialId, MaterialTable};
 
 use crate::noise::{
     LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_CRYSTAL, LAYER_ORE, LAYER_SOIL,
-    LAYER_STRATA, LAYER_SURFACE, NoiseLayer, cell_hash,
+    LAYER_STRATA, LAYER_SURFACE, LAYER_WATER_TABLE, NoiseLayer, cell_hash,
 };
 use crate::params::{GenError, GenParams, ONE_MILLION};
 use crate::temperature::TemperatureInit;
+use crate::water::WaterTableInit;
 
 /// Tag every soil layer material must carry.
 pub const SOIL_TAG: &str = "soil";
@@ -147,6 +148,13 @@ impl Shell {
     }
 }
 
+/// The water table's shape (SAD-P2 §8).
+struct WaterTable {
+    level: i32,
+    amplitude: i32,
+    noise: NoiseLayer,
+}
+
 /// Generation for one seed, parameter set and material table. Build it
 /// once and call [`Generator::generate`] for each chunk; it is `Sync`, so
 /// chunks can generate in parallel.
@@ -166,6 +174,10 @@ pub struct Generator {
     stone: Vec<bool>,
     /// The initial temperature layer (SAD-P2 §8), when set.
     temperature: Option<TemperatureInit>,
+    /// The water table's shape, when the params have one.
+    water_table: Option<WaterTable>,
+    /// Lays down the water table (SAD-P2 §8), when set.
+    water: Option<WaterTableInit>,
 }
 
 fn resolve(
@@ -302,6 +314,12 @@ impl Generator {
             shell,
             stone,
             temperature: None,
+            water_table: params.water_table.as_ref().map(|w| WaterTable {
+                level: w.level,
+                amplitude: w.amplitude,
+                noise: NoiseLayer::new(seed, LAYER_WATER_TABLE, &w.noise),
+            }),
+            water: None,
         })
     }
 
@@ -312,9 +330,36 @@ impl Generator {
         self
     }
 
+    /// Also lays down the water table (SAD-P2 §8) when the params have
+    /// one: caves below it flooded, porous cells below it at field
+    /// capacity. Without it, or without `water_table` in the params, the
+    /// world is dry, as in Phase 1.
+    pub fn with_water_table(mut self, init: WaterTableInit) -> Self {
+        self.water = Some(init);
+        self
+    }
+
+    /// `water_table_y` of column `(x, z)`: cells with a lower y are below
+    /// the table. `None` when the params have no water table.
+    pub fn water_table_y(&self, x: i32, z: i32) -> Option<i32> {
+        self.water_table
+            .as_ref()
+            .map(|w| w.level + w.noise.offset_2d(x, z, w.amplitude))
+    }
+
     /// The chunk at `pos`, with revision 0 and not modified.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
         let mut chunk = Chunk::new(self.volume(pos).to_storage());
+        if let Some(w) = &self.water
+            && self.water_table.is_some()
+        {
+            w.fill(
+                &mut chunk,
+                pos,
+                |x, z| self.surface_height(x, z),
+                |x, z| self.water_table_y(x, z).unwrap_or(i32::MIN),
+            );
+        }
         if let Some(t) = &self.temperature {
             let bottom_y = self.shell.bounds.min.0.y;
             t.fill(&mut chunk, pos, bottom_y, |x, z| self.surface_height(x, z));

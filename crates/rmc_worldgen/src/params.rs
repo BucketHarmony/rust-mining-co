@@ -129,6 +129,21 @@ pub struct CrystalParams {
     pub chance_per_million: u32,
 }
 
+/// The water table (SAD-P2 §8): porous cells below it hold their
+/// `field_capacity` of moisture and caves below it are flooded. Each column
+/// has its own table at `water_table_y = level + offset`, the offset in
+/// `-amplitude..=amplitude` from the table's noise. With amplitude 0 the
+/// table is level, so the water worldgen places is at rest; a tilted table
+/// spills into the caves beside it once the water sweep visits it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaterTableParams {
+    /// Mean y of the table: cells with a lower y are below it.
+    pub level: i32,
+    /// The table moves by up to this many cells.
+    pub amplitude: i32,
+    pub noise: NoiseParams,
+}
+
 /// The world's extent in cells, both corners included (SAD §5). Step 6
 /// builds its shell inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +186,9 @@ pub struct GenParams {
     pub ores: Vec<OreVein>,
     pub crystals: CrystalParams,
     pub bedrock: BedrockParams,
+    /// SAD-P2 §8; `None` (the default) leaves the world dry.
+    #[serde(default)]
+    pub water_table: Option<WaterTableParams>,
 }
 
 #[derive(Debug, Error)]
@@ -381,26 +399,42 @@ impl GenParams {
 
         check_cells("bedrock.floor_cells", self.bedrock.floor_cells)?;
         check_cells("bedrock.wall_cells", self.bedrock.wall_cells)?;
+
+        if let Some(w) = &self.water_table {
+            if !(-MAX_BASE_HEIGHT..=MAX_BASE_HEIGHT).contains(&w.level) {
+                return Err(invalid(
+                    "water_table.level",
+                    format!("{} must be within ±{MAX_BASE_HEIGHT}", w.level),
+                ));
+            }
+            check_cells("water_table.amplitude", w.amplitude)?;
+            w.noise.validate("water_table.noise")?;
+        }
         Ok(())
     }
 
     /// These parameters for a world of `bounds`: the bounds replaced and the
-    /// surface's base height moved to the same fraction of the world's
-    /// height (truncating), so a lower world keeps its share of ground and
-    /// sky (SAD-P2 §2: the 64-cell-high Phase 2 world). Everything else is
-    /// kept. Bounds of the same height and floor give these parameters
+    /// surface's base height and the water table's level moved to the same
+    /// fraction of the world's height (truncating), so a lower world keeps
+    /// its share of ground and sky (SAD-P2 §2: the 64-cell-high Phase 2
+    /// world). Everything else is kept. Bounds of the same height and floor give these parameters
     /// unchanged. Fails if the result does not validate or the highest
     /// surface does not lie below the top cell.
     pub fn fit_to(&self, bounds: WorldBounds) -> Result<Self, GenError> {
         let (old_floor, new_floor) = (self.bounds.min[1], bounds.min[1]);
         let old_height = i64::from(self.bounds.max[1]) - i64::from(old_floor) + 1;
         let new_height = i64::from(bounds.max[1]) - i64::from(new_floor) + 1;
-        let above_floor = i64::from(self.surface.base_height) - i64::from(old_floor);
-        let base = i64::from(new_floor) + above_floor * new_height / old_height;
+        let scale = |field: &str, y: i32| {
+            let above_floor = i64::from(y) - i64::from(old_floor);
+            let fitted = i64::from(new_floor) + above_floor * new_height / old_height;
+            i32::try_from(fitted).map_err(|_| invalid(field, format!("{fitted} overflows i32")))
+        };
         let mut fitted = self.clone();
         fitted.bounds = bounds;
-        fitted.surface.base_height = i32::try_from(base)
-            .map_err(|_| invalid("surface.base_height", format!("{base} overflows i32")))?;
+        fitted.surface.base_height = scale("surface.base_height", self.surface.base_height)?;
+        if let Some(w) = &mut fitted.water_table {
+            w.level = scale("water_table.level", w.level)?;
+        }
         fitted.validate()?;
         let highest = i64::from(fitted.surface.base_height) + i64::from(fitted.surface.amplitude);
         if highest >= i64::from(bounds.max[1]) {
