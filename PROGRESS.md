@@ -3041,3 +3041,38 @@ Next:
 - The screenshot shows the pile and both swales under the rain sheet left by the last wet season. The F146 tint in the polluted swale is hard to see under it. The playtester should judge this at the E3 milestone.
 - Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 18:55 — F148 E2E: limestone_channel_clears — passed
+Done:
+- E2E `limestone_channel_clears` (`tests/e2e/tests/limestone_channel_clears.rs`), on the `Swale(3)` fixture. It is the F147 layout with the swale two steps lower, so two slope steps lie between the pile and the swale.
+  - The site is split in two halves, as in F147: a soil plug in the swale, a 2-high soil ridge down the slope, and rims along the outer z edges and the top of the slope.
+  - Each half has the same damp `crushed_sulfide` pile (dx 2..=7, 2 levels; the unlined half's is mirrored in z), a pool at fill 64 in its swale, and the shared sump.
+  - The half's slope between its rim and the ridge (dz 1..=13, mirrored for the other half) is the channel. In the lined half, the top 4 cells of that strip are limestone, from under the pile (dx 2) to the column before the swale (dx 15). The unlined half keeps the fixture soil.
+  - Seasons as in F147: rain `[0, 0, 24, 24]` at 10 °C.
+  - Asserts:
+    - the dry seasons oxidize;
+    - the rain washes acid out of both piles;
+    - the lined swale's water has pH ≥ 6;
+    - the channel holds salt;
+    - the lined swale holds less acid than the unlined swale.
+  - Last run:
+    - Lined swale: acid 248, pH 7. Unlined swale: acid 402, pH 6.
+    - Limestone floor: salt 58, acid 1511, lime 0.
+- Screenshot: `docs/screens/limestone_channel_clears-24.png`.
+Tests added: E2E `limestone_channel_clears`.
+Decisions:
+- "Limestone-floored channel" here means the half's slope strip, floored with limestone and walled by the soil rim and ridge, with no trench cut.
+  - A 2-deep trench cut into limestone (like `Fixture::Channel`) pooled deep, dilute water over the lining. Transport moves `x·mob·amount/256/fill` per move, and with small seep amounts against fill near 255 that truncates to 0. The lining took 24 acid in total, and neutralize never fired.
+  - An uncut floor on the two steps downhill of the pile did no better (lining acid 15, salt 0). Rain filled the limestone (field capacity 24) before the acid wave arrived, and a full cell takes nothing in.
+  - So the floor starts under the pile. The pile drains into it (seepage goes below first, §7.3) at the pile's own acid-to-water ratio, which is concentrated enough for `PhBelow(4)` (acid ≥ 16 at moisture ≤ 24).
+- The floor is 4 cells deep. At 2 deep, salt formed (54), but the full floor passed the second wet season's acid on, and the lined swale ended with more acid than the unlined one (415 vs 402).
+- The unlined-half comparison is not in the SAD's assert list. I added it so the pH ≥ 6 check means something: on this lower swale the unlined swale also ends at pH 6 by dilution.
+- No table or rate was changed.
+Next:
+- Milestone E3 (F140–F148) is complete. E3 is not on the playtester list.
+- For the owner (game design): with the shipped tables, limestone mostly *holds back* acid in its pore water rather than neutralizing it. Here it held 1511 acid against 58 salt (about 87 acid neutralized).
+  - `dissolve_carbonate` needs pH < 4 (acid − lime ≥ 16) in the limestone cell. It fires once per sub-step, and the next sub-step's `neutralize` takes the cell back to pH 4. A cell therefore neutralizes at most about 1.5 acid per sub-step, and only while it is fed strongly acid water.
+  - Limestone's own lime (composition 120) is never released at `weathering_rate` 2, because `120·2/256` truncates to 0.
+  - If the SAD's "a channel neutralizes the water that passes through it" should hold more strongly, the levers are data: the dissolve threshold or amount in `reactions.ron`, or limestone's `weathering_rate`.
+- Ready next: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
+Blockers: none.
