@@ -274,6 +274,84 @@ pub fn flat_sweep_water(flat: &mut FlatWorld, ids: &WaterRef) {
     });
 }
 
+/// The material and constants the gas reference reads for one gas.
+#[derive(Clone, Debug)]
+pub struct GasRef {
+    /// Role `air` (the one `Phase::Air` material): gas moves only between
+    /// air cells.
+    pub air: MaterialId,
+    /// The gas's layer index.
+    pub gas: u8,
+    /// `density` of the gas's row: negative rises, positive sinks.
+    pub density: i32,
+    /// `diffusion` of the gas's row.
+    pub diffusion: i32,
+    /// `eco.drift_shift`.
+    pub drift_shift: u8,
+    /// `eco.diff_shift`.
+    pub diff_shift: u8,
+}
+
+/// The most gas a cell holds.
+const REF_GAS_FULL: i32 = u8::MAX as i32;
+
+/// One sweep of one gas (SAD-P2 §7.4 steps 1 and 2) over every cell of
+/// `flat` in global order, written directly on the flat arrays for the
+/// oracle tests of [`GasPass`](crate::gases::GasPass).
+pub fn flat_sweep_gas(flat: &mut FlatWorld, ids: &GasRef) {
+    let layer = LayerId::Gas(ids.gas);
+    let is_air = |flat: &FlatWorld, c: CellPos| flat.material(c) == Some(ids.air);
+    let rate = ids.density.abs() * (1 << ids.drift_shift);
+    let give = |flat: &mut FlatWorld, from: CellPos, to: CellPos, amount: i32| {
+        flat.set_layer(from, layer, flat.layer(from, layer) - amount);
+        flat.set_layer(to, layer, flat.layer(to, layer) + amount);
+    };
+    flat_sweep(flat, |flat, cell| {
+        if !is_air(flat, cell) || flat.layer(cell, layer) == 0 {
+            return;
+        }
+        let c = cell.0;
+        let at = |dx: i32, dy: i32, dz: i32| CellPos::new(c.x + dx, c.y + dy, c.z + dz);
+        // 1. Drift: up for a light gas, down for a heavy one.
+        let drift_to = match ids.density {
+            d if d < 0 => Some(at(0, 1, 0)),
+            d if d > 0 => Some(at(0, -1, 0)),
+            _ => None,
+        };
+        if let Some(n) = drift_to.filter(|&n| is_air(flat, n)) {
+            let room = REF_GAS_FULL - flat.layer(n, layer);
+            let amount = flat.layer(cell, layer).min(rate).min(room);
+            if amount > 0 {
+                give(flat, cell, n, amount);
+            }
+        }
+        // 2. Diffusion into each lower air neighbor, below first.
+        let six = [
+            at(0, -1, 0),
+            at(0, 0, -1),
+            at(-1, 0, 0),
+            at(1, 0, 0),
+            at(0, 0, 1),
+            at(0, 1, 0),
+        ];
+        for n in six {
+            if !is_air(flat, n) {
+                continue;
+            }
+            let (v, v_n) = (flat.layer(cell, layer), flat.layer(n, layer));
+            if v_n >= v {
+                continue;
+            }
+            let amount = ((v - v_n) * ids.diffusion / (1 << ids.diff_shift))
+                .min(REF_GAS_FULL - v_n)
+                .min(v);
+            if amount > 0 {
+                give(flat, cell, n, amount);
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

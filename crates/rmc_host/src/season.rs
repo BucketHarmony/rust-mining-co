@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use rmc_eco::ledger::merge;
 use rmc_eco::runner::activate_holders;
-use rmc_eco::{Activity, EcoTables, Exec, WaterPass, season_tick};
+use rmc_eco::{Activity, EcoTables, Exec, GasPass, WaterPass, season_tick};
 use rmc_protocol::{SeasonReport, ServerMsg};
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::PlayerId;
@@ -56,8 +56,8 @@ impl Seasons {
     }
 
     /// Prepares a (new) world for seasons: installs the tables'
-    /// displacement rules, fills the water sweep's active set (worldgen and
-    /// loads keep none) and forgets the activity and edits of the world
+    /// displacement rules, fills the water and gas sweeps' active sets
+    /// (worldgen and loads keep none) and forgets the activity and edits of the world
     /// before. The season count goes on.
     pub(crate) fn install(&mut self, world: &mut World) {
         assert_eq!(
@@ -67,6 +67,9 @@ impl Seasons {
         );
         world.set_eco_rules(self.tables.displacement_rules());
         activate_holders(world, &WaterPass::new(&self.tables));
+        for gas in GasPass::all(&self.tables) {
+            activate_holders(world, &gas);
+        }
         self.activity = Activity::new(self.tables.params().quiet_skip);
         self.between_seasons = SeasonLedger::default();
     }

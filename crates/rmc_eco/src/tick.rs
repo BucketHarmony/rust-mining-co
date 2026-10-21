@@ -16,6 +16,7 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
+use crate::gases::GasPass;
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
@@ -44,6 +45,8 @@ struct Passes {
     temperature: TemperaturePass,
     transitions: TransitionsPass,
     water: WaterPass,
+    /// One sweep per gas row, in row order.
+    gases: Vec<GasPass>,
     weathering: WeatheringPass,
 }
 
@@ -66,6 +69,7 @@ pub fn season_tick(
         temperature: TemperaturePass::new(tables, season),
         transitions: TransitionsPass::new(tables),
         water: WaterPass::new(tables),
+        gases: GasPass::all(tables),
         weathering: WeatheringPass::new(tables),
     };
     let mut report = TickReport::default();
@@ -115,6 +119,12 @@ fn substep(
     for i in 0..passes.water.flow_iters() {
         passes.water.set_iter(i);
         let r = run_sweep(world, &mut passes.water, &mut report.ledger);
+        report
+            .active_cells_per_sweep
+            .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
+    }
+    for gas in &mut passes.gases {
+        let r = run_sweep(world, gas, &mut report.ledger);
         report
             .active_cells_per_sweep
             .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
@@ -279,5 +289,39 @@ mod tests {
                 assert_ne!(a.hash(), d.hash(), "seed {seed}: season row ignored");
             }
         }
+    }
+
+    #[test]
+    fn gas_sweeps_run_after_water() {
+        let t = tables();
+        let substeps = usize::from(t.seasons().substeps);
+        let sweeps = usize::from(t.params().flow_iters) + t.gases().len();
+        let mut w = random_world(&t, 3);
+        // A pocket of a light gas in the open air, under another air cell.
+        let gas = t.role_gas("firedamp").expect("firedamp role");
+        let is_air = |w: &World, c: CellPos| w.get_cell(c) == Some(MaterialId::AIR);
+        let up = |c: CellPos| CellPos::new(c.0.x, c.0.y + 1, c.0.z);
+        let cell = crate::reference::global_order(w.bounds())
+            .find(|&c| c.0.y >= 16 && is_air(&w, c) && is_air(&w, up(c)))
+            .expect("open air above the ground");
+        w.eco_put_layer(cell, LayerId::Gas(gas), 200);
+        let checker = crate::invariants::InvariantChecker::new(&w);
+        let mut activity = Activity::new(t.params().quiet_skip);
+
+        let r = season_tick(&mut w, &t, 0, &mut activity, Exec::Serial);
+
+        // Every sub-step: the flow sweeps, then one sweep per gas row.
+        assert_eq!(r.active_cells_per_sweep.len(), substeps * sweeps);
+        let gas_visits: u32 = r
+            .active_cells_per_sweep
+            .chunks(sweeps)
+            .map(|s| s[usize::from(t.params().flow_iters) + usize::from(gas)])
+            .sum();
+        assert!(gas_visits > 0, "the gas sweep visited the pocket");
+        assert!(w.layer(cell, LayerId::Gas(gas)) < 200, "the gas moved");
+        assert!(w.layer(up(cell), LayerId::Gas(gas)) > 0, "and rose");
+        checker
+            .check(&w, &r.ledger)
+            .expect("conserved over the tick");
     }
 }
