@@ -1,6 +1,6 @@
 # Rust Mining Co
 
-A co-op voxel mining game in Rust and [Bevy](https://bevy.org) 0.20: fantasy with a little steampunk, in the vein of Deep Rock Galactic. It is also a platform for trying gameplay loops on one shared world simulation.
+A co-op fantasy voxel mining game, with a little steampunk, in Rust and [Bevy](https://bevy.org) 0.20. It is also a platform for trying gameplay loops on one shared world simulation.
 
 ![Generated terrain](docs/screens/horizon_readable-north-81.png)
 

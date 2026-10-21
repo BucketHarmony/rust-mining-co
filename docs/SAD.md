@@ -10,7 +10,7 @@
 
 ## 1. Purpose
 
-Rust Mining Co is a co-op mining game in the vein of Deep Rock Galactic, reworked as fantasy with mild steampunk: pickaxes, steam-powered tools, and static encounters with goblins, spiders, ogres and owlbears. The long-term plan extends into ecology, gardening, base building and defense. The project is a platform for trying different gameplay loops on one shared world simulation.
+Rust Mining Co is a co-op fantasy mining game with mild steampunk: pickaxes, steam-powered tools, and static encounters with goblins, spiders, ogres and owlbears. The long-term plan extends into ecology, gardening, base building and defense. The project is a platform for trying different gameplay loops on one shared world simulation.
 
 This document covers **Phase 1: the voxel world and the mechanisms that read and change it**, built by Claude Code in an overnight, unattended run. Phase 1 ends with a single player walking through a generated cave world, digging with a pickaxe, placing and removing cells with a debug brush, and saving and loading. Every world change travels through the same host/replica message path that co-op will use later.
 
