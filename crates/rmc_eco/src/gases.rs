@@ -26,8 +26,17 @@
 //!    the water total's `steam_vent_out` (SAD-P2 §7: steam's `vent_out`
 //!    equals `steam_vent_out`).
 //!
-//! [`Emission`] (step 4) runs once after every gas's sweep. Ignition (step
-//! 5) takes its place in the flammable gas's sweep.
+//! 5. **ignition** (flammable gases only): a cell still holding
+//!    `c ≥ ignite_min` with a face neighbor that is a `heat_source`
+//!    material or the `magma` role burns. The gas goes (`react_out`), the
+//!    `smoke` role on the cell gains `min(c, room)` (`react_in` books the
+//!    actual), and every in-bounds, resident, `diggable` cell of
+//!    `Sphere { center: cell, radius: (c / 64) · ignite_radius_per_64 }`
+//!    becomes air through `World::eco_set` in the shape's (y, z, x) order,
+//!    so the §7.0 rules handle the displaced layers. No yields. Ledger
+//!    `ignitions`.
+//!
+//! [`Emission`] (step 4) runs once after every gas's sweep.
 //! [`reference::flat_sweep_gas`] is the flat-array oracle of steps 1 to 3.
 //!
 //! [`reference::flat_sweep_gas`]: crate::reference::flat_sweep_gas
@@ -37,6 +46,7 @@ use rmc_world::coords::{CHUNK_VOLUME, CellPos, LocalPos};
 use rmc_world::layers::{LayerId, SWEEP_GAS};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, Phase};
+use rmc_world::shape::Shape;
 use rmc_world::world::World;
 
 use crate::reference::order_key;
@@ -61,7 +71,30 @@ pub struct GasPass {
     steam: bool,
     /// Per material id: whether it is `Phase::Air`.
     air: Vec<bool>,
+    /// Step 5, for a flammable gas whose tables name an `air` role.
+    ignite: Option<Ignite>,
 }
+
+/// How a flammable gas ignites (SAD-P2 §7.4 step 5).
+#[derive(Clone, Debug)]
+struct Ignite {
+    /// `ignite_min` of the gas's row.
+    min: i32,
+    /// `ignite_radius_per_64` of the gas's row.
+    radius_per_64: i32,
+    /// The `smoke` role's layer index, if the tables name one.
+    smoke: Option<u8>,
+    /// The `air` role: what the sphere's cells become.
+    air: MaterialId,
+    /// Per material id: a `heat_source` material or the `magma` role.
+    hot: Vec<bool>,
+    /// Per material id: `diggable`.
+    diggable: Vec<bool>,
+}
+
+/// The concentration per `ignite_radius_per_64` step of the blast radius
+/// (`(c / 64) · ignite_radius_per_64`, SAD-P2 §7.4).
+const IGNITE_UNIT: i32 = 64;
 
 /// The most gas an air cell holds.
 const FULL: i32 = u8::MAX as i32;
@@ -80,6 +113,22 @@ impl GasPass {
         let def = &tables.gases()[usize::from(gas)];
         let params = tables.params();
         let rate = (u32::from(def.density.unsigned_abs()) << params.drift_shift) as i32;
+        let magma = tables.role_material("magma");
+        let ignite = match (def.flammable, tables.role_material("air")) {
+            (true, Some(air)) => Some(Ignite {
+                min: i32::from(def.ignite_min),
+                radius_per_64: i32::from(def.ignite_radius_per_64),
+                smoke: tables.role_gas("smoke"),
+                air,
+                hot: tables
+                    .materials()
+                    .iter()
+                    .map(|d| d.heat_source.is_some() || Some(d.id) == magma)
+                    .collect(),
+                diggable: tables.materials().iter().map(|d| d.diggable).collect(),
+            }),
+            _ => None,
+        };
         let drift = match def.density.signum() {
             0 => None,
             s if s < 0 => Some((ABOVE, rate)),
@@ -96,6 +145,7 @@ impl GasPass {
                 .iter()
                 .map(|d| d.phase == Phase::Air)
                 .collect(),
+            ignite,
         }
     }
 
@@ -146,6 +196,53 @@ impl GasPass {
         ctx.receive(to);
         c - amount
     }
+
+    /// Step 5 at `cell`, which holds `c` of the gas: burns it if it is at
+    /// least `ignite_min` and a face neighbor is hot. Returns whether it
+    /// ignited.
+    fn ignite(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, c: i32) -> bool {
+        let Some(ig) = &self.ignite else {
+            return false;
+        };
+        if c == 0 || c < ig.min {
+            return false;
+        }
+        let flag = |v: &[bool], m: MaterialId| v.get(usize::from(m.0)).copied().unwrap_or(false);
+        let hot = SIX.iter().any(|&d| {
+            ctx.world
+                .get_cell(offset(cell, d))
+                .is_some_and(|m| flag(&ig.hot, m))
+        });
+        if !hot {
+            return false;
+        }
+        ctx.world.eco_put_layer(cell, self.layer(), 0);
+        ctx.ledger.react_out[usize::from(self.gas)] += i64::from(c);
+        if let Some(smoke) = ig.smoke {
+            let layer = LayerId::Gas(smoke);
+            let have = ctx.world.layer(cell, layer);
+            let add = c.min(FULL - have);
+            if add > 0 {
+                // The cell joins the smoke sweep (`eco_put_layer`).
+                ctx.world.eco_put_layer(cell, layer, have + add);
+                ctx.ledger.react_in[usize::from(smoke)] += i64::from(add);
+            }
+        }
+        let radius = (c / IGNITE_UNIT) * ig.radius_per_64;
+        let sphere = Shape::Sphere {
+            center: cell,
+            radius: u16::try_from(radius).unwrap_or(u16::MAX),
+        };
+        let bounds = ctx.world.bounds();
+        for n in sphere.cells().filter(|&n| bounds.contains(n)) {
+            // `get_cell` is `None` for a non-resident chunk.
+            if ctx.world.get_cell(n).is_some_and(|m| flag(&ig.diggable, m)) {
+                ctx.world.eco_set(n, ig.air, ctx.ledger);
+            }
+        }
+        ctx.ledger.ignitions += 1;
+        true
+    }
 }
 
 impl SweepPass for GasPass {
@@ -187,12 +284,15 @@ impl SweepPass for GasPass {
         // 3. Vent what is left of a sky-open cell's gas.
         if c > 0 && cell.0.y > i32::from(ctx.world.surface_y(cell.0.x, cell.0.z)) {
             ctx.world.eco_put_layer(cell, self.layer(), 0);
-            let c = i64::from(c);
-            ctx.ledger.vent_out[usize::from(self.gas)] += c;
+            let vented = i64::from(c);
+            ctx.ledger.vent_out[usize::from(self.gas)] += vented;
             if self.steam {
-                ctx.ledger.steam_vent_out += c;
+                ctx.ledger.steam_vent_out += vented;
             }
+            c = 0;
         }
+        // 5. Ignition of what is left next to heat.
+        self.ignite(ctx, cell, c);
     }
 
     /// Air cells holding the gas. Other cells never hold gas: the
@@ -1169,6 +1269,276 @@ mod tests {
         want.vent_out[usize::from(st)] = 222;
         assert_eq!(ledger, want, "the vent is the pond's whole boil");
         assert_eq!(total(&w, steam), row_fill);
+    }
+
+    /// Every cell's material over the resident chunks of `w`.
+    fn materials_of(w: &World) -> BTreeMap<CellPos, MaterialId> {
+        global_order(w.bounds())
+            .filter_map(|c| Some((c, w.get_cell(c)?)))
+            .collect()
+    }
+
+    /// SAD-P2 §7.4 step 5 on two blasts in a world of two chunks of which
+    /// only the first is resident:
+    ///
+    /// - A: firedamp 200 over magma, with smoke 100 already on the cell, so
+    ///   smoke gains its room (155), not 200. Radius `(200 / 64) · 2 = 6`.
+    ///   The sphere holds stone, bedrock (not diggable), the magma (not
+    ///   diggable), water (fill 150: through `eco_set` it boils to steam),
+    ///   ice (fill 200, kept as moisture), and limestone wet with 20 and
+    ///   holding acid 250 under a plant that holds acid 20. The limestone
+    ///   keeps its moisture and acid as air, the plant dies (its species'
+    ///   litter goes into the cell), and the 15 of its acid that finds no
+    ///   room is `saturation_loss`.
+    /// - B: firedamp 128 beside `magma_source` (a `heat_source`), radius 4,
+    ///   at z = 2 next to the non-resident chunk: cells out of bounds and in
+    ///   the missing chunk are skipped.
+    ///
+    /// Exactly the diggable cells of the two spheres become air, the ledger
+    /// is exactly the reactions, the boil and the displacement loss, and
+    /// every invariant holds.
+    #[test]
+    fn ignition_clears_diggable_sphere_smoke_by_room_displacement_ledgered() {
+        let t = tables_with_gases(STILL);
+        let fd = t.role_gas("firedamp").unwrap();
+        let smoke = t.role_gas("smoke").unwrap();
+        let steam = t.role_gas("steam").unwrap();
+        let acid = t.role_substance("acid").unwrap();
+        let air = t.role_material("air").unwrap();
+        let (stone, bedrock, limestone) = (id(&t, "stone"), id(&t, "bedrock"), id(&t, "limestone"));
+        let (water, ice) = (
+            t.role_material("water").unwrap(),
+            t.role_material("ice").unwrap(),
+        );
+        let (magma, source) = (
+            t.role_material("magma").unwrap(),
+            t.role_material("magma_source").unwrap(),
+        );
+        assert!(t.gases()[usize::from(fd)].flammable);
+
+        let a = CellPos::new(10, 10, 10);
+        let b = CellPos::new(30, 20, 2);
+        let wet = CellPos::new(12, 10, 10);
+        let frozen = CellPos::new(10, 10, 12);
+        let porous = CellPos::new(10, 11, 10);
+        let plant_cell = CellPos::new(10, 12, 10);
+        let mats = [
+            (a, air),
+            (CellPos::new(10, 9, 10), magma),
+            (CellPos::new(8, 10, 10), bedrock),
+            (wet, water),
+            (frozen, ice),
+            (porous, limestone),
+            (plant_cell, air),
+            (b, air),
+            (CellPos::new(31, 20, 2), source),
+        ];
+        let mut w = World::new(Arc::clone(t.materials()), two_chunks());
+        w.set_eco_rules(t.displacement_rules());
+        let mut chunk = Chunk::uniform(stone);
+        for &(c, m) in &mats {
+            chunk.storage.set(c.split().1, m);
+        }
+        w.insert_chunk(ChunkPos::new(0, 0, 0), chunk).unwrap();
+        assert!(w.chunk(ChunkPos::new(1, 0, 0)).is_none());
+        w.eco_put_layer(a, LayerId::Gas(fd), 200);
+        w.eco_put_layer(a, LayerId::Gas(smoke), 100);
+        w.eco_put_layer(b, LayerId::Gas(fd), 128);
+        w.eco_put_layer(wet, LayerId::Moisture, 150);
+        w.eco_put_layer(frozen, LayerId::Moisture, 200);
+        w.eco_put_layer(porous, LayerId::Moisture, 20);
+        w.eco_put_layer(porous, LayerId::Substance(acid), 250);
+        let mut held = [0; rmc_world::layers::N_SUBSTANCES];
+        held[usize::from(acid)] = 20;
+        w.eco_put_plant(
+            plant_cell,
+            Some(rmc_world::layers::PlantState {
+                species: 0,
+                stress: 0,
+                age_seasons: 0,
+                held,
+            }),
+        );
+
+        let before = materials_of(&w);
+        let spheres = [(a, 6), (b, 4)].map(|(center, radius)| Shape::Sphere { center, radius });
+        let in_sphere = |c: CellPos| spheres.iter().any(|s| s.cells().any(|n| n == c));
+        let want_mats: BTreeMap<CellPos, MaterialId> = before
+            .iter()
+            .map(|(&c, &m)| {
+                let diggable = t.materials().get(m).unwrap().diggable;
+                (c, if diggable && in_sphere(c) { air } else { m })
+            })
+            .collect();
+        // The fixture puts every kind of cell inside a sphere.
+        for &(c, _) in &mats {
+            assert!(in_sphere(c), "{c:?}");
+        }
+
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut passes = GasPass::all(&t);
+        run_sweep(&mut w, &mut passes[usize::from(fd)], &mut ledger);
+        checker.check(&w, &ledger).unwrap_or_else(|v| panic!("{v}"));
+
+        assert_eq!(
+            materials_of(&w),
+            want_mats,
+            "exactly the diggable sphere cells clear"
+        );
+        for (c, m) in [
+            (CellPos::new(8, 10, 10), bedrock),
+            (CellPos::new(10, 9, 10), magma),
+            (CellPos::new(31, 20, 2), source),
+            (CellPos::new(16, 10, 10), air),
+            (CellPos::new(17, 10, 10), stone),
+            (CellPos::new(30, 24, 2), air),
+            (CellPos::new(30, 25, 2), stone),
+            (CellPos::new(10, 16, 10), air),
+            (CellPos::new(10, 17, 10), stone),
+        ] {
+            assert_eq!(w.get_cell(c), Some(m), "{c:?}");
+        }
+
+        let mut want = SeasonLedger::default();
+        want.react_out[usize::from(fd)] = 200 + 128;
+        want.react_in[usize::from(smoke)] = 155 + 128;
+        want.ignitions = 2;
+        want.boil_to_steam = 150;
+        want.saturation_loss[usize::from(acid)] = 15;
+        want.plants_died = 1;
+        let organic = t.role_substance("organic").unwrap();
+        let litter = i32::from(t.plants()[0].litter);
+        want.litter_in[usize::from(organic)] = i64::from(litter);
+        assert_eq!(ledger, want);
+
+        for (c, layer, v) in [
+            (a, LayerId::Gas(fd), 0),
+            (a, LayerId::Gas(smoke), 255),
+            (b, LayerId::Gas(fd), 0),
+            (b, LayerId::Gas(smoke), 128),
+            (wet, LayerId::Moisture, 0),
+            (wet, LayerId::Gas(steam), 150),
+            (frozen, LayerId::Moisture, 200),
+            (porous, LayerId::Moisture, 20),
+            (porous, LayerId::Substance(acid), 255),
+            (porous, LayerId::Substance(organic), litter),
+        ] {
+            assert_eq!(w.layer(c, layer), v, "{layer:?} at {c:?}");
+        }
+        assert!(w.plant(plant_cell).is_none(), "the plant died");
+        assert!(
+            active(&w, a, &passes[usize::from(smoke)]),
+            "smoke joins its sweep"
+        );
+        assert!(
+            active(&w, wet, &passes[usize::from(steam)]),
+            "steam joins its sweep"
+        );
+        for c in [frozen, porous] {
+            let (pos, local) = c.split();
+            let water_set = &w.chunk(pos).unwrap().active[rmc_world::layers::SWEEP_WATER];
+            assert!(water_set.contains(local), "{c:?} joins the water sweep");
+        }
+
+        // The gas is spent: the next sweeps of every gas burn nothing.
+        let after = materials_of(&w);
+        for _ in 0..4 {
+            sweep_all(&mut w, &mut passes, &mut ledger);
+            checker.check(&w, &ledger).unwrap_or_else(|v| panic!("{v}"));
+        }
+        assert_eq!(materials_of(&w), after);
+        assert_eq!(ledger, want, "later sweeps book nothing");
+    }
+
+    /// No ignition without a flammable gas at `ignite_min` face-adjacent
+    /// to a `heat_source` material or magma: firedamp 63 over magma,
+    /// firedamp 64 with magma only on an edge diagonal, firedamp 64 beside
+    /// stone at 1300 °C (hot, but not a heat source), and steam, chokedamp
+    /// and smoke at 255 over magma. A control at exactly 64 beside
+    /// `magma_source` ignites (radius 2) once. Repeated sweeps change
+    /// nothing else.
+    #[test]
+    fn no_ignition_below_min() {
+        let shipped = tables();
+        let fd = shipped.role_gas("firedamp").unwrap();
+        for (g, def) in shipped.gases().iter().enumerate() {
+            assert_eq!(def.flammable, g == usize::from(fd), "{}", def.key);
+        }
+        assert_eq!(shipped.gases()[usize::from(fd)].ignite_min, 64);
+
+        let t = tables_with_gases(STILL);
+        let fd = t.role_gas("firedamp").unwrap();
+        let smoke = t.role_gas("smoke").unwrap();
+        let air = t.role_material("air").unwrap();
+        let magma = t.role_material("magma").unwrap();
+        let source = t.role_material("magma_source").unwrap();
+        let stone = id(&t, "stone");
+        let p1 = CellPos::new(4, 4, 4);
+        let p2 = CellPos::new(10, 4, 4);
+        let p3 = CellPos::new(16, 4, 4);
+        let p4 = CellPos::new(4, 10, 4);
+        let control = CellPos::new(24, 20, 20);
+        let hot_stone = CellPos::new(5, 10, 4);
+        let mats = [
+            (p1, air),
+            (CellPos::new(4, 3, 4), magma),
+            (p2, air),
+            (CellPos::new(11, 3, 4), magma),
+            (p3, air),
+            (CellPos::new(16, 3, 4), magma),
+            (p4, air),
+            (control, air),
+            (CellPos::new(24, 20, 21), source),
+        ];
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 31, 31));
+        let mut w = built(&t, bounds, |c| {
+            mats.iter().find(|&&(p, _)| p == c).map(|&(_, m)| m)
+        });
+        let cases = [(p1, 63), (p2, 64), (p4, 64), (control, 64)];
+        for &(c, v) in &cases {
+            w.eco_put_layer(c, LayerId::Gas(fd), v);
+        }
+        let others: Vec<u8> = (0..t.gases().len() as u8).filter(|&g| g != fd).collect();
+        for &g in &others {
+            w.eco_put_layer(p3, LayerId::Gas(g), 255);
+        }
+        w.eco_put_layer(hot_stone, LayerId::Temperature, 13000);
+        assert_eq!(w.get_cell(hot_stone), Some(stone));
+        assert!(t.materials().get(stone).unwrap().heat_source.is_none());
+
+        let before = materials_of(&w);
+        let sphere = Shape::Sphere {
+            center: control,
+            radius: 2,
+        };
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut passes = GasPass::all(&t);
+        let mut want = SeasonLedger::default();
+        want.react_out[usize::from(fd)] = 64;
+        want.react_in[usize::from(smoke)] = 64;
+        want.ignitions = 1;
+        for sweep in 0..8 {
+            sweep_all(&mut w, &mut passes, &mut ledger);
+            checker
+                .check(&w, &ledger)
+                .unwrap_or_else(|v| panic!("sweep {sweep}: {v}"));
+            assert_eq!(ledger, want, "sweep {sweep}");
+            for (&c, &m) in &before {
+                let blown = m == stone && sphere.cells().any(|n| n == c);
+                let m = if blown { air } else { m };
+                assert_eq!(w.get_cell(c), Some(m), "sweep {sweep}: {c:?}");
+            }
+            for &(c, v) in &cases[..3] {
+                assert_eq!(w.layer(c, LayerId::Gas(fd)), v, "{c:?}");
+            }
+            for &g in &others {
+                assert_eq!(w.layer(p3, LayerId::Gas(g)), 255, "gas {g}");
+            }
+        }
+        assert_eq!(w.layer(control, LayerId::Gas(fd)), 0);
+        assert_eq!(w.layer(control, LayerId::Gas(smoke)), 64);
     }
 
     proptest! {
