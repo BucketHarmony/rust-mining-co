@@ -408,7 +408,12 @@ mod tests {
     fn yields_match_table() {
         let table = table_with(&[("barren", 30, 0), ("rich", 30, 3), ("richest", 30, 255)]);
 
-        // Every diggable solid material yields itself, yield_count times.
+        // Every diggable solid material yields itself (or its
+        // yield_material, SAD-P2 §7.5), yield_count times.
+        let yielded = |m: MaterialId| {
+            let def = table.get(m).unwrap();
+            def.yield_material.as_deref().map_or(m, |k| id(&table, k))
+        };
         for def in table.iter().filter(|d| d.diggable && d.is_solid()) {
             let mut w = world(table.clone(), &def.key);
             let r = hit(&mut w, 1, cell(1, 2, 3), u16::MAX);
@@ -416,7 +421,7 @@ mod tests {
             let expected = if def.yield_count == 0 {
                 vec![]
             } else {
-                vec![(def.id, u32::from(def.yield_count))]
+                vec![(yielded(def.id), u32::from(def.yield_count))]
             };
             assert_eq!(r.yields, expected, "{}", def.key);
         }
@@ -451,7 +456,7 @@ mod tests {
         let stone_yield = u32::from(table.get(stone).unwrap().yield_count);
         let mut expected = vec![
             (stone, 4 * stone_yield),
-            (copper, 4 * copper_yield),
+            (yielded(copper), 4 * copper_yield),
             (rich, 12),
             (richest, 4 * 255),
         ];
