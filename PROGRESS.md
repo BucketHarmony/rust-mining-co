@@ -2794,3 +2794,43 @@ Decisions:
 - Reviewer: PASS, no blocking gaps. On its notes I added the tick-level test and recorded the `SWEEP_TRANSPORT` decision.
 Next: F142 (pH derivation and reactions runner) is now unblocked. Also ready: F151, F152, F154, F160. E2's playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 19:10 — F142 pH derivation and reactions runner (table order, first match, where-conditions) — passed
+Done:
+- New `rmc_eco::chemistry::ReactionsPass`, a Jacobi pass (§3).
+  - On each cell it tries the `reactions.ron` rows in table order. The first row whose consumed amounts are all on the cell and whose conditions all hold fires, once per cell per sub-step.
+  - Conditions:
+    - `Exposed`: an air face neighbor.
+    - `Submerged`: the cell is water, or the cell above is.
+    - `PhBelow(n)` / `PhAbove(n)`: `chemistry::ph`, the one F141 added.
+    - `Evaporating`: see Decisions.
+    - `Tag(t)`: per-material tag tables built from the rows.
+  - Firing writes the net `produce − consume` onto the cell's own layers. `react_delta` books the net and `saturation_loss` the produce above 255. `WeatherBoost(n)` adds regolith, saturating.
+  - A chunk with no layer for some consumed substance of a row skips that row.
+- `Evaporation` records the cells it took water from. `take_evaporated()` hands them over and empties the record.
+- `season_tick`: after Transport, each sub-step hands the evaporated set to the pass. It then runs the pass as `JacobiKind::Reactions` through `Activity`, reported as `PassId::Reactions`.
+Tests added:
+- `chemistry::tests::ph_derivation_i32_no_underflow`: every (lime, acid) pair at every shift 0..=30 against an i64 reference, truncation toward zero, and the clamps. A `PhBelow(1)` row fires at acid 255 / lime 0 and not the other way round.
+- `each_reaction_fires_only_on_condition`, data-driven over the shipped table, each row alone:
+  - every condition met fires exactly the row's net change and ledger;
+  - failing any one condition (both ways for `Evaporating`), or one unit short of any consumed amount, changes nothing;
+  - all six condition kinds are covered;
+  - `Evaporating` is also fed by a real evaporation sweep.
+- `reaction_order_precedence`:
+  - synthetic rows: first match wins, swapping the order flips the result, an unavailable or condition-failing row falls through, and one fire per pass;
+  - shipped table: on acidic limestone, neutralize beats dissolve_carbonate while lime is present, and dissolve_carbonate (with its WeatherBoost) fires without it.
+- `react_delta_and_saturation_loss_balance`:
+  - hand overflow case, with a row that consumes and produces the same substance;
+  - 32 random 8-chunk worlds × 3 passes: invariants are exact, parallel equals serial, and both terms are non-zero.
+- Test updates in the feature commit, as F125 and F140 did:
+  - `tick::tests::whole_tick_deterministic_100` and `rmc_host season::tests::advance_season_roundtrip` now expect `4 * substeps` Jacobi entries.
+  - `invariants_hold_after_each_pass_20_worlds` expects `(i, PassId::Reactions)` after Transport. It also requires some world to book `react_delta`, which adds a check.
+Decisions:
+- "First match" means the first row whose conditions hold and whose consumed amounts are available. With conditions alone, `neutralize` (`where: []`) would block every later row on every cell.
+- `Evaporating` holds when the evaporation step (§7.3 C) took water from the cell in this sub-step and the cell's moisture is now below `evap_low_fill`. The cell's current material is not checked, so a cell that dried out to air in that step (fill 0) still counts. That is where a drying pool leaves its salt.
+- Ledger follows weathering's precedent: `react_delta` is the net change the row asks for, and `saturation_loss` is the part that found no room. Their difference is the actual change.
+- Chemistry order inside a sub-step: transport, then reactions, as listed in §7.6.
+- The `Coat` (F144) and `EmitGas` (F155) sides are not applied yet. Their rows still fire and consume, booked as `react_delta`. Until F144, ochre's `fe` and salt_crust's `salt` leave the world through the ledger and no crust forms. Until F155, decompose emits no chokedamp. The invariants hold throughout.
+- Activity: `Evaporating` reads the evaporated set from outside the chunk view. Any evaporation changes the cell's moisture, which bumps `eco_revision` and wakes the chunk, so a skipped chunk never misses a newly evaporated cell.
+Next: F143 (oxidation, neutralization, carbonate, copper under acid) is now unblocked, and so are F144, F145 and F155 (once F150 is in). Also ready: F146, F151, F152, F154, F160. E2's playtester run is still outstanding.
+Blockers: none.
