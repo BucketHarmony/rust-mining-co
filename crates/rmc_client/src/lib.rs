@@ -44,7 +44,8 @@ pub use hud::{
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
-    ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveFromAlpha, EmissiveMaterialPlugin,
+    CELL_JITTER_AMPLITUDE, CELL_JITTER_INSET_M, ChunkEmissiveMaterial, EmissiveChunkMaterial,
+    EmissiveFromAlpha, EmissiveMaterialPlugin, cell_jitter, fragment_cell,
 };
 pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
 pub use meshpipe::{
