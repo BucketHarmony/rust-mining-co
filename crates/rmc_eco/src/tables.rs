@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rmc_world::EcoRules;
+use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -347,6 +348,8 @@ fn parse<T: serde::de::DeserializeOwned>(
 pub struct EcoTables {
     materials: Arc<MaterialTable>,
     substances: Vec<SubstanceDef>,
+    /// The substance keys in row order: row `i` is `LayerId::Substance(i)`.
+    substance_layers: SubstanceLayers,
     gases: Vec<GasDef>,
     transitions: Vec<TransitionDef>,
     reactions: Vec<ReactionDef>,
@@ -431,6 +434,8 @@ impl EcoTables {
                 material_ref(m);
             }
         }
+        let substance_layers = SubstanceLayers::new(substances.iter().map(|s| s.key.as_str()))
+            .map_err(|e| invalid(SUBSTANCES_FILE, e.to_string()))?;
         let sub_keys: BTreeSet<&str> = substances.iter().map(|s| s.key.as_str()).collect();
 
         unique_keys(GASES_FILE, "gas", gases.iter().map(|g| &g.key))?;
@@ -602,6 +607,7 @@ impl EcoTables {
         let mut tables = Self {
             materials,
             substances,
+            substance_layers,
             gases,
             transitions,
             reactions,
@@ -665,6 +671,11 @@ impl EcoTables {
         &self.substances
     }
 
+    /// Substance keys to layers, by row order (SAD-P2 §7.6).
+    pub fn substance_layers(&self) -> &SubstanceLayers {
+        &self.substance_layers
+    }
+
     pub fn gases(&self) -> &[GasDef] {
         &self.gases
     }
@@ -704,7 +715,10 @@ impl EcoTables {
 
     /// Layer index of a substance key.
     pub fn substance_index(&self, key: &str) -> Option<u8> {
-        index_of(self.substances.iter().map(|s| &s.key), key)
+        match self.substance_layers.layer(key)? {
+            LayerId::Substance(i) => Some(i),
+            _ => None,
+        }
     }
 
     /// Layer index of a gas key.

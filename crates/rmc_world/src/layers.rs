@@ -9,8 +9,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::coords::{CHUNK_VOLUME, LocalPos};
+use crate::materials::MaterialDef;
 
 /// Substance layers per chunk (SAD-P2 §3: ten `u8` layers).
 pub const N_SUBSTANCES: usize = 10;
@@ -80,6 +82,84 @@ impl LayerId {
             LayerId::Light => [5, 0],
             LayerId::Growth => [6, 0],
         }
+    }
+}
+
+/// Why a substance key list is not a valid table.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SubstanceLayersError {
+    #[error("{0} substances; expected 1..={N_SUBSTANCES}")]
+    Count(usize),
+    #[error("substance key {0:?} is empty or duplicate")]
+    BadKey(String),
+}
+
+/// The substance keys of `substances.ron` in row order (SAD-P2 §7.6): row
+/// `i` is stored in [`LayerId::Substance`]`(i)`. `rmc_eco` loads the table;
+/// this is the part `rmc_world` needs to name a substance's layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubstanceLayers {
+    keys: Vec<String>,
+}
+
+impl SubstanceLayers {
+    /// From the keys in table order: 1..=[`N_SUBSTANCES`], unique and
+    /// non-empty.
+    pub fn new<I, S>(keys: I) -> Result<Self, SubstanceLayersError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let keys: Vec<String> = keys.into_iter().map(Into::into).collect();
+        if keys.is_empty() || keys.len() > N_SUBSTANCES {
+            return Err(SubstanceLayersError::Count(keys.len()));
+        }
+        for (i, k) in keys.iter().enumerate() {
+            if k.is_empty() || keys[..i].contains(k) {
+                return Err(SubstanceLayersError::BadKey(k.clone()));
+            }
+        }
+        Ok(Self { keys })
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Never true: a table has at least one substance.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// The layer of substance `key`, if the table has it.
+    pub fn layer(&self, key: &str) -> Option<LayerId> {
+        let i = self.keys.iter().position(|k| k == key)?;
+        Some(LayerId::Substance(u8::try_from(i).ok()?))
+    }
+
+    /// The substance key stored in `id`, if `id` is a substance layer of
+    /// this table.
+    pub fn key(&self, id: LayerId) -> Option<&str> {
+        match id {
+            LayerId::Substance(i) => self.keys.get(usize::from(i)).map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// Every `(layer, key)` in table order.
+    pub fn iter(&self) -> impl Iterator<Item = (LayerId, &str)> + '_ {
+        (0u8..)
+            .zip(&self.keys)
+            .map(|(i, k)| (LayerId::Substance(i), k.as_str()))
+    }
+
+    /// A material's `composition` as `(layer, amount)` in its listed order;
+    /// `None` if it names a substance the table lacks.
+    pub fn composition(&self, def: &MaterialDef) -> Option<Vec<(LayerId, u8)>> {
+        def.composition
+            .iter()
+            .map(|(k, amount)| Some((self.layer(k)?, *amount)))
+            .collect()
     }
 }
 
@@ -781,5 +861,159 @@ mod tests {
         s.insert(cells[2]);
         s.clear();
         assert_eq!(s.heap_bytes(), 0);
+    }
+
+    const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
+
+    /// The fields of a `substances.ron` row this crate reads; `rmc_eco`
+    /// owns the full row.
+    #[derive(Deserialize)]
+    struct SubstanceRow {
+        key: String,
+        #[serde(default)]
+        yield_material: Option<String>,
+    }
+
+    fn shipped_substance_rows() -> Vec<SubstanceRow> {
+        let text = std::fs::read_to_string(format!("{ASSETS}/substances.ron"))
+            .expect("assets/substances.ron reads");
+        ron::from_str(&text).expect("assets/substances.ron parses")
+    }
+
+    #[test]
+    fn substance_layers_index_by_table() {
+        use crate::materials::{MaterialTable, Phase};
+
+        // Row i of substances.ron is LayerId::Substance(i) (SAD-P2 §3, §7.6).
+        let rows = shipped_substance_rows();
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["cu", "fe", "s", "acid", "lime", "salt", "n", "p", "k", "c"]
+        );
+        let table = SubstanceLayers::new(keys.iter().copied()).unwrap();
+        assert_eq!(table.len(), N_SUBSTANCES);
+        assert!(!table.is_empty());
+        for (i, key) in keys.iter().enumerate() {
+            let id = LayerId::Substance(i as u8);
+            assert!(id.is_valid());
+            assert!(!id.is_i16() && !id.is_dense());
+            assert_eq!(table.layer(key), Some(id), "{key}");
+            assert_eq!(table.key(id), Some(*key));
+        }
+        assert_eq!(
+            table.iter().collect::<Vec<_>>(),
+            keys.iter()
+                .enumerate()
+                .map(|(i, &k)| (LayerId::Substance(i as u8), k))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(table.layer("gold"), None);
+        assert_eq!(table.key(LayerId::Substance(N_SUBSTANCES as u8)), None);
+        assert_eq!(table.key(LayerId::Moisture), None);
+        assert_eq!(table.key(LayerId::Gas(0)), None);
+
+        // The layers are separate stores: each substance written at a cell
+        // reads back alone, and a chunk compacts the untouched ones away.
+        let at = LocalPos::new(7, 30, 2);
+        let mut layers = ChunkLayers::default();
+        for (id, _) in table.iter() {
+            let LayerId::Substance(i) = id else {
+                unreachable!()
+            };
+            layers.set_u8(id, at, 10 + i);
+        }
+        let lime = table.layer("lime").unwrap();
+        layers.set_u8(lime, at, 0);
+        layers.compact();
+        for (id, key) in table.iter() {
+            let LayerId::Substance(i) = id else {
+                unreachable!()
+            };
+            let want = if key == "lime" { 0 } else { 10 + i };
+            assert_eq!(layers.get_u8(id, at), want, "{key}");
+            assert_eq!(layers.get_u8(id, LocalPos::new(7, 30, 3)), 0, "{key}");
+            assert_eq!(layers.contains(id), key != "lime", "{key}");
+        }
+
+        // Every composition in the shipped material table names a
+        // substance layer, in its listed order.
+        let materials = MaterialTable::load(format!("{ASSETS}/materials.ron")).unwrap();
+        for d in materials.iter() {
+            let got = table.composition(d).unwrap_or_else(|| {
+                panic!("{} names an unknown substance: {:?}", d.key, d.composition)
+            });
+            let want: Vec<(LayerId, u8)> = d
+                .composition
+                .iter()
+                .map(|(k, a)| (table.layer(k).unwrap(), *a))
+                .collect();
+            assert_eq!(got, want, "{}", d.key);
+        }
+        let comp = |key: &str| {
+            table
+                .composition(materials.get(materials.id(key).unwrap()).unwrap())
+                .unwrap()
+        };
+        let (cu, fe, s) = (
+            table.layer("cu").unwrap(),
+            table.layer("fe").unwrap(),
+            table.layer("s").unwrap(),
+        );
+        assert_eq!(comp("sulfide_ore"), [(cu, 60), (fe, 40), (s, 80)]);
+        assert_eq!(comp("crushed_sulfide"), comp("sulfide_ore"));
+        assert_eq!(comp("limestone"), [(lime, 120)]);
+
+        // Each substance's yield material (SAD-P2 §5) is a placeable,
+        // diggable solid that holds that substance and no other.
+        let mut yields = 0;
+        for (i, row) in rows.iter().enumerate() {
+            let Some(key) = &row.yield_material else {
+                continue;
+            };
+            yields += 1;
+            let d = materials
+                .get(materials.id(key).unwrap_or_else(|| panic!("no {key}")))
+                .unwrap();
+            assert_eq!(d.phase, Phase::Solid, "{key}");
+            assert!(d.diggable && d.has_tag("placeable"), "{key}");
+            assert!(d.yield_count > 0 && d.yield_material.is_none(), "{key}");
+            let held = table.composition(d).unwrap();
+            assert_eq!(held.len(), 1, "{key}");
+            assert_eq!(held[0].0, LayerId::Substance(i as u8), "{key}");
+            assert!(held[0].1 > 0, "{key}");
+        }
+        assert_eq!(yields, 3);
+
+        // An unknown composition key resolves to nothing.
+        let mut odd = materials
+            .get(materials.id("limestone").unwrap())
+            .unwrap()
+            .clone();
+        odd.composition.push(("gold".into(), 1));
+        assert_eq!(table.composition(&odd), None);
+
+        // A table is 1..=N_SUBSTANCES unique, non-empty keys.
+        let none: [&str; 0] = [];
+        assert_eq!(
+            SubstanceLayers::new(none),
+            Err(SubstanceLayersError::Count(0))
+        );
+        let eleven = (0..=N_SUBSTANCES).map(|i| format!("x{i}"));
+        assert_eq!(
+            SubstanceLayers::new(eleven),
+            Err(SubstanceLayersError::Count(N_SUBSTANCES + 1))
+        );
+        assert_eq!(
+            SubstanceLayers::new(["cu", "fe", "cu"]),
+            Err(SubstanceLayersError::BadKey("cu".into()))
+        );
+        assert_eq!(
+            SubstanceLayers::new(["cu", ""]),
+            Err(SubstanceLayersError::BadKey(String::new()))
+        );
+        let one = SubstanceLayers::new(["c"]).unwrap();
+        assert_eq!(one.layer("c"), Some(LayerId::Substance(0)));
+        assert_eq!(one.key(LayerId::Substance(1)), None);
     }
 }

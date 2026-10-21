@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9dec90cb8efc312624abcdedf7dbf263019d53cf1fc8f4e417feb8182c99304e # shrinks to specs = [(false, 0, []), (false, 0, []), (false, 0, []), (false, 0, []), (false, 0, []), (false, 0, [])], order = [0, 1, 2, 3, 4, 5], commands = [(Set(MaterialId(0)), Cell(CellPos(IVec3(0, 0, 0))), 1)]

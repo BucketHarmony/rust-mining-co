@@ -14,9 +14,10 @@ use rmc_world::materials::{MaterialId, MaterialTable};
 use crate::magma::{Chamber, ChamberCell, Chambers, MagmaInit};
 use crate::noise::{
     LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_CRYSTAL, LAYER_ORE, LAYER_SOIL,
-    LAYER_STRATA, LAYER_SURFACE, LAYER_WATER_TABLE, NoiseLayer, cell_hash,
+    LAYER_SURFACE, LAYER_WATER_TABLE, NoiseLayer, cell_hash,
 };
 use crate::params::{GenError, GenParams, ONE_MILLION};
+use crate::strata::Strata;
 use crate::temperature::TemperatureInit;
 use crate::water::WaterTableInit;
 
@@ -76,13 +77,6 @@ struct SoilLayer {
     min_cells: i32,
     max_cells: i32,
     noise: NoiseLayer,
-}
-
-struct Stratum {
-    material: MaterialId,
-    /// Boundary under this stratum (before noise) and its noise; `None` for
-    /// the last stratum.
-    until: Option<(i32, NoiseLayer)>,
 }
 
 struct Caves {
@@ -164,8 +158,7 @@ pub struct Generator {
     surface_amplitude: i32,
     surface: NoiseLayer,
     soil: Vec<SoilLayer>,
-    boundary_amplitude: i32,
-    strata: Vec<Stratum>,
+    strata: Strata,
     caves: Caves,
     /// Top priority first.
     ores: Vec<Ore>,
@@ -185,7 +178,7 @@ pub struct Generator {
     magma: Option<(MaterialId, MaterialId)>,
 }
 
-fn resolve(
+pub(crate) fn resolve(
     materials: &MaterialTable,
     field: String,
     key: &str,
@@ -227,28 +220,7 @@ impl Generator {
                 })
             })
             .collect::<Result<_, GenError>>()?;
-        let st = &params.strata;
-        let strata = st
-            .layers
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                Ok(Stratum {
-                    material: resolve(
-                        materials,
-                        format!("strata.layers[{i}]"),
-                        &l.material,
-                        STONE_TAG,
-                    )?,
-                    until: l.until_depth.map(|d| {
-                        (
-                            d,
-                            NoiseLayer::new(seed, LAYER_STRATA + i as u32, &st.boundary_noise),
-                        )
-                    }),
-                })
-            })
-            .collect::<Result<_, GenError>>()?;
+        let strata = Strata::new(seed, &params.strata, materials)?;
         let c = &params.caves;
         let caves = Caves {
             surface_margin: c.surface_margin,
@@ -311,7 +283,6 @@ impl Generator {
             surface_amplitude: params.surface.amplitude,
             surface: NoiseLayer::new(seed, LAYER_SURFACE, &params.surface.noise),
             soil,
-            boundary_amplitude: st.boundary_amplitude,
             strata,
             caves,
             ores,
@@ -632,12 +603,7 @@ impl Generator {
                     end += l.noise.pick_2d(cx, cz, l.min_cells, l.max_cells);
                     soil_ends.push(end);
                 }
-                strata_ends.clear();
-                strata_ends.extend(self.strata.iter().filter_map(|s| {
-                    s.until.as_ref().map(|(depth, noise)| {
-                        depth + noise.offset_2d(cx, cz, self.boundary_amplitude)
-                    })
-                }));
+                self.strata.column_ends(cx, cz, &mut strata_ends);
                 for y in -1..=CHUNK_SIZE {
                     let depth = i64::from(surface) - i64::from(origin.y + y);
                     if depth < 0 {
@@ -645,13 +611,7 @@ impl Generator {
                     }
                     let material = match soil_ends.iter().position(|&e| depth < i64::from(e)) {
                         Some(i) => self.soil[i].material,
-                        None => {
-                            let i = strata_ends
-                                .iter()
-                                .position(|&e| depth < i64::from(e))
-                                .unwrap_or(self.strata.len() - 1);
-                            self.strata[i].material
-                        }
+                        None => self.strata.material(&strata_ends, depth),
                     };
                     cells[Volume::index(x, y, z)] = material;
                 }

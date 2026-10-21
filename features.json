@@ -1872,8 +1872,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Renaming copper_ore to sulfide_ore: update every Phase 1 test, asset and worldgen.ron entry that names copper_ore in a single test-fix: commit whose only change is the key; assertions stay identical."
+      "passes": true,
+      "notes": "Renaming copper_ore to sulfide_ore: update every Phase 1 test, asset and worldgen.ron entry that names copper_ore in a single test-fix: commit whose only change is the key; assertions stay identical.",
+      "passedAt": "2026-10-21T07:21:18Z"
     },
     {
       "id": "F141",

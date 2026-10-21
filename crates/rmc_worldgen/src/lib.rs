@@ -5,6 +5,7 @@ pub mod r#gen;
 pub mod magma;
 pub mod noise;
 pub mod params;
+pub mod strata;
 pub mod temperature;
 pub mod water;
 

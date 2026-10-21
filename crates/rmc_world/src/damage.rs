@@ -905,4 +905,95 @@ mod tests {
         let r = hit(&mut w, 2, cell(0, 0, 0), 15);
         assert_eq!(r.yields, vec![(crushed, 3)]);
     }
+
+    #[test]
+    fn sulfide_yields_crushed_sulfide() {
+        let table = phase1();
+        let ore = id(&table, "sulfide_ore");
+        let crushed = id(&table, "crushed_sulfide");
+        let ore_def = table.get(ore).unwrap().clone();
+        let crushed_def = table.get(crushed).unwrap().clone();
+        let pairs = |v: &[(&str, u8)]| -> Vec<(String, u8)> {
+            v.iter().map(|&(k, a)| (k.to_string(), a)).collect()
+        };
+
+        // The shipped rows (SAD-P2 §5). sulfide_ore keeps its Phase 1 tag
+        // `ore`, gains `sulfide`, and yields crushed_sulfide.
+        assert!(ore_def.is_solid() && ore_def.diggable);
+        assert!(ore_def.has_tag("ore") && ore_def.has_tag("sulfide"));
+        assert_eq!(ore_def.yield_material.as_deref(), Some("crushed_sulfide"));
+        assert!(ore_def.yield_count > 0);
+        let sulfide = pairs(&[("cu", 60), ("fe", 40), ("s", 80)]);
+        assert_eq!(ore_def.composition, sulfide);
+        // crushed_sulfide: placeable porous tailings with the ore's
+        // composition, yielding itself.
+        assert!(crushed_def.is_solid() && crushed_def.diggable);
+        for tag in ["sulfide", "porous", "placeable"] {
+            assert!(crushed_def.has_tag(tag), "crushed_sulfide lacks {tag}");
+        }
+        assert!(!crushed_def.has_tag("ore"));
+        assert_eq!(
+            (
+                crushed_def.permeability,
+                crushed_def.field_capacity,
+                crushed_def.weathering_rate
+            ),
+            (96, 48, 48)
+        );
+        assert_eq!(crushed_def.composition, sulfide);
+        assert_eq!(crushed_def.yield_material, None);
+        assert!(crushed_def.yield_count > 0);
+
+        // Breaking one sulfide cell takes ⌈hardness / dmg⌉ hits and yields
+        // crushed_sulfide, never sulfide_ore.
+        let n = u32::from(ore_def.yield_count);
+        let at = cell(31, 7, 12);
+        for dmg in [1, 7, ore_def.hardness, u16::MAX] {
+            let mut w = world(table.clone(), "sulfide_ore");
+            let hits = hits_to_break(&mut w, at, dmg);
+            assert_eq!(hits, ceil_div(ore_def.hardness, dmg), "dmg {dmg}");
+        }
+        let mut w = world(table.clone(), "sulfide_ore");
+        let r = hit(&mut w, 1, at, u16::MAX);
+        assert_eq!(r.deltas.len(), 1);
+        assert_eq!(r.yields, vec![(crushed, n)]);
+        assert_eq!(w.get_cell(at), Some(MaterialId::AIR));
+
+        // A soft (weathered) sulfide cell breaks at half hardness and still
+        // yields crushed_sulfide.
+        let mut w = eco_world(table.clone(), "sulfide_ore", Some(SOFT));
+        set_regolith(&mut w, 1, at, u8::MAX);
+        let r = hit(&mut w, 2, at, ore_def.hardness / 2);
+        assert_eq!(r.yields, vec![(crushed, n)]);
+
+        // An area over the chunk border (columns along x, 2 × 2 cells
+        // each): sulfide, crushed, stone, sulfide. Sulfide and crushed
+        // aggregate under crushed_sulfide; nothing yields sulfide_ore.
+        let stone = id(&table, "stone");
+        let mut w = world(table.clone(), "stone");
+        for (i, m) in [ore, crushed, stone, ore].into_iter().enumerate() {
+            let x = 30 + i32::try_from(i).unwrap();
+            apply(
+                &mut w,
+                &cmd(1, EditOp::Set(m), boxed(cell(x, 0, 0), cell(x, 1, 1))),
+            );
+        }
+        let r = apply(
+            &mut w,
+            &cmd(
+                2,
+                EditOp::Damage(u16::MAX),
+                boxed(cell(30, 0, 0), cell(33, 1, 1)),
+            ),
+        );
+        let stone_yield = u32::from(table.get(stone).unwrap().yield_count);
+        let crushed_yield = u32::from(crushed_def.yield_count);
+        let mut expected = vec![
+            (stone, 4 * stone_yield),
+            (crushed, 2 * 4 * n + 4 * crushed_yield),
+        ];
+        expected.sort_unstable_by_key(|&(m, _)| m);
+        assert_eq!(r.yields, expected);
+        assert!(!r.yields.iter().any(|&(m, _)| m == ore));
+    }
 }

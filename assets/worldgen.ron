@@ -27,11 +27,15 @@
     // Below the soil, by depth under the surface (0 = the top solid cell).
     // A stratum reaches down to until_depth, moved by up to
     // boundary_amplitude cells of noise; the last one has no limit.
+    // SAD-P2 §8: the limestone band lies between stone and granite. Its
+    // boundaries are 10 cells apart, more than twice the amplitude, so it is
+    // 2..=18 cells thick and never pinches out.
     strata: (
         boundary_amplitude: 4,
         boundary_noise: (frequency: 0.04, octaves: 2),
         layers: [
             (material: "stone", until_depth: Some(24)),
+            (material: "limestone", until_depth: Some(34)),
             (material: "granite", until_depth: Some(56)),
             (material: "basalt", until_depth: None),
         ],

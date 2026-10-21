@@ -24,8 +24,12 @@
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0),
-    (id: 8, key: "sulfide_ore", phase: Solid, tags: ["ore"],
-     hardness: 40, diggable: true, yield_count: 1, color: (184, 115, 51, 255), emissive: 0.0),
+    // Phase 2 (SAD-P2 §5): copper_ore became sulfide_ore. Breaking it
+    // yields crushed_sulfide, which weathers; the ore itself does not. Not
+    // tagged stone, so ores and crystals never overwrite it (Phase 1 rule).
+    (id: 8, key: "sulfide_ore", phase: Solid, tags: ["ore", "sulfide"],
+     hardness: 40, diggable: true, yield_count: 1, color: (184, 115, 51, 255), emissive: 0.0,
+     composition: [("cu", 60), ("fe", 40), ("s", 80)], yield_material: Some("crushed_sulfide")),
     (id: 9, key: "iron_ore", phase: Solid, tags: ["ore"],
      hardness: 50, diggable: true, yield_count: 1, color: (150, 98, 82, 255), emissive: 0.0),
 
@@ -50,4 +54,29 @@
     (id: 14, key: "ice", phase: Solid, tags: [],
      hardness: 10, diggable: true, yield_count: 0, color: (196, 226, 242, 255), emissive: 0.0,
      conductivity: 64, heat_capacity: 8, light_attenuation: Some(0)),
+
+    // Limestone (SAD-P2 §5, §8): the band between stone and granite. Porous,
+    // so acid water seeps in and dissolve_carbonate fires there; it weathers
+    // slowly and releases lime.
+    (id: 15, key: "limestone", phase: Solid, tags: ["stone", "carbonate", "porous"],
+     hardness: 25, diggable: true, yield_count: 1, color: (196, 188, 160, 255), emissive: 0.0,
+     conductivity: 16, heat_capacity: 32, permeability: 32, field_capacity: 24,
+     weathering_rate: 2, composition: [("lime", 120)]),
+    // Crushed sulfide (SAD-P2 §5): what sulfide_ore yields. Placeable tailings
+    // that hold water and weather fast, releasing the ore's composition.
+    (id: 16, key: "crushed_sulfide", phase: Solid, tags: ["sulfide", "porous", "placeable"],
+     hardness: 10, diggable: true, yield_count: 1, color: (122, 112, 64, 255), emissive: 0.0,
+     conductivity: 64, heat_capacity: 8, permeability: 96, field_capacity: 48,
+     weathering_rate: 48, composition: [("cu", 60), ("fe", 40), ("s", 80)]),
+    // Yield materials (SAD-P2 §5, §7.8): one per substance with a
+    // yield_material in substances.ron, holding only that substance.
+    (id: 17, key: "copper_dust", phase: Solid, tags: ["placeable"],
+     hardness: 5, diggable: true, yield_count: 1, color: (196, 110, 60, 255), emissive: 0.0,
+     composition: [("cu", 255)]),
+    (id: 18, key: "iron_dust", phase: Solid, tags: ["placeable"],
+     hardness: 5, diggable: true, yield_count: 1, color: (140, 82, 64, 255), emissive: 0.0,
+     composition: [("fe", 255)]),
+    (id: 19, key: "salt_dust", phase: Solid, tags: ["placeable"],
+     hardness: 5, diggable: true, yield_count: 1, color: (232, 230, 220, 255), emissive: 0.0,
+     composition: [("salt", 255)]),
 ]
