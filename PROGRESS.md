@@ -2692,3 +2692,44 @@ Decisions:
 - Reviewer: pass, with no blocking gaps. On its test-coverage notes I added the face order beyond "below" and the moving-magma case.
 Next: F133 (magma, obsidian, basalt colors; HUD temperature), with magma heat_capacity 64 (see above). E2's playtester run is still outstanding: E2 completed with F129, and this run's step 11 lists E2. Also ready: F141, F151, F154, F160.
 Blockers: none.
+
+## 2026-10-21 15:40 — F133 Materials: magma, obsidian, basalt colors; HUD temperature at player — passed
+Done:
+- `assets/materials.ron` ships the SAD-P2 §5 volcanic rows:
+  - `magma` (id 20): Liquid, not diggable, color (255, 96, 16, 255), emissive 2.0, viscosity 3, conductivity 64, heat_capacity 64. Alpha 255 keeps it opaque and full-cell in the normal mesh pass (F127's criterion).
+  - `magma_source` (id 21): Solid, not diggable, hardness 65535 like bedrock, untagged, heat_source 13000, color (255, 150, 40, 255), emissive 3.0.
+  - `obsidian` (id 22): Solid, diggable, hardness 70 (above basalt's 60), yield 1, color (30, 20, 40, 255), default heat values.
+  - `basalt` gains composition `[("lime", 40), ("fe", 40), ("p", 20)]`.
+- With both eco roles resolving, F132's worldgen chambers now appear in every generated world. pit_becomes_pond, season_swale_fills and freeze_thaw_weathers_cut still pass on the new worlds (55 s, 69 s, 115 s).
+- `rmc_client::hud`:
+  - `HudState.temperature: Option<i16>` is the replica's temperature layer at `CellPos::from_meters(player.feet)`, the cell the feet stand in. It is `None` without a player or outside the resident chunks.
+  - A `TemperatureText` line at the top right shows it via `format_temperature`, e.g. `12.3 C`, `-0.5 C`.
+  - The replica's layers already follow `ChunkSnapshot`, `LayerSnapshot` and `ChunkDelta::Layers`, so the HUD follows the host with no new message handling.
+Tests added:
+- `hud::tests::hud_shows_player_cell_temperature`:
+  - feet cell 123 with different values on the floor, eye-level, west and east neighbours;
+  - stepping one cell east follows the feet;
+  - a host `SetLayer` result (Layers delta) and then a `LayerSnapshot` each move it, down to `i16::MIN`;
+  - out of bounds and with no player it is `None` with empty text;
+  - format cases.
+- `materials::tests::shipped_volcanic_rows`, the rule 21 semantic check for the colors. It checks:
+  - magma is Liquid, alpha 255, emissive, not diggable, 3/64/64;
+  - the core is a non-diggable, untagged heat source at 13000;
+  - obsidian is opaque, not emissive, and harder than basalt;
+  - basalt's composition keys.
+  `mesher::tests::liquid_faces_in_second_mesh` already loops over the shipped table and now covers magma in the opaque pass.
+- Screenshots: `scripts/screens.sh hit_feedback_close` re-shot. The HUD shows `10.0 C` top right.
+Decisions:
+- "Player's cell" means the cell the feet stand in (`Player::feet`, the bottom of the box).
+- The unit is ASCII `C`. Bevy's default font has no `°`, which drew as a box in the first shot.
+- SAD-P2 §5 says basalt has "ca", but `substances.ron` has no `ca` and is at its 10-row limit. Calcium maps to `lime`, the calcium substance. Basalt's weathering_rate is 0, so the composition is inert for now. The amounts are my picks.
+- Magma heat_capacity 64, not §5's 32, as F131 required (otherwise `worldgen_magma_stays_molten_20_substeps` fails against the shipped row).
+- `obsidian` and `magma_source` are untagged, so `Tag("stone") → magma` never melts them. Obsidian keeps the default 16/16 heat values, because §5 gives none.
+- The magma color differs slightly from the test fixtures' (255, 90, 0). Fixtures defer to the shipped row now.
+- Test fixes in their own commit (`test-fix:` b6bd461):
+  - Four fixtures (water `Fix`, tick `rich_tables`, worldgen temperature, `generator_checks_materials`'s unknown key "obsidian") collided with the shipped rows. They now add magma and obsidian only when they are absent, or use `test_unknown`.
+  - In `rmc_host` `equivalence_after_three_seasons_with_edits_between`, random edits placing `magma_source` melted rock in every chunk. Season 2 then sent only ChunkSnapshots (30 of 30) and the "some LayerSnapshot each season" check failed. Random picks now skip materials with a `heat_source`; magma stays in. Season 2 then has 1 LayerSnapshot, so the margin is thin but deterministic.
+  - `hudstate_reflects_target`'s full `HudState` literal gains `temperature: Some(0)`. This adds a check and weakens nothing.
+- Rule 21: magma, obsidian and core colors are not in any screenshot yet. Nothing shows magma before F134 (`magma_meets_water`), whose screenshots the playtester judges.
+Next: F134 (E2E magma_meets_water), the last E2b feature. E2's playtester run is still outstanding. Also ready: F141, F151, F152, F154, F160.
+Blockers: none.
