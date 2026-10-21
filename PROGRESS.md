@@ -3107,3 +3107,41 @@ Next:
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
 - Another session was editing `rmc_client`, `rmc_app` and `rmc_testkit` (tile textures) in this working tree during this session. I did not stage or touch those files. Its leftover uncommitted edits are still in the tree.
+
+## 2026-10-21 19:30 — F152 Steam water terms in both invariants; condensation/vent interplay — passed
+Done:
+- The behaviour already existed:
+  - BoilAll is the boiling exception of `World::eco_set` (F125/F131).
+  - Condensation, evaporation and rain came with F123.
+  - The steam vent books `steam_vent_out` and `vent_out[steam]` (F151).
+  - `Totals::expected` applies the steam terms.
+  - This session adds the two tests that prove it. No production code changed.
+- A mutation check: dropping the `steam_vent_out` booking in the gas vent fails both new tests.
+Tests added:
+- `gases::tests::boil_all_converts_fill_to_steam_1to1`:
+  - A sealed row of 8 water cells across the chunk face boils through the transitions pass. So does a pond at the bottom of a sky shaft. A control cell sits exactly at the BoilAll threshold and does not boil.
+  - Each boiled cell becomes air, with steam equal to its fill and the cell in the steam sweep. The ledger is exactly `boil_to_steam` plus the transition count.
+  - Moisture falls by the boil and steam rises by it. The checker holds.
+  - Steam sweeps then run until the shaft is empty:
+    - the sealed row keeps its steam;
+    - the shaft vents exactly the pond's 222;
+    - `steam_vent_out == vent_out[steam]` after every sweep.
+- `water::tests::water_invariant_includes_steam_and_vent`:
+  - Both invariants are written out, and the `InvariantChecker` is also run, after every pass of the water and steam passes in §3 order. The passes are transitions, condensation, the flow sweeps, evaporation, rain and the steam sweep.
+    - Water: Σmoisture + Σsteam balances against rain, edits, `steam_vent_out` and `water_saturation_loss`.
+    - Steam: Σsteam balances against evap, boil, condense, the vent and `gas_saturation_loss`.
+  - Dry fixture, 4 sub-steps:
+    - a warm open pond evaporates and vents;
+    - a pond under an overhang evaporates and condenses back;
+    - open water at 150 °C boils and vents;
+    - a sealed pocket boils (180 steam), is cooled, and condenses back to water at fill 180.
+  - Then 24 random worlds (magma, hot water, shipped rain), 3 sub-steps each. Across them, every steam term must be non-zero.
+Decisions:
+- The water invariant keeps the non-SAD term `water_saturation_loss`, introduced earlier. Its source is fill that cannot fit as steam when a boil finds steam already on the cell, plus pass-caused steam loss. The SAD's §7 water invariant has no such term, but without it those paths would break conservation. The new tests include it.
+- A boiled cell open to the sky does not always vent its whole fill in one steam sweep. Steam diffuses back down into it after its visit and vents in a later sweep (the F151 decision). The fixture asserts only that venting happened and that the books balance.
+- The transitions pass does not read a row's `effect`. Any pass-caused water → air goes through `eco_set`'s boiling exception, as §7.0.1 says ("for the (from, to) pair"). Not changed.
+Next:
+- Ready: F153 (ignition), F154, F155, F160. F156 needs F153 and F154.
+- Note for F153: water is `diggable: true`, so the ignition sphere turns water cells to air through `eco_set`, and that boils them to steam (the pass boiling exception). The F153 session should decide whether that is intended.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
