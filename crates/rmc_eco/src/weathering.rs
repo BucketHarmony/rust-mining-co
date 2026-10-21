@@ -334,14 +334,15 @@ mod tests {
     }
 
     /// Test materials that weather: SAD-P2 §5 ships none before F140.
+    /// They have no `weathers_to`, so a cell at regolith 255 stays at the
+    /// cap and these tests see growth alone (conversion is tested apart).
     const WEATHERING: [&str; 2] = [
         r#"(id: 0, key: "weatherstone", phase: Solid, tags: ["stone"], hardness: 40,
             diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0,
-            weathering_rate: 3, weathers_to: Some("dirt"))"#,
+            weathering_rate: 3)"#,
         r#"(id: 0, key: "weatherchalk", phase: Solid, tags: ["stone", "porous"],
             hardness: 30, diggable: true, yield_count: 1, color: (200, 200, 180, 255), emissive: 0.0,
-            permeability: 32, field_capacity: 24, weathering_rate: 5,
-            weathers_to: Some("dirt"))"#,
+            permeability: 32, field_capacity: 24, weathering_rate: 5)"#,
     ];
 
     /// The `summer` row of `seasons.ron`: nothing near 15 °C freezes.
