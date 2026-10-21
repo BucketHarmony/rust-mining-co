@@ -2115,3 +2115,38 @@ Decisions:
 - The closest E2E distance is 0.25 m, not 0.2 m: the 0.45 m box (F094) needs 0.225 m plus clearance.
 Next: F097.
 Blockers: none.
+
+## 2026-10-21 08:30 — F097 Surface variation: per-cell color jitter so walls read as rock and soil, not flat paint — passed
+Done:
+- The chunk fragment shader (`emissive.wesl`) scales each cell's base color by `cell_jitter(cell)`, a factor in `1 ± CELL_JITTER_AMPLITUDE` (0.08).
+  - The factor comes from a hash of the cell under the fragment, taken `CELL_JITTER_INSET_M` (1 mm) behind the face along its normal.
+  - It is applied before the glow is taken from the base color, in the same `EmissiveFromAlpha` path, so emissive cells still glow (and jitter with their cell).
+- The mesh and greedy merging are unchanged; the variation exists only in the shader.
+- `EmissiveFromAlpha` has three new uniforms: `jitter_amplitude` (101), `jitter_cell_size_m` (102, `CELL_SIZE_M`) and `jitter_inset_m` (103). The shader reads its constants from the Rust side, not from its own literals.
+- The plain Rust mirror is in material.rs: `cell_hash`, `cell_jitter` and `fragment_cell`.
+  - The hash is per-axis odd multipliers (`CELL_HASH_MULTIPLIERS`), then the lowbias32 finalizer (`CELL_HASH_MIXERS`). The top 24 bits map to the factor.
+  - These are exported from `rmc_client`.
+Tests added:
+- `material::tests::cell_jitter_is_deterministic_and_bounded` checks:
+  - the factor is deterministic and within the amplitude;
+  - at least 90% of adjacent pairs differ, the range is used, and the mean is about 1;
+  - `fragment_cell` picks the cell behind ±X, top, bottom and -Z faces, including at face corners;
+  - the shader has the same hash constants and the 101 to 103 bindings, and applies the jitter before the glow.
+- `material::tests::jitter_does_not_change_mesh_merging` checks that a flat basalt wall and a flat topsoil field each still mesh to 6 quads, with each face one chunk-wide quad of one color.
+- E2E `surface_variation` shoots three views: a face-on basalt wall at 1.5 m, a topsoil field looking down from 4 m, and a stone tunnel from its mouth.
+  - Every chunk mesh has the one emissive material, with the jitter uniforms equal to the constants.
+  - The face cells around each view's center hash to at least 40 distinct factors.
+  - No frame is blank (at least 16 colors).
+  - The wall shot again with amplitude 0, twice, gives identical frames, and those differ from the jittered frame.
+  - Screenshots: `docs/screens/surface_variation-*.png`.
+- The existing pixel E2Es were re-run and pass: `lantern_close_wall`, `emissive_glow`, `glow_in_cave` and `horizon_readable`.
+- Reviewer: GAPS. It found no bug, and confirmed that the Rust and WGSL hash, precedence and bindings match. It raised two points:
+  - At the first amplitude of 0.04, the basalt wall showed no visible cells. Addressed: the amplitude was raised to 0.08, for the reason below.
+  - The render-side check was weak, because frame noise could also make the frames differ. Addressed by the identical repeat shot.
+Decisions:
+- Amplitude 0.08 in linear color. The factor scales linear color, and sRGB encoding roughly halves a relative step (gamma about 2.2), so this is about ±3.5% of perceived brightness. That is the conservative reading of the notes' "a few percent". The value was set once from the encoding argument and was not tuned to a pixel measure.
+- This extends SAD §11.2, as the F097 notes say: the shader varies brightness per cell. docs/SAD.md is not edited.
+- Rule 21: no luminance or color thresholds. The image checks are a distinct-color count (not blank) and "two frames differ" or "two frames are the same".
+- The shader mirror is checked by source text (constants and bindings) and by the E2E rendering with it, not by running the WGSL in a unit test.
+Next: F110 (E1), the next unpassed feature whose blockers pass. It is the first feature after the owner playability batch.
+Blockers: none.
