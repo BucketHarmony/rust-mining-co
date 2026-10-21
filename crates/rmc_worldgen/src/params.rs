@@ -144,6 +144,30 @@ pub struct WaterTableParams {
     pub noise: NoiseParams,
 }
 
+/// Magma chambers (SAD-P2 §8): `count_min..=count_max` blobs, each a ball
+/// of `radius_min..=radius_max` cells around a hash-picked center whose
+/// boundary moves by up to `amplitude` cells of 3D noise, with a core of the
+/// cells within `core_radius` of the center. Every chamber cell lies below
+/// `chamber_max_y` and more than `shell_clearance` cells from the bedrock
+/// shell on each axis. Materials come from the eco roles `magma` and
+/// `magma_source`, so a table without them has no chambers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MagmaChamberParams {
+    pub count_min: u8,
+    pub count_max: u8,
+    /// Every chamber cell has a lower y.
+    pub chamber_max_y: i32,
+    pub radius_min: i32,
+    pub radius_max: i32,
+    /// Below `radius_min`, so every chamber holds its center.
+    pub amplitude: i32,
+    pub noise: NoiseParams,
+    /// At most `radius_min - amplitude`, so the core lies inside the blob.
+    pub core_radius: i32,
+    /// Cells between a chamber and the shell, on each axis.
+    pub shell_clearance: i32,
+}
+
 /// The world's extent in cells, both corners included (SAD §5). Step 6
 /// builds its shell inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +213,9 @@ pub struct GenParams {
     /// SAD-P2 §8; `None` (the default) leaves the world dry.
     #[serde(default)]
     pub water_table: Option<WaterTableParams>,
+    /// SAD-P2 §8; `None` (the default) places no magma.
+    #[serde(default)]
+    pub magma_chambers: Option<MagmaChamberParams>,
 }
 
 #[derive(Debug, Error)]
@@ -410,16 +437,60 @@ impl GenParams {
             check_cells("water_table.amplitude", w.amplitude)?;
             w.noise.validate("water_table.noise")?;
         }
+
+        if let Some(m) = &self.magma_chambers {
+            if m.count_min > m.count_max {
+                return Err(invalid(
+                    "magma_chambers.count_min",
+                    format!("{} exceeds count_max {}", m.count_min, m.count_max),
+                ));
+            }
+            if !(-MAX_BASE_HEIGHT..=MAX_BASE_HEIGHT).contains(&m.chamber_max_y) {
+                return Err(invalid(
+                    "magma_chambers.chamber_max_y",
+                    format!("{} must be within ±{MAX_BASE_HEIGHT}", m.chamber_max_y),
+                ));
+            }
+            check_cells("magma_chambers.radius_min", m.radius_min)?;
+            check_cells("magma_chambers.radius_max", m.radius_max)?;
+            check_cells("magma_chambers.amplitude", m.amplitude)?;
+            check_cells("magma_chambers.core_radius", m.core_radius)?;
+            check_cells("magma_chambers.shell_clearance", m.shell_clearance)?;
+            if m.radius_min > m.radius_max {
+                return Err(invalid(
+                    "magma_chambers.radius_min",
+                    format!("{} exceeds radius_max {}", m.radius_min, m.radius_max),
+                ));
+            }
+            if m.amplitude >= m.radius_min {
+                return Err(invalid(
+                    "magma_chambers.amplitude",
+                    format!("{} must be below radius_min {}", m.amplitude, m.radius_min),
+                ));
+            }
+            if m.core_radius > m.radius_min - m.amplitude {
+                return Err(invalid(
+                    "magma_chambers.core_radius",
+                    format!(
+                        "{} exceeds radius_min - amplitude {}",
+                        m.core_radius,
+                        m.radius_min - m.amplitude
+                    ),
+                ));
+            }
+            m.noise.validate("magma_chambers.noise")?;
+        }
         Ok(())
     }
 
     /// These parameters for a world of `bounds`: the bounds replaced and the
-    /// surface's base height and the water table's level moved to the same
-    /// fraction of the world's height (truncating), so a lower world keeps
-    /// its share of ground and sky (SAD-P2 §2: the 64-cell-high Phase 2
-    /// world). Everything else is kept. Bounds of the same height and floor give these parameters
-    /// unchanged. Fails if the result does not validate or the highest
-    /// surface does not lie below the top cell.
+    /// surface's base height, the water table's level and the chambers'
+    /// `chamber_max_y` moved to the same fraction of the world's height
+    /// (truncating), so a lower world keeps its share of ground and sky
+    /// (SAD-P2 §2: the 64-cell-high Phase 2 world). Everything else is kept.
+    /// Bounds of the same height and floor give these parameters unchanged.
+    /// Fails if the result does not validate or the highest surface does not
+    /// lie below the top cell.
     pub fn fit_to(&self, bounds: WorldBounds) -> Result<Self, GenError> {
         let (old_floor, new_floor) = (self.bounds.min[1], bounds.min[1]);
         let old_height = i64::from(self.bounds.max[1]) - i64::from(old_floor) + 1;
@@ -434,6 +505,9 @@ impl GenParams {
         fitted.surface.base_height = scale("surface.base_height", self.surface.base_height)?;
         if let Some(w) = &mut fitted.water_table {
             w.level = scale("water_table.level", w.level)?;
+        }
+        if let Some(m) = &mut fitted.magma_chambers {
+            m.chamber_max_y = scale("magma_chambers.chamber_max_y", m.chamber_max_y)?;
         }
         fitted.validate()?;
         let highest = i64::from(fitted.surface.base_height) + i64::from(fitted.surface.amplitude);
@@ -618,6 +692,34 @@ mod tests {
                 "crystal chance over one",
                 Box::new(|p| p.crystals.chance_per_million = ONE_MILLION + 1),
             ),
+            (
+                "chamber count min > max",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().count_min = 4),
+            ),
+            (
+                "chamber radius min > max",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().radius_min = 6),
+            ),
+            (
+                "chamber amplitude reaches the center",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().amplitude = 3),
+            ),
+            (
+                "chamber core outside the blob",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().core_radius = 3),
+            ),
+            (
+                "negative chamber clearance",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().shell_clearance = -1),
+            ),
+            (
+                "huge chamber_max_y",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().chamber_max_y = i32::MAX),
+            ),
+            (
+                "zero chamber octaves",
+                Box::new(|p| p.magma_chambers.as_mut().unwrap().noise.octaves = 0),
+            ),
             ("min above max", Box::new(|p| p.bounds.min[1] = 128)),
             ("huge bounds", Box::new(|p| p.bounds.max[2] = i32::MAX)),
             (
@@ -740,6 +842,8 @@ mod tests {
             Box::new(|p| p.bedrock.material = "basalt".into()),
             Box::new(|p| p.bedrock.floor_cells += 1),
             Box::new(|p| p.bedrock.wall_cells += 1),
+            Box::new(|p| p.magma_chambers.as_mut().unwrap().chamber_max_y += 1),
+            Box::new(|p| p.magma_chambers = None),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

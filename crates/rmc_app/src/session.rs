@@ -36,7 +36,9 @@ use rmc_world::materials::MaterialTable;
 use rmc_world::save::{self, HEADER_FILE, SaveHeader};
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::params::WorldBounds;
-use rmc_worldgen::{GenParams, Generator, NOISE_CRATE_VERSION, TemperatureInit, WaterTableInit};
+use rmc_worldgen::{
+    GenParams, Generator, MagmaInit, NOISE_CRATE_VERSION, TemperatureInit, WaterTableInit,
+};
 use tracing::{error, info, warn};
 
 /// The seed when there is neither a `--seed` nor a save to take one from.
@@ -127,12 +129,13 @@ pub fn assets_dir() -> PathBuf {
 }
 
 /// Every chunk in the bounds of `assets.worldgen`, generated from `seed`,
-/// with its temperature layer and water table (SAD-P2 §8).
+/// with its temperature layer, water table and magma chambers (SAD-P2 §8).
 pub fn generate_world(assets: &GameAssets, seed: u64) -> anyhow::Result<CellWorld> {
     let generator = Generator::new(seed, &assets.worldgen, &assets.materials)
         .context("worldgen params do not fit the material table")?
         .with_temperature(TemperatureInit::new(&assets.eco))
-        .with_water_table(WaterTableInit::new(&assets.eco));
+        .with_water_table(WaterTableInit::new(&assets.eco))
+        .with_magma(MagmaInit::new(&assets.eco));
     let mut world = CellWorld::new(assets.materials.clone(), generator.bounds());
     for (pos, chunk) in generator.generate_world() {
         world

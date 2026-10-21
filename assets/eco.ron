@@ -48,6 +48,7 @@
             "water": "water",
             "ice": "ice",
             "magma": "magma",
+            "magma_source": "magma_source",
             "obsidian": "obsidian",
             "basalt": "basalt",
             "copper_dust": "copper_dust",

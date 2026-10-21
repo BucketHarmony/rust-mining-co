@@ -83,4 +83,25 @@
         amplitude: 0,
         noise: (frequency: 0.02, octaves: 2),
     )),
+    // SAD-P2 §8: count_min..=count_max magma chambers, placed by a hash of
+    // the seed. Each is a ball of radius_min..=radius_max cells whose edge
+    // moves by up to amplitude cells of 3D noise, around a core of the cells
+    // within core_radius of its center. Every chamber cell lies below
+    // chamber_max_y and more than shell_clearance cells from the bedrock
+    // shell on each axis. The materials are the eco roles magma and
+    // magma_source; without them there are no chambers. chamber_max_y sits
+    // below the water table, so a chamber meets only flooded caves; fit_to
+    // scales it with the world's height (28 in a 64-high world, which still
+    // fits a chamber of the largest radius).
+    magma_chambers: Some((
+        count_min: 1,
+        count_max: 3,
+        chamber_max_y: 56,
+        radius_min: 3,
+        radius_max: 5,
+        amplitude: 1,
+        noise: (frequency: 0.3, octaves: 1),
+        core_radius: 1,
+        shell_clearance: 8,
+    )),
 )

@@ -23,6 +23,10 @@ pub const LAYER_ORE: u32 = 0x0400;
 pub const LAYER_CRYSTAL: u32 = 0x0500;
 /// Layer id of the water table's offset (SAD-P2 §8).
 pub const LAYER_WATER_TABLE: u32 = 0x0600;
+/// Layer id of the magma chamber placement hash (SAD-P2 §8).
+pub const LAYER_MAGMA: u32 = 0x0700;
+/// Layer id of the magma chamber boundary noise.
+pub const LAYER_MAGMA_BLOB: u32 = 0x0701;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in
@@ -79,6 +83,13 @@ impl NoiseLayer {
     /// `n` scaled to a whole offset in `-amplitude..=amplitude`.
     pub fn offset_2d(&self, x: i32, z: i32, amplitude: i32) -> i32 {
         let n = self.sample_2d(x, z);
+        ((n * amplitude as f32).floor() as i32).clamp(-amplitude, amplitude)
+    }
+
+    /// The 3D noise at cell `(x, y, z)` scaled to a whole offset in
+    /// `-amplitude..=amplitude`.
+    pub fn offset_3d(&self, x: i32, y: i32, z: i32, amplitude: i32) -> i32 {
+        let n = self.sample_3d(x, y, z);
         ((n * amplitude as f32).floor() as i32).clamp(-amplitude, amplitude)
     }
 

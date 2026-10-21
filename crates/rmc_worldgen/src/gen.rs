@@ -11,6 +11,7 @@ use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
+use crate::magma::{Chamber, ChamberCell, Chambers, MagmaInit};
 use crate::noise::{
     LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_CRYSTAL, LAYER_ORE, LAYER_SOIL,
     LAYER_STRATA, LAYER_SURFACE, LAYER_WATER_TABLE, NoiseLayer, cell_hash,
@@ -178,6 +179,10 @@ pub struct Generator {
     water_table: Option<WaterTable>,
     /// Lays down the water table (SAD-P2 §8), when set.
     water: Option<WaterTableInit>,
+    /// The planned magma chambers, when the params have them.
+    chambers: Option<Chambers>,
+    /// `(magma, core)` materials, when set and the table has both.
+    magma: Option<(MaterialId, MaterialId)>,
 }
 
 fn resolve(
@@ -320,6 +325,10 @@ impl Generator {
                 noise: NoiseLayer::new(seed, LAYER_WATER_TABLE, &w.noise),
             }),
             water: None,
+            chambers: params.magma_chambers.as_ref().map(|m| {
+                Chambers::plan(seed, m, params.bounds.aabb(), b.floor_cells, b.wall_cells)
+            }),
+            magma: None,
         })
     }
 
@@ -337,6 +346,25 @@ impl Generator {
     pub fn with_water_table(mut self, init: WaterTableInit) -> Self {
         self.water = Some(init);
         self
+    }
+
+    /// Also fills the magma chambers (SAD-P2 §8) when the params have them
+    /// and the table has both magma roles. Without it the world has no
+    /// magma, as in Phase 1.
+    pub fn with_magma(mut self, init: MagmaInit) -> Self {
+        self.magma = init.materials();
+        self
+    }
+
+    /// The planned chambers, whether or not [`Generator::with_magma`] fills
+    /// them; empty without chamber params or room for one.
+    pub fn chambers(&self) -> &[Chamber] {
+        self.chambers.as_ref().map_or(&[], |c| c.list())
+    }
+
+    /// Largest distance from a chamber's center to one of its cells.
+    pub fn chamber_reach(&self) -> i32 {
+        self.chambers.as_ref().map_or(0, |c| c.reach())
     }
 
     /// `water_table_y` of column `(x, z)`: cells with a lower y are below
@@ -403,14 +431,45 @@ impl Generator {
         volume
     }
 
-    /// Every step except crystals (steps 1–4, then 6) over the chunk's 34³
-    /// volume: the cells step 5 reads. Crystals never replace bedrock, so
-    /// the shell is still the last word, and crystals face air in the
-    /// finished world.
+    /// Every step except crystals (steps 1–4, the magma chambers, then 6)
+    /// over the chunk's 34³ volume: the cells step 5 reads. Crystals never
+    /// replace bedrock, so the shell is still the last word, and crystals
+    /// face air in the finished world.
     pub fn shell_volume(&self, pos: ChunkPos) -> Volume {
         let mut volume = self.ore_volume(pos);
+        self.place_chambers(pos, &mut volume);
         self.place_shell(pos, &mut volume);
         volume
+    }
+
+    /// SAD-P2 §8: magma and core over every chamber cell, whatever steps
+    /// 1–4 left there (rock, ore or cave). Chambers lie clear of the shell
+    /// and below the surface, so step 6 and the water table never meet
+    /// them.
+    fn place_chambers(&self, pos: ChunkPos, volume: &mut Volume) {
+        let (Some(chambers), Some((magma, core))) = (&self.chambers, self.magma) else {
+            return;
+        };
+        let origin = pos.origin_cell().0;
+        let border = CellAabb::new(
+            CellPos(origin - IVec3::ONE),
+            CellPos(origin + IVec3::splat(CHUNK_SIZE)),
+        );
+        if !chambers.touches(border) {
+            return;
+        }
+        for y in -1..=CHUNK_SIZE {
+            for z in -1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    let cell = match chambers.cell(origin + IVec3::new(x, y, z)) {
+                        Some(ChamberCell::Core) => core,
+                        Some(ChamberCell::Magma) => magma,
+                        None => continue,
+                    };
+                    volume.cells[Volume::index(x, y, z)] = cell;
+                }
+            }
+        }
     }
 
     /// Step 6: bedrock over every cell of the shell.
