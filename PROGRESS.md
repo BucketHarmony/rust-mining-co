@@ -2250,3 +2250,27 @@ Decisions:
 - No shipped material weathers before F140, so shipped worlds are unchanged.
 Next: F113 (regolith halves pickaxe hardness; yield_material), now the first unpassed feature whose blockers all pass. F140 is unblocked as well.
 Blockers: none.
+
+## 2026-10-21 14:00 — F113 Regolith halves pickaxe hardness; yield_material — passed
+Done:
+- `EcoRules` gains `soft_regolith: Option<u8>`. `EcoTables::displacement_rules` sets it from `eco.soft_regolith` (128). `None`, the default for worlds without eco tables, never softens a cell.
+- New `World::break_hardness(cell, def)` in `rmc_world::damage`: `hardness / 2` (`SOFT_DIV`) when the cell's own regolith is above `soft_regolith`, else `hardness`.
+- `World::apply`'s `Damage` branch breaks a cell at `break_hardness`. Damage dealt before the cell softened still counts toward the halved hardness.
+- A broken material with `yield_material` yields that material instead of itself, `yield_count` times (the broken material's count).
+Tests added:
+- `damage::tests::regolith_halves_hardness`:
+  - Every diggable solid, at several damages, needs ⌈hardness / dmg⌉ hits at regolith 0, 127 and 128, and ⌈(hardness / 2) / dmg⌉ at 129 and 255.
+  - Hand-computed cases: stone 30 → 15, odd hardness 45 → 22, hardness 1 → 0, which breaks on a zero-damage hit.
+  - Soft neighbors do not soften a cell. Earlier damage carries over. An area hit across the chunk border breaks only the soft cells.
+  - No softening without eco rules. Bedrock stays unbreakable. The shipped `soft_regolith` is 128.
+- `damage::tests::yield_material_overrides_self`:
+  - Every diggable solid yields its `yield_material` (or itself).
+  - `ore` yields 3 `crushed` and no ore. An ore with yield_count 0 yields nothing. A material can name itself.
+  - Area yields aggregate under the yielded material. A hit without a break and `Remove` yield nothing. A soft ore breaks at half hardness and still yields `crushed`.
+Decisions:
+- Yield count: a material with `yield_material` yields its own `yield_count` of the target, not the target's `yield_count`. §7.5 says only "yields that material", so the broken material's count, like every other yield, is the conservative reading. `sulfide_ore` (F140) should keep yield_count 1 to yield one `crushed_sulfide`.
+- Halving uses the cell's own regolith only, read when the hit lands. "Above" is strict: `regolith > soft_regolith`, as written.
+- The halving lives on the host `World` through `EcoRules`, which only the host installs. The client HUD's damage estimate still uses the full hardness, so on a soft cell the bar shows about half when the cell breaks. Teaching the client the rule needs `soft_regolith` on the replica, which is outside this feature.
+- `rmc_world::edit` test fixture `eco_rules` gains `soft_regolith: None`, a field the struct literal now requires. No assertion changed.
+Next: F126 (worldgen water table and flooded caves), the first unpassed feature whose blockers all pass. F114 waits on F128.
+Blockers: none.
