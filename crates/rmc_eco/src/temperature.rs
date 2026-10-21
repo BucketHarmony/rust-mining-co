@@ -14,7 +14,9 @@
 //! `Σ T·C` is conserved by every edge. Both chunks of a face compute the
 //! edge from the same pair, so the pass stays Jacobi (rule 20).
 //!
-//! The freeze-thaw bit (§7.5) is not set here yet; F110 adds it.
+//! The pass also sets the freeze-thaw bit (§7.5) of every cell whose
+//! stored temperature (before the clamps) and new temperature lie on
+//! different sides of 0 ([`crossed_zero`]).
 
 use rmc_world::coords::{CHUNK_SIZE, CellPos, LocalPos};
 use rmc_world::layers::LayerId;
@@ -22,6 +24,7 @@ use rmc_world::materials::{MaterialId, Phase};
 
 use crate::runner::{ChunkView, JacobiOut, JacobiPass};
 use crate::tables::{EcoParams, EcoTables};
+use crate::weathering::crossed_zero;
 
 /// Edge length of the computed box: a chunk plus its 1-cell border.
 const SPAN: i32 = CHUNK_SIZE + 2;
@@ -213,9 +216,12 @@ impl JacobiPass for TemperaturePass {
                 }
                 i32::from(saturate(i64::from(me.t) + i64::from(sum)))
             };
-            let delta = new - view.layer(cell, LayerId::Temperature);
-            if delta != 0 {
-                out.layers.push((idx, LayerId::Temperature, delta));
+            let before = view.layer(cell, LayerId::Temperature);
+            if new != before {
+                out.layers.push((idx, LayerId::Temperature, new - before));
+            }
+            if crossed_zero(before, new) {
+                out.freeze_thaw.push(idx);
             }
         }
         out

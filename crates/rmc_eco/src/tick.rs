@@ -46,8 +46,8 @@ struct Passes {
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
-/// marks the season boundary in `activity`, then runs
-/// `seasons.substeps` sub-steps. `world` must carry the tables'
+/// clears the freeze-thaw bits (SAD-P2 §7.5), marks the season boundary in
+/// `activity`, then runs `seasons.substeps` sub-steps. `world` must carry the tables'
 /// displacement rules ([`EcoTables::displacement_rules`]).
 pub fn season_tick(
     world: &mut World,
@@ -66,6 +66,7 @@ pub fn season_tick(
         water: WaterPass::new(tables),
     };
     let mut report = TickReport::default();
+    world.eco_clear_freeze_thaw();
     activity.season_boundary(world);
     for _ in 0..tables.seasons().substeps {
         let start = Instant::now();

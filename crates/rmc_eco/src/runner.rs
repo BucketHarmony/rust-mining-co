@@ -44,7 +44,7 @@ pub enum Exec {
 ///
 /// Applied in this order: material changes through
 /// [`World::eco_set`] (which runs the displacement rules), then layer
-/// deltas, then plant states, then the ledger terms.
+/// deltas, then plant states, then freeze-thaw bits, then the ledger terms.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JacobiOut {
     /// New materials. A cell that already holds the material is skipped.
@@ -57,6 +57,9 @@ pub struct JacobiOut {
     pub layers: Vec<(u16, LayerId, i32)>,
     /// Plant states to write (`None`: removed).
     pub plants: Vec<(u16, Option<PlantState>)>,
+    /// Cells whose freeze-thaw bit (SAD-P2 §7.5) to set. The bits are not
+    /// hashed, so setting one is not a change.
+    pub freeze_thaw: Vec<u16>,
     /// Ledger terms of the computed changes.
     pub ledger: SeasonLedger,
 }
@@ -67,6 +70,7 @@ impl JacobiOut {
         self.materials.is_empty()
             && self.layers.iter().all(|&(_, _, d)| d == 0)
             && self.plants.is_empty()
+            && self.freeze_thaw.is_empty()
             && self.ledger == SeasonLedger::default()
     }
 }
@@ -233,7 +237,8 @@ pub fn run_jacobi_on(
     report
 }
 
-/// Applies one chunk's output: materials, layer deltas, plants, ledger.
+/// Applies one chunk's output: materials, layer deltas, plants, freeze-thaw
+/// bits, ledger.
 /// Returns whether anything changed or a ledger term was booked.
 ///
 /// Panics if a delta would take a moisture, substance or gas layer below 0:
@@ -284,6 +289,9 @@ fn apply_out(world: &mut World, pos: ChunkPos, out: &JacobiOut, ledger: &mut Sea
     }
     for &(i, plant) in &out.plants {
         changed |= world.eco_put_plant(cell(i), plant);
+    }
+    for &i in &out.freeze_thaw {
+        world.eco_mark_freeze_thaw(cell(i));
     }
     merge(ledger, &out.ledger);
     changed

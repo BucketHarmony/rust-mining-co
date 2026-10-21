@@ -1511,8 +1511,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Bit definition: SAD-P2 §7.5 'Freeze-thaw bit' (cleared at season start; set when the temperature pass changes the sign of T < 0)."
+      "passes": true,
+      "notes": "Bit definition: SAD-P2 §7.5 'Freeze-thaw bit' (cleared at season start; set when the temperature pass changes the sign of T < 0).",
+      "passedAt": "2026-10-21T05:01:54Z"
     },
     {
       "id": "F111",

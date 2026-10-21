@@ -12,6 +12,7 @@ pub mod temperature;
 pub mod tick;
 pub mod transitions;
 pub mod water;
+pub mod weathering;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};

@@ -279,6 +279,27 @@ impl World {
             .is_some_and(|c| c.active[sweep].insert(local))
     }
 
+    /// Sets the freeze-thaw bit of `cell` (SAD-P2 §7.5); returns whether it
+    /// was clear. Host-only, for `rmc_eco`'s temperature pass. A cell
+    /// outside the bounds or in a non-resident chunk has no bit.
+    pub fn eco_mark_freeze_thaw(&mut self, cell: CellPos) -> bool {
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        let (pos, local) = cell.split();
+        self.chunks
+            .get_mut(&pos)
+            .is_some_and(|c| c.freeze_thaw.insert(local))
+    }
+
+    /// Clears the freeze-thaw bits of every chunk (SAD-P2 §7.5: at the
+    /// start of each season). Host-only, for `rmc_eco`'s season tick.
+    pub fn eco_clear_freeze_thaw(&mut self) {
+        for chunk in self.chunks.values_mut() {
+            chunk.freeze_thaw.clear();
+        }
+    }
+
     /// Removes `cell` from the active set of sweep `sweep`; returns whether
     /// it was present. Panics if `sweep` is not below `N_SWEEPS`.
     pub fn eco_deactivate(&mut self, cell: CellPos, sweep: usize) -> bool {
