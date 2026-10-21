@@ -3145,3 +3145,35 @@ Next:
 - Note for F153: water is `diggable: true`, so the ignition sphere turns water cells to air through `eco_set`, and that boils them to steam (the pass boiling exception). The F153 session should decide whether that is intended.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 20:00 — F153 Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set — passed
+Done:
+- `GasPass` step 5 (SAD-P2 §7.4) runs in the flammable gas's sweep, after drift, diffusion and vent on the visited cell.
+  - It fires when the cell still holds `c ≥ ignite_min` and a face neighbor is a `heat_source` material or the `magma` role.
+  - The gas goes to 0 and books `react_out[g] += c`. The `smoke` role on the cell gains `min(c, room)`, and `react_in[smoke]` books that actual amount.
+  - Every in-bounds, resident, `diggable` cell of `Sphere { center, radius: (c / 64) · ignite_radius_per_64 }` becomes air through `World::eco_set`, in the shape's (y, z, x) order. There are no yields. `ignitions += 1`.
+  - The `64` is the named const `IGNITE_UNIT`, a fixed divisor written in the SAD formula (rule 19).
+- No table or rate changed. Only `rmc_eco/src/gases.rs` changed.
+Tests added:
+- `gases::tests::ignition_clears_diggable_sphere_smoke_by_room_displacement_ledgered`: two chunks, only the first resident.
+  - Blast A: firedamp 200 over magma, with smoke 100 already on the cell, so smoke gains its room of 155.
+  - Its radius-6 sphere holds stone, bedrock and magma (neither diggable, both stay), water with fill 150 (boils to 150 steam), ice with fill 200 (moisture kept), and wet limestone holding acid 250 under a plant that holds acid 20. The plant dies, its litter goes into the cell, and 15 acid is booked to `saturation_loss`.
+  - Blast B: firedamp 128 beside `magma_source`, at z = 2 next to the missing chunk. Out-of-bounds and non-resident cells are skipped.
+  - Asserted: exactly the diggable sphere cells become air (full material map compared); the ledger is equal field by field; the invariant checker holds; the layers and active sets are as expected; the next 4 rounds of every gas sweep change nothing.
+- `gases::tests::no_ignition_below_min`: none of these ignite over 8 rounds of every gas sweep:
+  - firedamp 63 over magma;
+  - firedamp 64 with magma only on an edge diagonal;
+  - firedamp 64 beside stone at 1300 °C (hot, but not a `heat_source`);
+  - steam, chokedamp and smoke at 255 over magma.
+  - A control at exactly 64 beside `magma_source` ignites once (radius 2). The test also checks that only firedamp is flammable in the shipped table, at `ignite_min` 64.
+- TDD check: with the step-5 call commented out, both tests failed (no ignition).
+Decisions:
+- Water in a blast sphere boils to steam (`boil_to_steam`), because `World::eco_set` applies the boiling exception to every pass-caused water → air (§7.0.1, "for the (from, to) pair"). §7.0 lists ignition under "moisture stays on the cell". Following that would need a second pass-side cell-write path, and hard rule 2 allows only `eco_set`. This answers the question the F152 session raised.
+- Step 5 runs after vent (the SAD numbering), so a sky-open cell vents and never ignites. Ignition uses the concentration left after the cell's own drift and diffusion moves.
+- Heat means the material, not the temperature: the `heat_source` field or the `magma` role. Hot stone does not ignite gas (§7.4 wording).
+- A flammable row needs an `air` role to ignite. Without a `smoke` role the gas still burns but makes no smoke.
+Next:
+- Ready: F154 (gas tint/HUD), F155 (chokedamp), F160 (light). F156 needs F154.
+- For F156: a cave over coal next to magma will ignite once firedamp reaches 64. The `firedamp_vented_by_shaft` fixture should keep magma away from the cave.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
