@@ -2148,5 +2148,5 @@ Decisions:
 - This extends SAD §11.2, as the F097 notes say: the shader varies brightness per cell. docs/SAD.md is not edited.
 - Rule 21: no luminance or color thresholds. The image checks are a distinct-color count (not blank) and "two frames differ" or "two frames are the same".
 - The shader mirror is checked by source text (constants and bindings) and by the E2E rendering with it, not by running the WGSL in a unit test.
-Next: F110 (E1), the next unpassed feature whose blockers pass. It is the first feature after the owner playability batch.
+Next: F125 (E2, ice transitions), the first unpassed feature whose blockers all pass. F110 to F114 (E1) are still blocked. The owner playability batch F093 to F097 is done.
 Blockers: none.
