@@ -3,7 +3,8 @@
 //! A [`MeshInput`] holds one chunk's 32³ cells plus a one-cell border taken
 //! from its neighbours (34³ in all), so faces and ambient occlusion on the
 //! chunk's border read the right cells. Cells outside the world bounds and
-//! cells of chunks that are not resident read as air.
+//! cells of chunks that are not resident read as air, and so does the
+//! bounds shell above the surface (F095; see [`MeshInput::from_world`]).
 //!
 //! [`GreedyMesher`] emits a face wherever a `Solid` cell of the chunk meets a
 //! cell that is not `Solid`, and merges equal faces in each slice into
@@ -22,7 +23,7 @@ use std::sync::Arc;
 
 use bevy::color::Color;
 use bevy::prelude::IVec3;
-use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellPos, ChunkPos};
+use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::World;
 
@@ -89,7 +90,8 @@ impl MeshInput {
     /// Copies the chunk at `pos` and its border from `world`, or `None` if
     /// that chunk is not resident. The revision is the chunk's. Border cells in
     /// chunks that are not resident, or outside the bounds, are air (the same
-    /// as [`World::get_cell`] returning `None`).
+    /// as [`World::get_cell`] returning `None`). The bounds shell above the
+    /// surface is air too (see `open_shell_above_surface`).
     pub fn from_world(world: &World, pos: ChunkPos) -> Option<Self> {
         let revision = world.chunk(pos)?.revision;
         let mut input = Self::empty(pos, revision, world.materials().clone());
@@ -116,7 +118,48 @@ impl MeshInput {
                 }
             }
         }
+        input.open_shell_above_surface(world);
         Some(input)
+    }
+
+    /// Turns the bounds shell above the surface into air (F095), so the
+    /// world's edge is the terrain's edge against the sky rather than a
+    /// wall standing over it. A cell is that shell when it lies in the
+    /// outermost x or z column ring of the bounds, is `Solid` and not
+    /// diggable, and its interior column (the nearest cell one step in from
+    /// the ring, at the same height) is not `Solid` from that height to the
+    /// top of the bounds: the sky is open above it.
+    ///
+    /// Below the surface (beside the rock, a cave or a tunnel, or under an
+    /// overhang) the shell stays, and the floor is never touched. Only the
+    /// mesh input changes: the replica keeps the cells, and the player still
+    /// stops at them.
+    fn open_shell_above_surface(&mut self, world: &World) {
+        let bounds = world.bounds();
+        let (lo, hi) = (bounds.min.0, bounds.max.0);
+        let origin = self.pos.origin_cell().0;
+        let ys: Vec<i32> = (-1..=CHUNK_SIZE)
+            .filter(|&y| (lo.y..=hi.y).contains(&(origin.y + y)))
+            .collect();
+        for z in -1..=CHUNK_SIZE {
+            for x in -1..=CHUNK_SIZE {
+                let (wx, wz) = (origin.x + x, origin.z + z);
+                let Some((ix, iz)) = shell_interior(bounds, wx, wz) else {
+                    continue;
+                };
+                // The lowest height from which the interior column is open
+                // to the top of the bounds.
+                let mut open_from = hi.y + 1;
+                while open_from > lo.y && !world.is_solid(CellPos::new(ix, open_from - 1, iz)) {
+                    open_from -= 1;
+                }
+                for &y in &ys {
+                    if origin.y + y >= open_from && is_shell(&self.materials, self.get(x, y, z)) {
+                        self.set(x, y, z, MaterialId::AIR);
+                    }
+                }
+            }
+        }
     }
 
     /// Index of the chunk-local cell `(x, y, z)`, each in `-1..=32`.
@@ -139,6 +182,27 @@ impl MeshInput {
     pub fn set(&mut self, x: i32, y: i32, z: i32, id: MaterialId) {
         self.cells[Self::index(x, y, z)] = id;
     }
+}
+
+/// Whether `id` is a shell material: `Solid` and not diggable (F095).
+pub(crate) fn is_shell(materials: &MaterialTable, id: MaterialId) -> bool {
+    materials
+        .get(id)
+        .is_some_and(|d| d.is_solid() && !d.diggable)
+}
+
+/// For a column `(x, z)` in the outermost x or z ring of `bounds`, the
+/// interior column one step in from it (for a corner, the diagonal one),
+/// whose sky decides whether the ring's shell is drawn (F095). `None` for
+/// any other column, and when the bounds have no interior.
+pub(crate) fn shell_interior(bounds: CellAabb, x: i32, z: i32) -> Option<(i32, i32)> {
+    let (lo, hi) = (bounds.min.0, bounds.max.0);
+    let inside = (lo.x..=hi.x).contains(&x) && (lo.z..=hi.z).contains(&z);
+    let ring = x == lo.x || x == hi.x || z == lo.z || z == hi.z;
+    if !inside || !ring || hi.x - lo.x < 2 || hi.z - lo.z < 2 {
+        return None;
+    }
+    Some((x.clamp(lo.x + 1, hi.x - 1), z.clamp(lo.z + 1, hi.z - 1)))
 }
 
 /// Vertex data for one chunk. Every quad is 4 consecutive vertices and

@@ -13,8 +13,11 @@
 //! a changed cell on a chunk border also marks the neighbours whose border
 //! holds it: the face-adjacent one, and for cells on an edge or corner the
 //! edge- and corner-adjacent ones too. A snapshot or `Full` delta may change
-//! any border cell, so it marks every neighbour. Only resident chunks are
-//! marked; a chunk that becomes resident later is marked then.
+//! any border cell, so it marks every neighbour. A change in a column one
+//! step in from the bounds' x or z edge also marks the chunks below it
+//! there, because the mesh hides the shell beside a column open to the sky
+//! (F095). Only resident chunks are marked; a chunk that becomes resident
+//! later is marked then.
 //!
 //! If a message was lost, the next delta for an affected chunk is more than
 //! one revision ahead of the replica's. The replica then writes a
@@ -29,11 +32,12 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::chunk::{Chunk, ChunkStorage};
-use rmc_world::coords::{CHUNK_MASK, CHUNK_VOLUME, CellAabb, ChunkPos, LocalPos};
+use rmc_world::coords::{CHUNK_MASK, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::edit::{ChunkDelta, PlayerId};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::{DeltaError, World};
 
+use crate::mesher::{is_shell, shell_interior};
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 
 /// Why a host message could not be applied to the [`Replica`].
@@ -189,6 +193,7 @@ impl Replica {
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
                 self.awaiting.remove(&pos);
                 self.mark_with_neighbours(pos);
+                self.mark_shell_below_chunk(pos);
             }
             ServerMsg::Applied(result) => {
                 let mut refused = Vec::new();
@@ -201,10 +206,15 @@ impl Replica {
                         Ok(()) => match delta {
                             ChunkDelta::Cells { changes, .. } => {
                                 for &(index, _) in changes {
-                                    self.mark_cell(pos, LocalPos::from_index(index));
+                                    let local = LocalPos::from_index(index);
+                                    self.mark_cell(pos, local);
+                                    self.mark_shell_below(CellPos::from_chunk_local(pos, local));
                                 }
                             }
-                            ChunkDelta::Full { .. } => self.mark_with_neighbours(pos),
+                            ChunkDelta::Full { .. } => {
+                                self.mark_with_neighbours(pos);
+                                self.mark_shell_below_chunk(pos);
+                            }
                             ChunkDelta::Layers { .. } => {}
                         },
                         Err(DeltaError::RevisionGap { local, got, .. }) if got > local => {
@@ -263,6 +273,69 @@ impl Replica {
             for dz in reach(local.0.z) {
                 for dx in reach(local.0.x) {
                     self.mark(ChunkPos::new(p.x + dx, p.y + dy, p.z + dz));
+                }
+            }
+        }
+    }
+
+    /// Marks the resident chunks below the one holding `cell` whose mesh
+    /// depends on `cell` (F095). The mesh input drops the bounds shell beside an
+    /// interior column that is open to the sky (see [`MeshInput::from_world`]),
+    /// so a change in a column one step in from the ring can show or hide
+    /// shell cells in chunks far below it, not only in its neighbours. Only
+    /// such a column, with shell under its own chunk, marks anything.
+    ///
+    /// [`MeshInput::from_world`]: crate::mesher::MeshInput::from_world
+    fn mark_shell_below(&mut self, cell: CellPos) {
+        let bounds = self.world.bounds();
+        let c = cell.0;
+        let floor = cell.chunk().origin_cell().0.y;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let (rx, rz) = (c.x + dx, c.z + dz);
+                if shell_interior(bounds, rx, rz) != Some((c.x, c.z)) {
+                    continue;
+                }
+                let materials = self.world.materials();
+                let shell_below = (bounds.min.0.y..floor).rev().any(|y| {
+                    self.world
+                        .get_cell(CellPos::new(rx, y, rz))
+                        .is_some_and(|id| is_shell(materials, id))
+                });
+                if !shell_below {
+                    continue;
+                }
+                // Every chunk column whose mesh input (with its one-cell
+                // border) holds the ring column, below the changed cell.
+                let top = cell.chunk().0.y;
+                let bottom = CellPos::new(rx, bounds.min.0.y, rz).chunk().0.y;
+                let mut columns = BTreeSet::new();
+                for ez in -1..=1 {
+                    for ex in -1..=1 {
+                        let p = CellPos::new(rx + ex, c.y, rz + ez).chunk().0;
+                        columns.insert((p.x, p.z));
+                    }
+                }
+                for (x, z) in columns {
+                    for y in bottom..top {
+                        self.mark(ChunkPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+    }
+
+    /// [`Replica::mark_shell_below`] for every column of a chunk whose every
+    /// cell may have changed, from its top cell.
+    fn mark_shell_below_chunk(&mut self, pos: ChunkPos) {
+        let bounds = self.world.bounds();
+        let origin = pos.origin_cell().0;
+        let top = (origin.y + CHUNK_MASK).min(bounds.max.0.y);
+        for z in origin.z..=origin.z + CHUNK_MASK {
+            for x in origin.x..=origin.x + CHUNK_MASK {
+                let cell = CellPos::new(x, top, z);
+                if bounds.contains(cell) {
+                    self.mark_shell_below(cell);
                 }
             }
         }
@@ -617,6 +690,68 @@ mod tests {
 
     /// A local cell and the neighbour offsets that must be marked with it.
     type BorderCase = ((i32, i32, i32), &'static [(i32, i32, i32)]);
+
+    #[test]
+    fn shell_column_change_marks_chunks_below() {
+        let mut f = Fixture::new(&[]);
+        // A bedrock wall along x = 0, the full height, as worldgen makes
+        // the shell.
+        let brass = f.brass;
+        f.brass = f.replica().world().materials().id("bedrock").unwrap();
+        let wall = f.edit(Shape::Box {
+            min: CellPos::new(0, 0, 0),
+            max: CellPos::new(0, 95, 95),
+        });
+        f.brass = brass;
+        assert!(!wall.deltas.is_empty(), "the wall is built");
+        f.deliver(vec![ServerMsg::Applied(wall)]);
+        f.take_dirty();
+
+        // One step in from the wall, high up: the wall's chunks below too,
+        // since the mesh may now show or hide the shell there.
+        let r = f.edit_cell(1, 64 + 20, 32 + 5);
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        assert_eq!(f.take_dirty(), set(&[c(0, 2, 1), c(0, 1, 1), c(0, 0, 1)]));
+        // In the first column of a chunk, the chunks below in the column
+        // before it too: their mesh border holds the wall beside it.
+        let r = f.edit_cell(1, 64 + 20, 32);
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        assert_eq!(
+            f.take_dirty(),
+            set(&[
+                c(0, 2, 1),
+                c(0, 2, 0),
+                c(0, 1, 1),
+                c(0, 0, 1),
+                c(0, 1, 0),
+                c(0, 0, 0)
+            ])
+        );
+        // Two steps in, or on the wall itself: only the cell's own chunk.
+        let r = f.edit_cell(2, 64 + 20, 32 + 5);
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        assert_eq!(f.take_dirty(), set(&[c(0, 2, 1)]));
+        let r = f.edit_cell(0, 64 + 20, 32 + 6);
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        assert_eq!(f.take_dirty(), set(&[c(0, 2, 1)]));
+        // Next to the -Z edge, where no shell stands (stone is diggable):
+        // only its own chunk.
+        let r = f.edit_cell(10, 64 + 20, 1);
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        assert_eq!(f.take_dirty(), set(&[c(0, 2, 0)]));
+
+        // A snapshot of a chunk beside the wall marks the wall's chunks
+        // below it as well as its neighbours: in its own column, and in the
+        // columns on either side, whose borders hold its first and last
+        // rows of wall. Chunks away from the wall stay clean.
+        let snapshot = f.snapshots(vec![c(0, 2, 1)]);
+        f.deliver(snapshot);
+        let dirty = f.take_dirty();
+        for z in 0..3 {
+            assert!(dirty.contains(&c(0, 0, z)), "{z}: {dirty:?}");
+        }
+        assert!(!dirty.contains(&c(1, 0, 1)), "{dirty:?}");
+    }
 
     #[test]
     fn border_edit_marks_neighbor_dirty() {

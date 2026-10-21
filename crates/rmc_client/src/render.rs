@@ -44,6 +44,7 @@ use rmc_world::coords::{CELL_SIZE_M, CellAabb};
 
 use crate::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveMaterialPlugin};
 use crate::meshpipe::{ChunkMesh, MeshSystems};
+use crate::replica::Replica;
 
 /// The sky at and below the horizon, and the fog's color: terrain fades
 /// into it with distance.
@@ -86,6 +87,13 @@ pub const SKY_FACE_PX: u32 = 256;
 /// spawn, more than half fog; its far corners are nearly all fog.
 pub const FOG_START_M: f32 = 24.0;
 pub const FOG_END_M: f32 = 96.0;
+
+/// Above the top of the world the fog thins, so the fly camera high up
+/// still sees the ground (F095): for every meter the eye is above the top
+/// of the bounds, the fog starts and ends this many meters farther away.
+/// Over 1, so looking straight down the top of the world is as clear as a
+/// wall [`FOG_START_M`] away is from the ground.
+pub const FOG_THINNING_PER_M: f32 = 1.5;
 
 /// Ambient light, in cd/m². Bevy's default is 80; this is high on purpose so
 /// unlit caves read clearly (SAD §11.3).
@@ -178,7 +186,8 @@ impl Plugin for GameRenderPlugin {
                 affects_lightmapped_meshes: true,
             })
             .add_systems(Startup, (create_chunk_material, spawn_camera, spawn_sun))
-            .add_systems(Update, add_chunk_material.after(MeshSystems));
+            .add_systems(Update, add_chunk_material.after(MeshSystems))
+            .add_systems(PostUpdate, fog_follows_height);
     }
 }
 
@@ -282,14 +291,47 @@ pub fn sun_direction() -> Vec3 {
 /// [`FOG_START_M`] to [`FOG_END_M`]. The sun does not tint it, so it
 /// matches the sky at the horizon in every direction.
 pub fn distance_fog() -> DistanceFog {
+    distance_fog_at(0.0)
+}
+
+/// The fog for an eye `height_m` above the top of the world bounds: the
+/// [`distance_fog`] at or below the top, and above it both ends pushed out
+/// by [`FOG_THINNING_PER_M`] per meter.
+pub fn distance_fog_at(height_m: f32) -> DistanceFog {
+    let push = height_m.max(0.0) * FOG_THINNING_PER_M;
     DistanceFog {
         color: HORIZON_COLOR,
         directional_light_color: Color::NONE,
         directional_light_exponent: 0.0,
         falloff: FogFalloff::Linear {
-            start: FOG_START_M,
-            end: FOG_END_M,
+            start: FOG_START_M + push,
+            end: FOG_END_M + push,
         },
+    }
+}
+
+/// A linear fog's `(start, end)`, in meters; `None` for any other falloff.
+pub fn linear_fog_range(falloff: &FogFalloff) -> Option<(f32, f32)> {
+    match *falloff {
+        FogFalloff::Linear { start, end } => Some((start, end)),
+        _ => None,
+    }
+}
+
+/// Keeps the game camera's fog at [`distance_fog_at`] its height above the
+/// top of the replica's bounds. Without a replica the camera keeps the
+/// ground-level fog.
+fn fog_follows_height(
+    replica: Option<Res<Replica>>,
+    mut cameras: Query<(&Transform, &mut DistanceFog), With<GameCamera>>,
+) {
+    let top_m = replica.map(|r| (r.world().bounds().max.0.y + 1) as f32 * CELL_SIZE_M);
+    for (transform, mut fog) in &mut cameras {
+        let height_m = top_m.map_or(0.0, |top| transform.translation.y - top);
+        let want = distance_fog_at(height_m).falloff;
+        if linear_fog_range(&fog.falloff) != linear_fog_range(&want) {
+            fog.falloff = want;
+        }
     }
 }
 
@@ -435,7 +477,12 @@ fn add_chunk_material(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmc_world::coords::{CellAabb, CellPos, ChunkPos};
+    use crate::mesher::{ChunkMesher, GreedyMesher, MeshInput};
+    use rmc_world::chunk::Chunk;
+    use rmc_world::coords::{CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
+    use rmc_world::materials::{MaterialId, MaterialTable};
+    use rmc_world::world::World as CellWorld;
+    use std::sync::Arc;
 
     fn render_app(materials: bool) -> App {
         let mut app = App::new();
@@ -823,5 +870,200 @@ mod tests {
             .expect("fog without images");
         assert_eq!(fog, HORIZON_COLOR);
         assert!(!skybox);
+    }
+
+    #[test]
+    fn fog_thins_with_camera_height() {
+        // At or below the top of the world: the ground-level fog.
+        for h in [-80.0, -1.0, 0.0] {
+            assert_eq!(
+                linear_fog_range(&distance_fog_at(h).falloff),
+                Some((FOG_START_M, FOG_END_M)),
+                "{h} m"
+            );
+        }
+        // Above it, the fog starts and ends farther away the higher the
+        // eye, keeps its color, and the top of the world straight below is
+        // never more fogged than a wall FOG_START_M away on the ground.
+        let mut last = (FOG_START_M, FOG_END_M);
+        for h in [1.0, 8.0, 24.0, crate::flycam::FLY_BOUNDS_MARGIN_M] {
+            let fog = distance_fog_at(h);
+            let (start, end) = linear_fog_range(&fog.falloff).expect("linear fog");
+            assert!(start > last.0 && end > last.1, "{h} m: {start}..{end}");
+            assert!(start - h >= FOG_START_M, "{h} m: the ground below is clear");
+            assert_eq!(end - start, FOG_END_M - FOG_START_M, "the same band");
+            assert_eq!(fog.color, HORIZON_COLOR);
+            last = (start, end);
+        }
+
+        // The game camera's fog follows its height over the replica's top
+        // (16 m here).
+        let table = Arc::new(MaterialTable::load(MATERIALS_PATH).expect("materials load"));
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 63));
+        let top_m = 32.0 * CELL_SIZE_M;
+        let mut app = render_app(false);
+        let camera_fog = |app: &mut App, y: f32| {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<GameCamera>>();
+            q.single_mut(world).expect("one game camera").translation.y = y;
+            app.update();
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&DistanceFog, With<GameCamera>>();
+            linear_fog_range(&q.single(world).expect("fog").falloff)
+        };
+        // No replica yet: ground-level fog, however high.
+        assert_eq!(camera_fog(&mut app, 500.0), Some((FOG_START_M, FOG_END_M)));
+        app.insert_resource(Replica::from_world(CellWorld::new(table, bounds)));
+        for h in [30.0, 5.0, -3.0, 0.0, 12.5] {
+            assert_eq!(
+                camera_fog(&mut app, top_m + h),
+                linear_fog_range(&distance_fog_at(h).falloff),
+                "{h} m above the top"
+            );
+        }
+    }
+
+    const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
+
+    /// The ground's top in [`shell_world`], in cells: stone below it.
+    const SURFACE_Y: i32 = 40;
+
+    /// 64³ cells (2 × 2 × 2 chunks) shaped like a generated world: a bedrock
+    /// shell (two floor layers, one-cell walls the full height of the
+    /// bounds), stone up to [`SURFACE_Y`], air above. A cave touches the -X
+    /// wall underground, and a stone slab at y 50 juts from it above the
+    /// ground.
+    fn shell_world() -> CellWorld {
+        let table = Arc::new(MaterialTable::load(MATERIALS_PATH).expect("materials load"));
+        let bedrock = table.id("bedrock").unwrap();
+        let stone = table.id("stone").unwrap();
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 63, 63));
+        let (lo, hi) = (bounds.min.0, bounds.max.0);
+        let in_box = |c: IVec3, a: IVec3, b: IVec3| c.cmpge(a).all() && c.cmple(b).all();
+        let material = |c: IVec3| {
+            let wall = c.x == lo.x || c.x == hi.x || c.z == lo.z || c.z == hi.z;
+            if c.y - lo.y < 2 || wall {
+                bedrock
+            } else if in_box(c, IVec3::new(1, 10, 20), IVec3::new(3, 12, 22)) {
+                MaterialId::AIR
+            } else if c.y < SURFACE_Y || in_box(c, IVec3::new(1, 50, 30), IVec3::new(5, 50, 34)) {
+                stone
+            } else {
+                MaterialId::AIR
+            }
+        };
+        let mut world = CellWorld::new(table, bounds);
+        for pos in bounds.chunks() {
+            let mut chunk = Chunk::uniform(MaterialId::AIR);
+            let origin = pos.origin_cell().0;
+            for i in 0..CHUNK_VOLUME {
+                let local = LocalPos::from_index(i as u16);
+                chunk
+                    .storage
+                    .set(local, material(origin + local.0.as_ivec3()));
+            }
+            world.insert_chunk(pos, chunk).expect("chunk in bounds");
+        }
+        world
+    }
+
+    /// One meshed quad in world cells: its normal and its corners.
+    struct WorldQuad {
+        normal: IVec3,
+        corners: [Vec3; 4],
+    }
+
+    impl WorldQuad {
+        /// Whether the quad faces along `normal` and covers `point` (cells).
+        fn covers(&self, normal: IVec3, point: Vec3) -> bool {
+            let axis = (0..3).find(|&a| normal[a] != 0).unwrap();
+            let min = self.corners.iter().fold(Vec3::MAX, |m, &c| m.min(c));
+            let max = self.corners.iter().fold(Vec3::MIN, |m, &c| m.max(c));
+            self.normal == normal
+                && (min[axis] - point[axis]).abs() < 1e-4
+                && (0..3)
+                    .filter(|&a| a != axis)
+                    .all(|a| min[a] <= point[a] && point[a] <= max[a])
+        }
+    }
+
+    /// Every quad the greedy mesher makes for `world`, in world cells.
+    fn world_quads(world: &CellWorld) -> Vec<WorldQuad> {
+        let mut out = Vec::new();
+        for pos in world.bounds().chunks() {
+            let input = MeshInput::from_world(world, pos).expect("resident chunk");
+            let data = GreedyMesher.mesh(&input);
+            let origin = pos.origin_cell().0.as_vec3();
+            for q in 0..data.quad_count as usize {
+                let n = data.normals[4 * q];
+                out.push(WorldQuad {
+                    normal: IVec3::new(n[0] as i32, n[1] as i32, n[2] as i32),
+                    corners: std::array::from_fn(|k| {
+                        origin + Vec3::from(data.positions[4 * q + k]) / CELL_SIZE_M
+                    }),
+                });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn shell_above_surface_is_not_drawn_as_a_wall() {
+        let world = shell_world();
+        let quads = world_quads(&world);
+        assert!(!quads.is_empty());
+
+        // Above the ground nothing is drawn but the slab and the shell it
+        // roofs: no wall stands over the terrain at the world's edge, from
+        // inside (its inward faces), from above (its top) or from outside.
+        let overhang = |c: Vec3| c.x <= 6.0 && c.y <= 51.0 && (30.0..=35.0).contains(&c.z);
+        for q in &quads {
+            if q.corners.iter().any(|c| c.y > SURFACE_Y as f32) {
+                assert!(
+                    q.corners.iter().all(|&c| overhang(c)),
+                    "a quad above the surface, away from the slab: normal {}, corners {:?}",
+                    q.normal,
+                    q.corners
+                );
+            }
+        }
+
+        // The shell is drawn where the sky is not open above it, so the
+        // world is closed underground and under a roof.
+        let has = |normal: IVec3, point: Vec3| quads.iter().any(|q| q.covers(normal, point));
+        assert!(
+            has(IVec3::X, Vec3::new(1.0, 11.5, 21.5)),
+            "the wall beside the cave"
+        );
+        assert!(
+            has(IVec3::X, Vec3::new(1.0, 45.5, 32.5)),
+            "the wall under the slab"
+        );
+        assert!(
+            has(IVec3::NEG_X, Vec3::new(0.0, 20.5, 10.5)),
+            "the shell's outer face below the ground"
+        );
+        assert!(
+            has(IVec3::NEG_Y, Vec3::new(10.5, 0.0, 10.5)),
+            "the floor's underside"
+        );
+        // The wall's top at the ground is drawn, so the edge has no gap.
+        for point in [
+            Vec3::new(0.5, SURFACE_Y as f32, 10.5),
+            Vec3::new(63.5, SURFACE_Y as f32, 10.5),
+            Vec3::new(10.5, SURFACE_Y as f32, 0.5),
+            Vec3::new(10.5, SURFACE_Y as f32, 63.5),
+            Vec3::new(0.5, SURFACE_Y as f32, 0.5),
+        ] {
+            assert!(has(IVec3::Y, point), "the shell's top at {point}");
+        }
+
+        // Only the mesh changes: the replica keeps the wall, so the player
+        // still stops at the world's edge.
+        let table = world.materials().clone();
+        let bedrock = table.id("bedrock").unwrap();
+        for y in SURFACE_Y..64 {
+            assert_eq!(world.get_cell(CellPos::new(0, y, 10)), Some(bedrock));
+        }
     }
 }

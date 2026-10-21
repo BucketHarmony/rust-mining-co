@@ -1,8 +1,11 @@
 //! Fly camera (noclip) for the debug editor (SAD §11.6).
 //!
-//! While [`FlyCam::enabled`], the [`GameCamera`] moves freely: no collision,
-//! no gravity, no world bounds. It is separate from the player controller
-//! and does not read the replica, so it passes through solid cells.
+//! While [`FlyCam::enabled`], the [`GameCamera`] moves freely: no collision
+//! and no gravity. It is separate from the player controller and does not
+//! read the replica's cells, so it passes through solid cells. It stays
+//! within the replica's bounds plus [`FLY_BOUNDS_MARGIN_M`] on every side
+//! (F095), so it never flies so far that the world is lost in the fog;
+//! without a replica it is not clamped.
 //!
 //! Input comes from `ButtonInput<KeyCode>` and `AccumulatedMouseMotion`
 //! only (SAD §11.4), so injected input drives it exactly as real input:
@@ -18,14 +21,23 @@
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 
+use rmc_world::coords::{CELL_SIZE_M, CellAabb};
+
 use crate::cursor::{CursorGrab, look_allowed};
 use crate::render::GameCamera;
+use crate::replica::Replica;
 
 /// Turns the fly camera on and off.
 pub const FLY_TOGGLE_KEY: KeyCode = KeyCode::KeyV;
 
 /// How far the fly camera pitches up or down, in degrees.
 pub const MAX_PITCH_DEG: f32 = 89.0;
+
+/// How far past the world bounds the fly camera may go, in meters, on every
+/// side. Far enough to look down over the whole edge of the world; the fog
+/// thins with height (see [`distance_fog_at`](crate::render::distance_fog_at)),
+/// so from here the ground is still in sight.
+pub const FLY_BOUNDS_MARGIN_M: f32 = 48.0;
 
 /// Fly camera settings and state.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -93,6 +105,15 @@ pub fn fly_velocity(rotation: Quat, keys: &ButtonInput<KeyCode>, fly: &FlyCam) -
     dir.normalize_or_zero() * speed
 }
 
+/// `p` (meters) clamped to `bounds` grown by [`FLY_BOUNDS_MARGIN_M`] on
+/// every side.
+pub fn clamp_to_bounds(p: Vec3, bounds: CellAabb) -> Vec3 {
+    let margin = Vec3::splat(FLY_BOUNDS_MARGIN_M);
+    let min = bounds.min.min_corner_m() - margin;
+    let max = bounds.max.min_corner_m() + Vec3::splat(CELL_SIZE_M) + margin;
+    p.clamp(min, max)
+}
+
 fn toggle_fly_cam(keys: Option<Res<ButtonInput<KeyCode>>>, mut fly: ResMut<FlyCam>) {
     if keys.is_some_and(|k| k.just_pressed(FLY_TOGGLE_KEY)) {
         fly.enabled = !fly.enabled;
@@ -105,6 +126,7 @@ fn fly_camera(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mouse: Option<Res<AccumulatedMouseMotion>>,
     grab: Option<Res<CursorGrab>>,
+    replica: Option<Res<Replica>>,
     time: Res<Time>,
     mut cameras: Query<&mut Transform, With<GameCamera>>,
 ) {
@@ -125,6 +147,13 @@ fn fly_camera(
             let velocity = fly_velocity(transform.rotation, keys, &fly);
             if velocity != Vec3::ZERO {
                 transform.translation += velocity * dt;
+            }
+        }
+        // Also a camera that was put outside (or turned to fly there).
+        if let Some(r) = replica.as_deref() {
+            let at = clamp_to_bounds(transform.translation, r.world().bounds());
+            if at != transform.translation {
+                transform.translation = at;
             }
         }
     }
@@ -284,6 +313,83 @@ mod tests {
         let expected = fly.speed_mps * fly.fast_multiplier * 2.0;
         assert!((fell - expected).abs() < 1e-2, "fell {fell} m in 2 s");
         assert!(transform(&app, camera).translation.y < 0.0, "below y = 0");
+    }
+
+    #[test]
+    fn fly_camera_clamped_to_bounds_plus_margin() {
+        use rmc_world::coords::CellPos;
+        use rmc_world::materials::MaterialTable;
+        use rmc_world::world::World;
+        use std::sync::Arc;
+        const MATERIALS_PATH: &str =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
+
+        // 32 × 16 × 64 m, from the origin. The camera starts in the middle,
+        // looking along -Z, level.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 127));
+        let size = Vec3::new(32.0, 16.0, 64.0);
+        let middle = size / 2.0;
+        let (mut app, camera) = fly_app(Transform::from_translation(middle));
+        let table = Arc::new(MaterialTable::load(MATERIALS_PATH).expect("materials load"));
+        app.insert_resource(Replica::from_world(World::new(table, bounds)));
+        app.world_mut().resource_mut::<FlyCam>().enabled = true;
+        let fly = app.world().resource::<FlyCam>().clone();
+        let m = FLY_BOUNDS_MARGIN_M;
+        assert!(m >= 8.0, "room to look over the edge: {m} m");
+
+        // Inside the bounds a frame moves exactly speed × dt, as without
+        // bounds.
+        keys(&mut app).press(KeyCode::KeyW);
+        frame(&mut app);
+        keys(&mut app).release(KeyCode::KeyW);
+        let moved = transform(&app, camera).translation - middle;
+        assert!((moved - Vec3::NEG_Z * fly.speed_mps * DT).length() < EPS);
+
+        // Held long enough to cross the world many times, each way stops at
+        // the bounds plus the margin, and the other axes do not move.
+        use KeyCode::*;
+        let legs: [(KeyCode, Vec3); 6] = [
+            (Space, Vec3::new(middle.x, size.y + m, middle.z)),
+            (ControlLeft, Vec3::new(middle.x, -m, middle.z)),
+            (KeyD, Vec3::new(size.x + m, middle.y, middle.z)),
+            (KeyA, Vec3::new(-m, middle.y, middle.z)),
+            (KeyS, Vec3::new(middle.x, middle.y, size.z + m)),
+            (KeyW, Vec3::new(middle.x, middle.y, -m)),
+        ];
+        for (key, want) in legs {
+            app.world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .translation = middle;
+            keys(&mut app).press(key);
+            keys(&mut app).press(ShiftLeft);
+            for _ in 0..300 {
+                app.update();
+            }
+            keys(&mut app).release(key);
+            keys(&mut app).release(ShiftLeft);
+            frame(&mut app);
+            let at = transform(&app, camera).translation;
+            assert!(
+                (at - want).length() < EPS,
+                "{key:?}: at {at:?}, want {want:?}"
+            );
+        }
+        // A camera put outside is brought back on the next frame, even
+        // with no key held.
+        let far = Vec3::new(-500.0, 900.0, 30.0);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = far;
+        frame(&mut app);
+        let at = transform(&app, camera).translation;
+        assert_eq!(at, Vec3::new(-m, size.y + m, 30.0));
+        assert_eq!(
+            clamp_to_bounds(Vec3::splat(1e6), bounds),
+            size + Vec3::splat(m)
+        );
+        assert_eq!(clamp_to_bounds(middle, bounds), middle);
     }
 
     #[test]
