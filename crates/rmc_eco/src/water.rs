@@ -55,6 +55,7 @@ use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::chemistry::{Move, MoveLog};
 use crate::gases::GasPass;
 use crate::reference::global_order;
 use crate::runner::{SweepCtx, SweepPass};
@@ -90,6 +91,9 @@ pub struct WaterPass {
     magma_period: u16,
     /// The flow iteration of the current sweep within the sub-step.
     iter: u8,
+    /// The moves of steps 2–4 and 7 since the log was last cleared, for
+    /// chemistry transport (§7.6).
+    log: MoveLog,
 }
 
 /// The constants of a porous solid (a `Solid` tagged `porous`).
@@ -172,6 +176,7 @@ impl WaterPass {
             obsidian: tables.role_material("obsidian"),
             magma_period: u16::from(viscosity) + 1,
             iter: 0,
+            log: MoveLog::default(),
         }
     }
 
@@ -184,6 +189,20 @@ impl WaterPass {
     /// Flow sweeps per sub-step (`eco.flow_iters`).
     pub fn flow_iters(&self) -> u8 {
         self.flow_iters
+    }
+
+    /// The moves of steps 2–4 and 7 (§7.3) since the last
+    /// [`clear_log`](Self::clear_log), in the order they were made: a
+    /// move as `(from, to, amount, fill_from)`, a contact boil as a self
+    /// entry `(cell, cell, fill, fill)`.
+    pub fn log(&self) -> &MoveLog {
+        &self.log
+    }
+
+    /// Empties the move log; the tick does it after chemistry transport
+    /// has replayed a sub-step's moves.
+    pub fn clear_log(&mut self) {
+        self.log.clear();
     }
 
     fn is_air(world: &World, id: MaterialId) -> bool {
@@ -212,10 +231,11 @@ impl WaterPass {
 
     /// Moves `amount` of water from `from` (a water or porous cell and its
     /// current moisture) to `to` (a receiver whose room the caller
-    /// checked) and returns the donor's new moisture. Air becomes water
-    /// first (§7.0.1: gases leave it). Nothing happens for an amount of 0.
+    /// checked), logs the move and returns the donor's new moisture. Air
+    /// becomes water first (§7.0.1: gases leave it). Nothing happens for
+    /// an amount of 0.
     fn give(
-        &self,
+        &mut self,
         ctx: &mut SweepCtx<'_>,
         (from, held): (CellPos, i32),
         (to, receiver): (CellPos, Receiver),
@@ -234,6 +254,12 @@ impl WaterPass {
         ctx.world
             .eco_put_layer(to, LayerId::Moisture, receiver.held() + amount);
         ctx.receive(to);
+        self.log.push(Move {
+            from,
+            to,
+            amount: u8::try_from(amount).expect("a move fits a cell"),
+            fill_from: u8::try_from(held).expect("moisture fits a cell"),
+        });
         held - amount
     }
 
@@ -286,7 +312,7 @@ impl WaterPass {
     /// for both changes: water → air by a pass converts the fill (ledger
     /// `boil_to_steam`), magma → obsidian leaves the magma count (ledger
     /// `magma_set`); both keep their temperatures.
-    fn contact_boil(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, water: MaterialId) {
+    fn contact_boil(&mut self, ctx: &mut SweepCtx<'_>, cell: CellPos, water: MaterialId) {
         let Some(obsidian) = self.obsidian else {
             return;
         };
@@ -298,6 +324,15 @@ impl WaterPass {
             return;
         };
         let air = self.air.expect("flow runs only with an air role");
+        let fill = u8::try_from(moisture(ctx.world, wet)).expect("moisture fits a cell");
+        if fill > 0 {
+            self.log.push(Move {
+                from: wet,
+                to: wet,
+                amount: fill,
+                fill_from: fill,
+            });
+        }
         ctx.world.eco_set(wet, air, ctx.ledger);
         ctx.world.eco_set(cell, obsidian, ctx.ledger);
     }
@@ -305,7 +340,7 @@ impl WaterPass {
     /// Step 4, seepage: a porous cell above its threshold sheds the
     /// excess, at most `perm / 2^seep_shift`, to the first neighbor with
     /// room.
-    fn seep(&self, ctx: &mut SweepCtx<'_>, cell: CellPos, held: i32, p: Porous) {
+    fn seep(&mut self, ctx: &mut SweepCtx<'_>, cell: CellPos, held: i32, p: Porous) {
         let most = (held - p.threshold).min(rate(p.permeability, self.seep_shift));
         if most <= 0 {
             return;

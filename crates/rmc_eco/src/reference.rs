@@ -13,6 +13,8 @@ use rmc_world::layers::LayerId;
 use rmc_world::materials::MaterialId;
 use rmc_world::world::World;
 
+use crate::chemistry::MoveLog;
+
 /// Every cell of `bounds` in the global sweep order: y ascending; within a
 /// y-plane, chunks in (cz, cx) order; within a chunk, local (z, x).
 pub fn global_order(bounds: CellAabb) -> impl Iterator<Item = CellPos> {
@@ -350,6 +352,66 @@ pub fn flat_sweep_gas(flat: &mut FlatWorld, ids: &GasRef) {
             }
         }
     });
+}
+
+/// The constants the transport reference reads (SAD-P2 §7.6).
+#[derive(Clone, Debug)]
+pub struct TransportRef {
+    /// Per substance row: `(mobility, mobility_acid)`.
+    pub mobility: Vec<(i32, i32)>,
+    /// Substance roles `acid` and `lime`.
+    pub acid: Option<u8>,
+    pub lime: Option<u8>,
+    /// `eco.ph_shift`.
+    pub ph_shift: u8,
+    /// `eco.acid_ph`.
+    pub acid_ph: i32,
+}
+
+/// The neutral pH and the top of the pH scale (§7.6).
+const REF_PH_NEUTRAL: i32 = 7;
+const REF_PH_MAX: i32 = 14;
+/// The transported share's divisor, `(x · mob · amount) / 256`.
+const REF_MOBILITY_DEN: i64 = 256;
+/// The most of a substance a cell holds.
+const REF_SUB_FULL: i64 = u8::MAX as i64;
+
+/// The chemistry transport (SAD-P2 §7.6) written directly on the flat
+/// arrays, for the oracle tests of
+/// [`Transport`](crate::chemistry::Transport): replays `log` in order and
+/// returns the substance units moved.
+pub fn flat_transport(flat: &mut FlatWorld, log: &MoveLog, ids: &TransportRef) -> u64 {
+    let mut moved = 0;
+    for m in log.moves() {
+        if m.from == m.to {
+            continue;
+        }
+        let read = |x: Option<u8>| x.map_or(0, |x| flat.layer(m.from, LayerId::Substance(x)));
+        let ph = (REF_PH_NEUTRAL + (read(ids.lime) - read(ids.acid)) / (1 << ids.ph_shift))
+            .clamp(0, REF_PH_MAX);
+        for (x, &(mobility, mobility_acid)) in ids.mobility.iter().enumerate() {
+            let id = LayerId::Substance(x as u8);
+            let mob = if ph < ids.acid_ph {
+                mobility_acid
+            } else {
+                mobility
+            };
+            let (x_a, x_b) = (
+                i64::from(flat.layer(m.from, id)),
+                i64::from(flat.layer(m.to, id)),
+            );
+            let share = x_a * i64::from(mob) * i64::from(m.amount)
+                / REF_MOBILITY_DEN
+                / i64::from(m.fill_from);
+            let k = share.min(x_a).min(REF_SUB_FULL - x_b);
+            if k > 0 {
+                flat.set_layer(m.from, id, (x_a - k) as i32);
+                flat.set_layer(m.to, id, (x_b + k) as i32);
+                moved += k as u64;
+            }
+        }
+    }
+    moved
 }
 
 #[cfg(test)]

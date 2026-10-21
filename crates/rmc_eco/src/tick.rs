@@ -16,6 +16,7 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
+use crate::chemistry::Transport;
 use crate::gases::GasPass;
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
@@ -55,6 +56,8 @@ pub enum PassId {
     /// The sweep of gas row `g` (§7.4).
     Gas(u8),
     Weathering,
+    /// Chemistry transport, replaying the sub-step's water moves (§7.6).
+    Transport,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -76,6 +79,8 @@ struct Passes {
     /// One sweep per gas row, in row order.
     gases: Vec<GasPass>,
     weathering: WeatheringPass,
+    /// §7.6 transport over the water pass's move log.
+    transport: Transport,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -128,6 +133,7 @@ pub fn season_tick_observed(
         rain: Rain::new(tables, season, seed),
         gases: GasPass::all(tables),
         weathering: WeatheringPass::new(tables),
+        transport: Transport::new(tables),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
@@ -153,7 +159,9 @@ pub fn season_tick_observed(
 
 /// One sub-step: the passes in SAD-P2 §3 order. The water pass runs its
 /// §7.3 steps in order: condensation, the flow sweeps, evaporation, rain.
-/// Only the flow and gas sweeps add an `active_cells_per_sweep` entry.
+/// Chemistry transport (§7.6) then replays the flow sweeps' move log and
+/// clears it. Only the flow and gas sweeps add an `active_cells_per_sweep`
+/// entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
     world: &mut World,
@@ -216,6 +224,9 @@ fn substep(
         report,
     );
     after(PassId::Weathering, world, &report.ledger);
+    passes.transport.run(world, passes.water.log());
+    passes.water.clear_log();
+    after(PassId::Transport, world, &report.ledger);
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -691,7 +702,7 @@ mod tests {
                     want.extend((0..t.params().flow_iters).map(|f| (i, PassId::Flow(f))));
                     want.extend([(i, PassId::Evaporation), (i, PassId::Rain)]);
                     want.extend((0..t.gases().len() as u8).map(|g| (i, PassId::Gas(g))));
-                    want.push((i, PassId::Weathering));
+                    want.extend([(i, PassId::Weathering), (i, PassId::Transport)]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");
                 r.ledger
