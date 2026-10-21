@@ -1030,6 +1030,147 @@ mod tests {
     /// Seasons of sweeps [`sealed_pocket_drains_through_shaft`] allows.
     const SHAFT_SEASONS: usize = 12;
 
+    /// Sum of layer `id` over every cell of `w`.
+    fn total(w: &World, id: LayerId) -> i64 {
+        global_order(w.bounds())
+            .map(|c| i64::from(w.layer(c, id)))
+            .sum()
+    }
+
+    /// SAD-P2 §7.2 `BoilAll` through the transitions pass: a water cell
+    /// above 100 °C becomes air and its whole fill becomes steam on the
+    /// cell, 1:1 (ledger `boil_to_steam`). The water total (moisture plus
+    /// steam) does not change; the steam gas gains exactly the boil. The
+    /// boiled steam then follows the steam sweep: sealed, it stays; open to
+    /// the sky, it vents, and the vent is the water total's
+    /// `steam_vent_out`, equal to the steam row's `vent_out`.
+    #[test]
+    fn boil_all_converts_fill_to_steam_1to1() {
+        use crate::runner::{Exec, run_jacobi};
+        use crate::transitions::TransitionsPass;
+
+        let t = tables();
+        let st = t.role_gas("steam").expect("steam role");
+        let steam = LayerId::Gas(st);
+        let water = t.role_material("water").expect("water role");
+        let air = t.role_material("air").expect("air role");
+        // The shipped BoilAll row: water above 100.0 °C.
+        let boil_at = t
+            .transitions()
+            .iter()
+            .find(|r| r.effect == Some(crate::tables::TransitionEffect::BoilAll))
+            .map(|r| match r.when {
+                crate::tables::TransitionWhen::TempAbove(x) => i32::from(x),
+                other => panic!("BoilAll row on {other:?}"),
+            })
+            .expect("transitions.ron boils water");
+        // A sealed row of water cells across the chunk face at x = 32, a
+        // control cell at exactly the boiling row's temperature, and a
+        // pond at the bottom of a shaft open to the sky.
+        let row: Vec<(CellPos, i32, i32)> = [1, 37, 90, 128, 200, 254, 255, 77]
+            .into_iter()
+            .enumerate()
+            .map(|(i, fill)| {
+                let x = 28 + i as i32;
+                (CellPos::new(x, 10, 14), fill, boil_at + 1 + 400 * i as i32)
+            })
+            .collect();
+        let control = CellPos::new(20, 10, 14);
+        let pond = CellPos::new(40, 20, 20);
+        let in_shaft = |c: CellPos| c.0.x == 40 && c.0.z == 20 && c.0.y > 20;
+        let mut w = built(&t, two_chunks(), |c| {
+            if row.iter().any(|&(r, _, _)| r == c) || c == control || c == pond {
+                Some(water)
+            } else {
+                in_shaft(c).then_some(air)
+            }
+        });
+        let mut wet = row.clone();
+        wet.extend([(control, 150, boil_at), (pond, 222, boil_at + 1000)]);
+        for &(c, fill, temp) in &wet {
+            w.eco_put_layer(c, LayerId::Moisture, fill);
+            w.eco_put_layer(c, LayerId::Temperature, temp);
+        }
+        assert_eq!(
+            i32::from(w.surface_y(40, 20)),
+            20,
+            "the pond tops its column"
+        );
+        let row_fill: i64 = row.iter().map(|&(_, f, _)| i64::from(f)).sum();
+        let boiled = row_fill + 222;
+        let (moist0, steam0) = (total(&w, LayerId::Moisture), total(&w, steam));
+        assert_eq!(steam0, 0);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+
+        run_jacobi(
+            &mut w,
+            &TransitionsPass::new(&t),
+            Exec::Parallel,
+            &mut ledger,
+        );
+
+        let gas = GasPass::new(&t, st);
+        for &(c, fill, _) in row.iter().chain([&(pond, 222, 0)]) {
+            assert_eq!(w.get_cell(c), Some(air), "{c:?} boiled");
+            assert_eq!(w.layer(c, LayerId::Moisture), 0, "{c:?} keeps no fill");
+            assert_eq!(w.layer(c, steam), fill, "{c:?}: fill to steam 1:1");
+            assert!(active(&w, c, &gas), "{c:?} joins the steam sweep");
+        }
+        assert_eq!(w.get_cell(control), Some(water), "at the threshold");
+        assert_eq!(w.layer(control, LayerId::Moisture), 150);
+        let mut want = SeasonLedger {
+            boil_to_steam: boiled,
+            transitions: vec![(water, air, row.len() as u32 + 1)],
+            ..SeasonLedger::default()
+        };
+        assert_eq!(ledger, want, "only the boil and its transitions");
+        // Both invariants: the water total is unchanged, moisture went to
+        // steam, and the steam gas gained exactly the boil.
+        checker
+            .check(&w, &ledger)
+            .expect("conserved after the boil");
+        assert_eq!(total(&w, LayerId::Moisture), moist0 - boiled);
+        assert_eq!(total(&w, steam), steam0 + boiled);
+        // The pond's column is open again down to its stone floor.
+        assert_eq!(i32::from(w.surface_y(40, 20)), 19);
+
+        // The steam sweep: the sealed row keeps its steam; the shaft vents
+        // everything the pond boiled, and only that.
+        let mut pass = gas.clone();
+        let shaft_steam = |w: &World| -> i64 {
+            global_order(w.bounds())
+                .filter(|&c| c == pond || in_shaft(c))
+                .map(|c| i64::from(w.layer(c, steam)))
+                .sum()
+        };
+        let mut sweeps = 0;
+        while shaft_steam(&w) > 0 {
+            assert!(sweeps < 32, "the shaft still holds {}", shaft_steam(&w));
+            run_sweep(&mut w, &mut pass, &mut ledger);
+            sweeps += 1;
+            checker
+                .check(&w, &ledger)
+                .unwrap_or_else(|v| panic!("sweep {sweeps}: {v}"));
+            assert_eq!(ledger.steam_vent_out, ledger.vent_out[usize::from(st)]);
+            assert_eq!(shaft_steam(&w) + ledger.steam_vent_out, 222);
+            let row_steam: i64 = row
+                .iter()
+                .map(|&(c, _, _)| i64::from(w.layer(c, steam)))
+                .sum();
+            assert_eq!(row_steam, row_fill, "sweep {sweeps}: the sealed row");
+            assert_eq!(
+                total(&w, LayerId::Moisture) + total(&w, steam),
+                moist0 + steam0 - ledger.steam_vent_out,
+                "sweep {sweeps}: water total less the vent"
+            );
+        }
+        want.steam_vent_out = 222;
+        want.vent_out[usize::from(st)] = 222;
+        assert_eq!(ledger, want, "the vent is the pond's whole boil");
+        assert_eq!(total(&w, steam), row_fill);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(cases()))]
 

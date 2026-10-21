@@ -2007,6 +2007,211 @@ mod tests {
         checker.check(&w, &ledger).expect("conserved");
     }
 
+    /// Sum of layer `id` over every cell of `w`.
+    fn layer_total(w: &World, id: LayerId) -> i64 {
+        global_order(w.bounds())
+            .map(|c| i64::from(w.layer(c, id)))
+            .sum()
+    }
+
+    /// The passes of one sub-step that move water or steam, in SAD-P2 §3
+    /// order: transitions (`BoilAll`), condensation, the flow sweeps,
+    /// evaporation, rain, and the steam sweep (drift, diffusion, vent).
+    /// `check` runs after each, with the pass's name.
+    fn steam_substep(
+        t: &EcoTables,
+        w: &mut World,
+        rain: &Rain,
+        ledger: &mut SeasonLedger,
+        check: &mut dyn FnMut(&World, &SeasonLedger, &str),
+    ) {
+        use crate::gases::GasPass;
+        use crate::runner::{Exec, run_jacobi};
+        use crate::transitions::TransitionsPass;
+
+        let st = t.role_gas("steam").expect("steam role");
+        run_jacobi(w, &TransitionsPass::new(t), Exec::Serial, ledger);
+        check(w, ledger, "transitions");
+        run_sweep(w, &mut Condensation::new(t).unwrap(), ledger);
+        check(w, ledger, "condensation");
+        let mut flow = WaterPass::new(t);
+        for i in 0..flow.flow_iters() {
+            flow.set_iter(i);
+            run_sweep(w, &mut flow, ledger);
+            check(w, ledger, "flow");
+        }
+        run_sweep(w, &mut Evaporation::new(t).unwrap(), ledger);
+        check(w, ledger, "evaporation");
+        rain.run(w, ledger);
+        check(w, ledger, "rain");
+        run_sweep(w, &mut GasPass::new(t, st), ledger);
+        check(w, ledger, "steam sweep");
+    }
+
+    /// Both invariants of SAD-P2 §7 that steam enters, written out:
+    /// - water: `Σ moisture + Σ steam = before + rain_in + water_edit_in −
+    ///   water_edit_out − steam_vent_out − water_saturation_loss`;
+    /// - steam: `Σ steam = before + evap_to_steam + boil_to_steam −
+    ///   condense_from_steam − steam_vent_out − gas_saturation_loss`,
+    ///   with the steam row's `vent_out` equal to `steam_vent_out`;
+    ///
+    /// and the [`InvariantChecker`] agrees.
+    struct SteamBooks {
+        checker: InvariantChecker,
+        st: usize,
+        moisture: i64,
+        steam: i64,
+    }
+
+    impl SteamBooks {
+        fn new(w: &World, st: u8) -> Self {
+            Self {
+                checker: InvariantChecker::new(w),
+                st: usize::from(st),
+                moisture: layer_total(w, LayerId::Moisture),
+                steam: layer_total(w, LayerId::Gas(st)),
+            }
+        }
+
+        fn check(&self, w: &World, l: &SeasonLedger, at: &str) {
+            let m = layer_total(w, LayerId::Moisture);
+            let s = layer_total(w, LayerId::Gas(self.st as u8));
+            assert_eq!(
+                m + s,
+                self.moisture + self.steam + l.rain_in + l.water_edit_in
+                    - l.water_edit_out
+                    - l.steam_vent_out
+                    - l.water_saturation_loss,
+                "{at}: water total (moisture {m}, steam {s})"
+            );
+            assert_eq!(
+                s,
+                self.steam + l.evap_to_steam + l.boil_to_steam
+                    - l.condense_from_steam
+                    - l.steam_vent_out
+                    - l.gas_saturation_loss[self.st],
+                "{at}: steam"
+            );
+            assert_eq!(l.vent_out[self.st], l.steam_vent_out, "{at}: vent");
+            if let Err(v) = self.checker.check(w, l) {
+                panic!("{at}: {v}");
+            }
+        }
+    }
+
+    /// Steam is part of the water total and its vent the water total's one
+    /// gas exit (SAD-P2 §7.2, §7.3, §7.4). A dry fixture runs the water
+    /// and steam passes of four sub-steps:
+    /// - a hot pond open to the sky evaporates, and its steam vents
+    ///   (it never condenses: the cell is sky-open);
+    /// - a pond under a stone overhang evaporates into the covered cell,
+    ///   and that steam condenses back;
+    /// - water above 100 °C open to the sky boils (`BoilAll`) and vents;
+    /// - a sealed water pocket boils, holds its steam, and once cooled
+    ///   below `condense_temp` condenses back to the same fill.
+    ///
+    /// Then random worlds with magma and rain run the same passes. Both
+    /// invariants hold after every pass.
+    #[test]
+    fn water_invariant_includes_steam_and_vent() {
+        let f = Fix::new();
+        let st = steam_gas(&f);
+        let steam = LayerId::Gas(st);
+        let stone = f.t.materials().id("stone").unwrap();
+        let p = f.t.params();
+        let warm = i32::from(p.evap_bucket) * 5;
+        let hot = 1500;
+        let ct = i32::from(p.condense_temp);
+        assert!(warm < ct && hot > ct);
+        let dry = f.t.with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: None,
+        });
+        let open = CellPos::new(6, SLAB_Y, 6);
+        let covered = CellPos::new(16, SLAB_Y, 16);
+        let roof = CellPos::new(16, SLAB_Y + 2, 16);
+        let boiler = CellPos::new(24, SLAB_Y, 8);
+        let sealed = CellPos::new(24, SLAB_Y - 2, 24);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (open, f.water, 255),
+                (covered, f.water, 255),
+                (roof, stone, 0),
+                (boiler, f.water, 200),
+                (sealed, f.water, 180),
+            ],
+        );
+        for (c, t) in [(open, warm), (covered, warm), (boiler, hot), (sealed, hot)] {
+            w.eco_put_layer(c, LayerId::Temperature, t);
+        }
+        let books = SteamBooks::new(&w, st);
+        let mut ledger = SeasonLedger::default();
+        let rain = Rain::new(&dry, 0, 1);
+        let mut check = |w: &World, l: &SeasonLedger, at: &str| books.check(w, l, at);
+        // Sub-step 0 boils both hot cells.
+        steam_substep(&dry, &mut w, &rain, &mut ledger, &mut check);
+        assert_eq!(ledger.boil_to_steam, 200 + 180);
+        assert_eq!(w.get_cell(boiler), Some(f.air));
+        assert_eq!(w.get_cell(sealed), Some(f.air));
+        assert_eq!(w.layer(sealed, steam), 180, "sealed: fill to steam 1:1");
+        // The open boil vents in the steam sweep. Steam that diffuses back
+        // into the cell after its visit vents in a later sweep.
+        assert!(ledger.steam_vent_out > 0);
+        assert!(w.layer(boiler, steam) < 200, "the open boil vents");
+        assert_eq!(ledger.condense_from_steam, 0, "nothing was cool yet");
+        // Cool the sealed pocket: the next sub-step's condensation returns
+        // its steam, and the first flow sweep makes it water again.
+        w.eco_put_layer(sealed, LayerId::Temperature, 0);
+        for _ in 1..4 {
+            steam_substep(&dry, &mut w, &rain, &mut ledger, &mut check);
+        }
+        assert_eq!(w.get_cell(sealed), Some(f.water));
+        assert_eq!((fill(&w, sealed), w.layer(sealed, steam)), (180, 0));
+        assert_eq!(w.get_cell(boiler), Some(f.air), "the open boil is gone");
+        assert_eq!(fill(&w, boiler), 0);
+        // The covered pond's steam came back too; the open pond's did not.
+        assert!(
+            ledger.condense_from_steam > 180,
+            "condensed {}",
+            ledger.condense_from_steam
+        );
+        assert!(ledger.evap_to_steam > 0);
+        assert!(ledger.steam_vent_out > 0);
+        assert_eq!(ledger.rain_in, 0);
+        // Without steam and its vent, moisture alone would not balance.
+        assert_ne!(layer_total(&w, LayerId::Moisture), books.moisture);
+
+        // Random worlds with magma (contact boiling), hot water (BoilAll),
+        // cool covered steam and the shipped rain.
+        let wet = (0..f.t.seasons().seasons.len() as u32)
+            .find(|&s| f.t.seasons().seasons[s as usize].rain > 0)
+            .expect("a season with rain");
+        let mut sums = SeasonLedger::default();
+        for seed in 0..24 {
+            let (mut w, _) = random_world_with(&f, seed, true);
+            let books = SteamBooks::new(&w, st);
+            let mut ledger = SeasonLedger::default();
+            let rain = Rain::new(&f.t, wet, seed);
+            let mut check = |w: &World, l: &SeasonLedger, at: &str| {
+                books.check(w, l, &format!("seed {seed}, {at}"));
+            };
+            for _ in 0..3 {
+                steam_substep(&f.t, &mut w, &rain, &mut ledger, &mut check);
+            }
+            crate::ledger::merge(&mut sums, &ledger);
+        }
+        for (name, v) in [
+            ("rain_in", sums.rain_in),
+            ("evap_to_steam", sums.evap_to_steam),
+            ("boil_to_steam", sums.boil_to_steam),
+            ("condense_from_steam", sums.condense_from_steam),
+            ("steam_vent_out", sums.steam_vent_out),
+        ] {
+            assert!(v > 0, "no random world exercised {name}");
+        }
+    }
+
     /// A seed whose rain pattern is at least half strength on every column
     /// of `cols` in `season`.
     fn strong_seed(season: u32, cols: &[(i32, i32)]) -> u64 {
