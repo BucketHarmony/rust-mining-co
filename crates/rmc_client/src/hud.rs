@@ -1467,6 +1467,7 @@ mod tests {
             },
             player_tox: ToxProfile::new(player),
             plant_tox: ToxProfile::new(plant),
+            tint: Vec::new(),
         }
     }
 

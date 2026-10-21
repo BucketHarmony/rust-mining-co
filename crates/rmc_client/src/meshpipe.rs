@@ -48,6 +48,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use rmc_protocol::ServerMsg;
 use rmc_world::coords::{CHUNK_SIZE, CellPos, ChunkPos};
 
+use crate::eco::ClientEco;
 use crate::mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
 use crate::net::FromHost;
 use crate::replica::Replica;
@@ -429,6 +430,7 @@ fn start_jobs(
     replica: Option<Res<Replica>>,
     budget: Res<MeshBudget>,
     mesher: Res<Mesher>,
+    eco: Option<Res<ClientEco>>,
     cameras: Query<(Entity, &Camera, &GlobalTransform), With<Camera3d>>,
     mut queue: ResMut<MeshQueue>,
 ) {
@@ -456,7 +458,9 @@ fn start_jobs(
             break;
         }
         queue.queued.remove(&pos);
-        let Some(input) = MeshInput::from_world(replica.world(), pos) else {
+        // Water's color follows its dissolved substances (SAD-P2 §10).
+        let tint = eco.as_ref().map_or(&[][..], |e| &e.tint[..]);
+        let Some(input) = MeshInput::from_world_tinted(replica.world(), pos, tint) else {
             // No longer resident.
             queue.ready.remove(&pos);
             remove_mesh(&mut commands, queue, pos);
@@ -1563,6 +1567,85 @@ mod tests {
             Some(bevy::mesh::VertexAttributeValues::Float32x3(v)) => v.clone(),
             other => panic!("positions {other:?}"),
         }
+    }
+
+    fn asset_colors(app: &App, entity: Entity) -> Vec<[f32; 4]> {
+        let world = app.world();
+        let handle = &world.get::<Mesh3d>(entity).expect("a mesh").0;
+        let asset = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+        match asset.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x4(v)) => v.clone(),
+            other => panic!("colors {other:?}"),
+        }
+    }
+
+    #[test]
+    fn liquid_mesh_follows_dissolved_tint() {
+        use rmc_world::layers::SubstanceLayers;
+        use rmc_world::query::SubstanceTint;
+
+        let fe_tint = SubstanceTint {
+            layer: LayerId::Substance(1),
+            color: [184, 98, 36],
+            full: 32,
+            strength: 192,
+        };
+        let mut f = Fixture::new(true, MeshBudget::default(), true);
+        f.app.insert_resource(Mesher(Arc::new(GreedyMesher)));
+        f.app.insert_resource(ClientEco {
+            substances: SubstanceLayers::new(["cu", "fe"]).unwrap(),
+            gases: Vec::new(),
+            ph: Default::default(),
+            player_tox: Default::default(),
+            plant_tox: Default::default(),
+            tint: vec![fe_tint],
+        });
+        f.join();
+        f.drain();
+
+        // A clean pool meshes in water's own color.
+        let pos = c(1, 1, 1);
+        let water = f.host.materials().id("water").unwrap();
+        let pool: Vec<LocalPos> = (8..11)
+            .flat_map(|x| (8..11).map(move |z| LocalPos::new(x, 8, z)))
+            .collect();
+        let mut chunk = f.host.chunk(pos).unwrap().clone();
+        for &local in &pool {
+            chunk.storage.set(local, water);
+            chunk.layers.set_u8(LayerId::Moisture, local, 200);
+        }
+        chunk.revision += 1;
+        f.host.insert_chunk(pos, chunk.clone()).unwrap();
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &chunk)]);
+        f.drain();
+        let entity = f.queue().liquid_entity(pos).expect("the pool meshes");
+        let clean = asset_colors(&f.app, entity);
+        let untinted = GreedyMesher.mesh_liquid(&MeshInput::from_world(&f.host, pos).unwrap());
+        assert_eq!(clean, untinted.colors, "clean water is untinted");
+
+        // A layer snapshot that dissolves iron in it: remeshed in the tint.
+        let mut layers = chunk.layers.clone();
+        for &local in &pool {
+            layers.set_u8(fe_tint.layer, local, 24);
+        }
+        let eco_revision = chunk.eco_revision + 1;
+        f.host
+            .apply_eco_snapshot(pos, eco_revision, layers.clone(), Default::default())
+            .unwrap();
+        f.deliver(vec![ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision,
+            layers,
+            plants: Default::default(),
+        }]);
+        f.drain();
+        let input = MeshInput::from_world_tinted(&f.host, pos, &[fe_tint]).unwrap();
+        let want = GreedyMesher.mesh_liquid(&input);
+        assert_eq!(f.queue().liquid_entity(pos), Some(entity), "same entity");
+        let rusty = asset_colors(&f.app, entity);
+        assert_eq!(rusty, want.colors, "the pipeline passes the tint rows");
+        assert_ne!(rusty, clean, "iron tints the pool");
+        assert_eq!(asset_positions(&f.app, entity), untinted.positions);
     }
 
     #[test]

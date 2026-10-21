@@ -9,6 +9,8 @@
 //!   spoil"). A substance without a limit never makes a cell spoil.
 //!   [`spoil`] lists the spoil cells of a region; the HUD asks
 //!   [`ToxProfile::is_spoil`] of one cell.
+//! - Tint: a [`SubstanceTint`] row says how far a dissolved substance
+//!   shifts the liquid pass's color (SAD-P2 §10, `eco.tint`).
 
 use crate::chunk::Chunk;
 use crate::coords::{CellAabb, CellPos, LocalPos};
@@ -111,6 +113,34 @@ impl ToxProfile {
     fn chunk_cell_is_spoil(&self, chunk: &Chunk, local: LocalPos) -> bool {
         self.limits()
             .any(|(id, limit)| chunk.layers.get_u8(id, local) >= limit)
+    }
+}
+
+/// One row of `eco.tint` (SAD-P2 §10), resolved to its layer: a liquid
+/// holding `amount` of the substance moves its color toward `color` (sRGB)
+/// by [`SubstanceTint::share`]`(amount) / 255`. The client applies the rows
+/// in table order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SubstanceTint {
+    pub layer: LayerId,
+    pub color: [u8; 3],
+    /// The amount at and above which the tint is at full strength; above 0.
+    pub full: u8,
+    /// The share of `color` at full strength, out of 255.
+    pub strength: u8,
+}
+
+impl SubstanceTint {
+    /// The share of [`SubstanceTint::color`] in a liquid holding `amount`,
+    /// out of 255: `min(amount, full) · strength / full`, truncated. 0 for
+    /// none; `strength` from `full` up.
+    pub fn share(&self, amount: u8) -> u8 {
+        if self.full == 0 {
+            return 0;
+        }
+        let a = u16::from(amount.min(self.full));
+        let share = a * u16::from(self.strength) / u16::from(self.full);
+        u8::try_from(share).unwrap_or(u8::MAX)
     }
 }
 

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
-use rmc_world::query::{PhRule, ToxProfile};
+use rmc_world::query::{PhRule, SubstanceTint, ToxProfile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -276,12 +276,29 @@ pub struct EcoTestParams {
     pub quiet_tick_dev_ms: u32,
 }
 
+/// One row of `eco.tint` (SAD-P2 §10): how a dissolved substance shifts
+/// the color of water in the liquid pass. See [`SubstanceTint`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TintDef {
+    pub substance: String,
+    /// sRGB.
+    pub color: [u8; 3],
+    /// The amount at and above which the tint is at full strength; above 0.
+    pub full: u8,
+    /// The share of `color` at full strength, out of 255.
+    pub strength: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EcoFile {
     params: EcoParams,
     roles: Roles,
     eco_test: EcoTestParams,
+    /// Absent means no tint.
+    #[serde(default)]
+    tint: Vec<TintDef>,
 }
 
 /// The text of the seven Phase 2 files, for loading from memory.
@@ -368,6 +385,7 @@ pub struct EcoTables {
     params: EcoParams,
     roles: Roles,
     eco_test: EcoTestParams,
+    tint: Vec<TintDef>,
     unresolved: BTreeSet<String>,
     hash: u64,
 }
@@ -416,6 +434,7 @@ impl EcoTables {
             params,
             roles,
             eco_test,
+            tint,
         } = parse(ECO_FILE, &src.eco)?;
 
         let mut unresolved = BTreeSet::new();
@@ -587,6 +606,16 @@ impl EcoTables {
         for (role, key) in &roles.substances {
             key_in(ECO_FILE, role, "substance role", key, &sub_keys)?;
         }
+        unique_keys(ECO_FILE, "tint", tint.iter().map(|r| &r.substance))?;
+        for row in &tint {
+            key_in(ECO_FILE, "tint", "substance", &row.substance, &sub_keys)?;
+            if row.full == 0 {
+                return Err(invalid(
+                    ECO_FILE,
+                    format!("tint {:?} has full 0", row.substance),
+                ));
+            }
+        }
         // Role `air` is the only Phase::Air material (SAD-P2 §3).
         let air_key = &roles.materials["air"];
         for d in materials.iter().filter(|d| d.phase == Phase::Air) {
@@ -626,6 +655,7 @@ impl EcoTables {
             params,
             roles,
             eco_test,
+            tint,
             unresolved,
             hash: 0,
         };
@@ -634,20 +664,24 @@ impl EcoTables {
     }
 
     fn compute_hash(&self) -> u64 {
-        tables_hash(
-            self.materials.hash(),
-            &(
-                &self.substances,
-                &self.gases,
-                &self.transitions,
-                &self.reactions,
-                &self.plants,
-                &self.seasons,
-                &self.params,
-                &self.roles,
-                &self.eco_test,
-            ),
-        )
+        let tables = (
+            &self.substances,
+            &self.gases,
+            &self.transitions,
+            &self.reactions,
+            &self.plants,
+            &self.seasons,
+            &self.params,
+            &self.roles,
+            &self.eco_test,
+        );
+        // Tables without `tint` hash as they did before the section existed
+        // (F146), so the golden hash and older save headers still match.
+        if self.tint.is_empty() {
+            tables_hash(self.materials.hash(), &tables)
+        } else {
+            tables_hash(self.materials.hash(), &(tables, &self.tint))
+        }
     }
 
     /// These tables with every season row's `rain` and `air_temp` replaced
@@ -716,6 +750,27 @@ impl EcoTables {
 
     pub fn eco_test(&self) -> &EcoTestParams {
         &self.eco_test
+    }
+
+    /// The `tint` rows of `eco.ron`, in order.
+    pub fn tint(&self) -> &[TintDef] {
+        &self.tint
+    }
+
+    /// The `tint` rows resolved to substance layers (SAD-P2 §10), in order:
+    /// what the client's liquid pass applies.
+    pub fn substance_tints(&self) -> Vec<SubstanceTint> {
+        self.tint
+            .iter()
+            .filter_map(|row| {
+                Some(SubstanceTint {
+                    layer: self.substance_layers.layer(&row.substance)?,
+                    color: row.color,
+                    full: row.full,
+                    strength: row.strength,
+                })
+            })
+            .collect()
     }
 
     /// Material keys the eco files name that the material table lacks.
@@ -947,6 +1002,55 @@ mod tests {
         assert_eq!(rule.ph_shift, t.params().ph_shift);
         assert_eq!(rule.acid, t.substance_layers().layer("acid"));
         assert_eq!(rule.lime, t.substance_layers().layer("lime"));
+    }
+
+    #[test]
+    fn tint_rows_resolve_to_substance_layers() {
+        let t = shipped();
+        let tints = t.substance_tints();
+        assert!(!tints.is_empty(), "the shipped water tints");
+        assert_eq!(tints.len(), t.tint().len());
+        for (row, tint) in t.tint().iter().zip(&tints) {
+            assert_eq!(t.substance_layers().layer(&row.substance), Some(tint.layer));
+            assert_eq!(
+                (tint.color, tint.full, tint.strength),
+                (row.color, row.full, row.strength)
+            );
+            assert!(tint.full > 0 && tint.strength > 0, "{}", row.substance);
+        }
+        let fe = t.substance_layers().layer("fe").unwrap();
+        assert!(tints.iter().any(|r| r.layer == fe), "iron tints the water");
+
+        // The hash covers the rows; a file without them has no tint.
+        let edited = load_edited(|src| replace_once(&mut src.eco, "full: 32", "full: 33")).unwrap();
+        assert_ne!(edited.hash(), t.hash());
+        let none = load_edited(|src| {
+            let start = src.eco.find("    tint: [").expect("tint section");
+            let end = start
+                + src.eco[start..]
+                    .find(
+                        "],
+",
+                    )
+                    .expect("tint end")
+                + 3;
+            src.eco.replace_range(start..end, "");
+        })
+        .unwrap();
+        assert!(none.substance_tints().is_empty());
+
+        // Rows must name a known substance once, with full above 0.
+        for (from, to) in [
+            ("substance: \"fe\"", "substance: \"rust\""),
+            ("substance: \"cu\"", "substance: \"fe\""),
+            ("full: 32", "full: 0"),
+        ] {
+            let err = load_edited(|src| replace_once(&mut src.eco, from, to));
+            assert!(
+                matches!(err, Err(EcoTableError::Invalid { file: ECO_FILE, .. })),
+                "{to}: {err:?}"
+            );
+        }
     }
 
     #[test]

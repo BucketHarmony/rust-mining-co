@@ -26,6 +26,9 @@
 //! clipped to the fill, no AO. Its vertex alpha is the liquid's opacity, and
 //! the renderer draws it alpha-blended after the opaque pass. The fill is
 //! the cell's `moisture` layer, which [`MeshInput`] carries for liquid cells.
+//! Water's color shifts by its dissolved substances (`eco.tint`): the input
+//! carries the tint rows and, for liquid cells, the amount of each row's
+//! substance, and [`SubstanceTint::share`] says how far each row moves it.
 
 use std::sync::Arc;
 
@@ -34,6 +37,7 @@ use bevy::prelude::{IVec3, Vec3};
 use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
 use rmc_world::layers::LayerId;
 use rmc_world::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
+use rmc_world::query::SubstanceTint;
 use rmc_world::world::World;
 
 /// Edge length of a [`MeshInput`] in cells: the chunk plus one border cell on
@@ -103,6 +107,19 @@ pub struct MeshInput {
     /// every other cell.
     pub fills: Box<[u8; MESH_INPUT_VOLUME]>,
     pub materials: Arc<MaterialTable>,
+    /// The `eco.tint` rows the liquid pass applies, in order (SAD-P2 §10);
+    /// empty for none.
+    pub tint: Vec<SubstanceTint>,
+    /// Per [`MeshInput::tint`] row, the amount of its substance in every
+    /// [`is_liquid_pass`] cell; 0 for every other cell.
+    pub dissolved: Vec<Box<[u8; MESH_INPUT_VOLUME]>>,
+}
+
+/// A [`MESH_INPUT_VOLUME`] array of zeros.
+fn zeroed_volume() -> Box<[u8; MESH_INPUT_VOLUME]> {
+    let v: Box<[u8]> = vec![0; MESH_INPUT_VOLUME].into_boxed_slice();
+    v.try_into()
+        .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"))
 }
 
 impl MeshInput {
@@ -112,17 +129,22 @@ impl MeshInput {
         let cells = cells
             .try_into()
             .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"));
-        let fills: Box<[u8]> = vec![0; MESH_INPUT_VOLUME].into_boxed_slice();
-        let fills = fills
-            .try_into()
-            .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"));
         Self {
             pos,
             revision,
             cells,
-            fills,
+            fills: zeroed_volume(),
             materials,
+            tint: Vec::new(),
+            dissolved: Vec::new(),
         }
+    }
+
+    /// This input with the tint rows `tint` and no dissolved substances.
+    pub fn with_tint(mut self, tint: Vec<SubstanceTint>) -> Self {
+        self.dissolved = tint.iter().map(|_| zeroed_volume()).collect();
+        self.tint = tint;
+        self
     }
 
     /// Copies the chunk at `pos` and its border from `world`, or `None` if
@@ -130,10 +152,17 @@ impl MeshInput {
     /// chunks that are not resident, or outside the bounds, are air (the same
     /// as [`World::get_cell`] returning `None`). The bounds shell above the
     /// surface is air too (see `open_shell_above_surface`). Liquid-pass cells
-    /// bring their fill.
+    /// bring their fill. No tint rows: see [`MeshInput::from_world_tinted`].
     pub fn from_world(world: &World, pos: ChunkPos) -> Option<Self> {
+        Self::from_world_tinted(world, pos, &[])
+    }
+
+    /// [`MeshInput::from_world`] with the tint rows `tint` (SAD-P2 §10):
+    /// liquid-pass cells also bring the amount of each row's substance.
+    pub fn from_world_tinted(world: &World, pos: ChunkPos, tint: &[SubstanceTint]) -> Option<Self> {
         let revision = world.chunk(pos)?.revision;
-        let mut input = Self::empty(pos, revision, world.materials().clone());
+        let mut input =
+            Self::empty(pos, revision, world.materials().clone()).with_tint(tint.to_vec());
         let liquid: Vec<bool> = input.materials.iter().map(is_liquid_pass).collect();
         // The 27 chunks the 34³ box touches, indexed by offset + 1.
         let mut near = [None; 27];
@@ -158,6 +187,9 @@ impl MeshInput {
                         input.cells[i] = id;
                         if liquid.get(usize::from(id.0)).copied().unwrap_or(false) {
                             input.fills[i] = chunk.layers.get_u8(LayerId::Moisture, local);
+                            for (row, amounts) in tint.iter().zip(&mut input.dissolved) {
+                                amounts[i] = chunk.layers.get_u8(row.layer, local);
+                            }
                         }
                     }
                 }
@@ -231,6 +263,29 @@ impl MeshInput {
     /// Fill at the chunk-local cell `(x, y, z)`, each in `-1..=32`.
     pub fn fill(&self, x: i32, y: i32, z: i32) -> u8 {
         self.fills[Self::index(x, y, z)]
+    }
+
+    /// Amount of substance layer `layer` at the chunk-local cell `(x, y, z)`
+    /// as the liquid pass sees it: 0 unless a tint row reads that layer.
+    pub fn substance(&self, x: i32, y: i32, z: i32, layer: LayerId) -> u8 {
+        let i = Self::index(x, y, z);
+        self.tint
+            .iter()
+            .zip(&self.dissolved)
+            .find(|(row, _)| row.layer == layer)
+            .map_or(0, |(_, amounts)| amounts[i])
+    }
+
+    /// Writes the amount of substance layer `layer` at the cell `(x, y, z)`
+    /// for every tint row that reads it; without such a row, nothing. This
+    /// only edits the input; the world is unchanged.
+    pub fn set_substance(&mut self, x: i32, y: i32, z: i32, layer: LayerId, amount: u8) {
+        let i = Self::index(x, y, z);
+        for (row, amounts) in self.tint.iter().zip(&mut self.dissolved) {
+            if row.layer == layer {
+                amounts[i] = amount;
+            }
+        }
     }
 
     /// Writes the cell `(x, y, z)` as `id` with fill `fill`. This only edits
@@ -600,13 +655,30 @@ fn liquid_base_color(materials: &MaterialTable, id: MaterialId) -> [f32; 4] {
     })
 }
 
-/// The color of the liquid cell `p` (chunk-local): its material's color,
-/// unchanged. This is the hook for the substance tint (SAD-P2 §10,
-/// `eco.tint`): water's color will shift here by the cell's dissolved
-/// substances. The color is part of [`LiquidKey`], so cells merge only with
-/// equal tints.
-fn liquid_tint(_input: &MeshInput, _p: IVec3, base: [f32; 4]) -> [f32; 4] {
-    base
+/// The color of the liquid cell `p` (chunk-local): its material's color
+/// shifted by its dissolved substances (SAD-P2 §10, `eco.tint`). Each tint
+/// row in order moves the linear RGB toward the row's color by
+/// [`SubstanceTint::share`]`(amount) / 255`; the opacity is kept. The color
+/// is part of [`LiquidKey`], so cells merge only with equal tints.
+fn liquid_tint(input: &MeshInput, p: IVec3, base: [f32; 4]) -> [f32; 4] {
+    let i = MeshInput::index(p.x, p.y, p.z);
+    let mut color = base;
+    for (row, amounts) in input.tint.iter().zip(&input.dissolved) {
+        let share = row.share(amounts[i]);
+        if share == 0 {
+            continue;
+        }
+        let [r, g, b] = row.color;
+        let target = Color::srgb_u8(r, g, b).to_linear();
+        let t = f32::from(share) / f32::from(u8::MAX);
+        for (c, to) in color
+            .iter_mut()
+            .zip([target.red, target.green, target.blue])
+        {
+            *c += (to - *c) * t;
+        }
+    }
+    color
 }
 
 /// Appends one quad. `corners` are in cells, in (u, v) order; `positive`
@@ -1838,6 +1910,174 @@ mod tests {
         let top = with_normal(&qs, IVec3::Y);
         assert_eq!(top.len(), 1);
         assert!((top[0].plane() - (6.0 + h(77))).abs() < 1e-5);
+    }
+
+    /// `eco.tint`'s iron row: layer 1 is `fe` in `substances.ron`.
+    const FE_TINT: SubstanceTint = SubstanceTint {
+        layer: LayerId::Substance(1),
+        color: [184, 98, 36],
+        full: 32,
+        strength: 192,
+    };
+    /// A copper row on layer 0, `cu`.
+    const CU_TINT: SubstanceTint = SubstanceTint {
+        layer: LayerId::Substance(0),
+        color: [60, 170, 150],
+        full: 64,
+        strength: 160,
+    };
+
+    /// `base` (linear RGB, opacity) moved toward the sRGB `color` by
+    /// `share / 255`, opacity kept.
+    fn mixed(base: [f32; 4], color: [u8; 3], share: u8) -> [f32; 4] {
+        let [r, g, b] = color;
+        let c = Color::srgb_u8(r, g, b).to_linear();
+        let t = f32::from(share) / 255.0;
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        [
+            lerp(base[0], c.red),
+            lerp(base[1], c.green),
+            lerp(base[2], c.blue),
+            base[3],
+        ]
+    }
+
+    fn top_color(input: &MeshInput) -> [f32; 4] {
+        let qs = liquid(input);
+        let tops = with_normal(&qs, IVec3::Y);
+        assert_eq!(tops.len(), 1, "one top");
+        let c = tops[0].colors[0];
+        assert!(tops[0].colors.iter().all(|k| *k == c), "one color per face");
+        c
+    }
+
+    fn close4(a: [f32; 4], b: [f32; 4]) -> bool {
+        (0..4).all(|k| (a[k] - b[k]).abs() < 1e-6)
+    }
+
+    #[test]
+    fn water_color_shifts_with_fe() {
+        let t = table();
+        let water = id(&t, "water");
+        let stone = id(&t, "stone");
+        let fe = FE_TINT.layer;
+        let plain = liquid_color(&t, water, IVec3::Y);
+        let base = liquid_base_color(&t, water);
+
+        // The share: none at 0, linear up to `full`, `strength` from there.
+        assert_eq!(FE_TINT.share(0), 0);
+        assert_eq!(FE_TINT.share(16), 96);
+        assert_eq!(FE_TINT.share(32), 192);
+        assert_eq!(FE_TINT.share(255), 192);
+        let zero_full = SubstanceTint { full: 0, ..FE_TINT };
+        assert_eq!(zero_full.share(200), 0, "a row with full 0 never tints");
+
+        // Without tint rows, iron leaves the water its material color.
+        let mut input = origin_input(&t);
+        input.set_liquid(5, 5, 5, water, 200);
+        input.set_substance(5, 5, 5, fe, 64);
+        assert_eq!(input.substance(5, 5, 5, fe), 0, "no row, nothing kept");
+        assert_eq!(top_color(&input), plain);
+
+        // With the iron row: clean water is unchanged; iron moves the color
+        // toward the row's rust, further with more iron, until `full`.
+        let tinted = |amount: u8| {
+            let mut input = origin_input(&t).with_tint(vec![FE_TINT]);
+            input.set_liquid(5, 5, 5, water, 200);
+            input.set_substance(5, 5, 5, fe, amount);
+            assert_eq!(input.substance(5, 5, 5, fe), amount);
+            top_color(&input)
+        };
+        assert_eq!(tinted(0), plain, "clean water");
+        let rust = Color::srgb_u8(184, 98, 36).to_linear();
+        let dist = |c: [f32; 4]| {
+            let f = face_shade(IVec3::Y);
+            (c[0] - rust.red * f).abs()
+                + (c[1] - rust.green * f).abs()
+                + (c[2] - rust.blue * f).abs()
+        };
+        let mut last = dist(plain);
+        for amount in [1u8, 4, 8, 16, 24, 32] {
+            let c = tinted(amount);
+            let want = shaded(mixed(base, FE_TINT.color, FE_TINT.share(amount)), IVec3::Y);
+            assert!(close4(c, want), "fe {amount}: {c:?}");
+            assert!(dist(c) < last, "fe {amount} is nearer the rust");
+            assert!(
+                c[0] > plain[0] && c[2] < plain[2],
+                "fe {amount}: redder, less blue"
+            );
+            assert_eq!(c[3], plain[3], "fe {amount}: opacity kept");
+            last = dist(c);
+        }
+        assert_eq!(tinted(64), tinted(32), "full strength from `full` up");
+        assert_eq!(tinted(255), tinted(32));
+        assert!(dist(tinted(255)) > 0.0, "never quite the rust itself");
+
+        // Every face of the cell carries the tint, shaded for its normal.
+        let mut input = origin_input(&t).with_tint(vec![FE_TINT]);
+        input.set_liquid(5, 5, 5, water, 200);
+        input.set_substance(5, 5, 5, fe, 20);
+        let want = mixed(base, FE_TINT.color, FE_TINT.share(20));
+        let qs = liquid(&input);
+        assert_eq!(qs.len(), 6);
+        for q in &qs {
+            assert!(q.colors.iter().all(|c| close4(*c, shaded(want, q.normal))));
+        }
+
+        // A substance without a row does not tint; the rows apply in order.
+        let salt = LayerId::Substance(5);
+        let mut input = origin_input(&t).with_tint(vec![FE_TINT, CU_TINT]);
+        input.set_liquid(5, 5, 5, water, 200);
+        input.set_substance(5, 5, 5, salt, 200);
+        assert_eq!(input.substance(5, 5, 5, salt), 0);
+        assert_eq!(top_color(&input), plain, "salt has no row");
+        input.set_substance(5, 5, 5, fe, 20);
+        input.set_substance(5, 5, 5, CU_TINT.layer, 40);
+        let both = mixed(
+            mixed(base, FE_TINT.color, FE_TINT.share(20)),
+            CU_TINT.color,
+            CU_TINT.share(40),
+        );
+        assert!(
+            close4(top_color(&input), shaded(both, IVec3::Y)),
+            "fe, then cu"
+        );
+
+        // Equal water merges; a cell with other iron does not.
+        let pool = |amounts: [u8; 2]| {
+            let mut input = origin_input(&t).with_tint(vec![FE_TINT]);
+            for (x, a) in [5, 6].into_iter().zip(amounts) {
+                input.set_liquid(x, 5, 5, water, 200);
+                input.set_substance(x, 5, 5, fe, a);
+            }
+            with_normal(&liquid(&input), IVec3::Y).len()
+        };
+        assert_eq!(pool([10, 10]), 1, "equal iron merges");
+        assert_eq!(pool([10, 11]), 2, "other iron does not");
+        assert_eq!(pool([40, 50]), 1, "both at full strength merge");
+
+        // From the world: water cells bring their iron, a wet stone none,
+        // and only the rows' layers come along.
+        let mut world = world_3x3x3(&t);
+        let center = ChunkPos::new(0, 0, 0);
+        let mut chunk = chunk_with(center, &[IVec3::new(6, 6, 6)], water);
+        let (wet, stone_cell) = (LocalPos::new(6, 6, 6), LocalPos::new(6, 5, 6));
+        chunk.layers.set_u8(LayerId::Moisture, wet, 180);
+        chunk.layers.set_u8(fe, wet, 24);
+        chunk.layers.set_u8(salt, wet, 90);
+        chunk.storage.set(stone_cell, stone);
+        chunk.layers.set_u8(fe, stone_cell, 70);
+        insert(&mut world, center, chunk);
+        let input = MeshInput::from_world_tinted(&world, center, &[FE_TINT]).unwrap();
+        assert_eq!(input.substance(6, 6, 6, fe), 24, "the water's iron");
+        assert_eq!(input.substance(6, 5, 6, fe), 0, "a wet stone brings none");
+        assert_eq!(input.substance(6, 6, 6, salt), 0, "salt has no row");
+        let want = shaded(mixed(base, FE_TINT.color, FE_TINT.share(24)), IVec3::Y);
+        assert!(close4(top_color(&input), want));
+        // Untinted, the same world meshes as before.
+        let input = MeshInput::from_world(&world, center).unwrap();
+        assert_eq!(input.substance(6, 6, 6, fe), 0);
+        assert_eq!(top_color(&input), plain);
     }
 
     /// The shipped table plus `lava`: an opaque, glowing liquid, as magma is.

@@ -72,6 +72,13 @@
             "lime": "lime",
         },
     ),
+    // §10 client: dissolved substances shift the color of water in the
+    // liquid pass. Rows apply in order; each moves the color toward `color`
+    // (sRGB) by min(amount, full) * strength / full / 255.
+    tint: [
+        (substance: "fe", color: (184, 98, 36), full: 32, strength: 192),
+        (substance: "cu", color: (60, 170, 150), full: 32, strength: 160),
+    ],
     // Thresholds read by E2E scenarios and budget tests.
     eco_test: (
         swale_min: 8,

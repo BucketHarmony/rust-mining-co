@@ -610,8 +610,8 @@ fn region_cells(region: CellAabb) -> impl Iterator<Item = CellPos> {
 }
 
 /// What the client reads of the eco tables (SAD-P2 §10), as the game
-/// inserts it: substance and gas keys, the pH rule and the toxicity
-/// profiles.
+/// inserts it: substance and gas keys, the pH rule, the toxicity
+/// profiles and the water tint.
 pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
     ClientEco {
         substances: eco.substance_layers().clone(),
@@ -619,6 +619,7 @@ pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
         ph: eco.ph_rule(),
         player_tox: eco.tox_profile(ToxKind::Player),
         plant_tox: eco.tox_profile(ToxKind::Plant),
+        tint: eco.substance_tints(),
     }
 }
 

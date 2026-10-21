@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use rmc_world::coords::CellPos;
 use rmc_world::layers::{LayerId, N_GASES, N_SUBSTANCES, SubstanceLayers};
 use rmc_world::materials::{MaterialId, MaterialTable};
-use rmc_world::query::{PhRule, ToxProfile};
+use rmc_world::query::{PhRule, SubstanceTint, ToxProfile};
 use rmc_world::world::World;
 
 use crate::hud::format_temperature;
@@ -32,6 +32,9 @@ pub struct ClientEco {
     pub player_tox: ToxProfile,
     /// `tox_plant`.
     pub plant_tox: ToxProfile,
+    /// `eco.tint`: how dissolved substances shift the color of water in
+    /// the liquid pass, in row order.
+    pub tint: Vec<SubstanceTint>,
 }
 
 impl ClientEco {
@@ -193,6 +196,7 @@ mod tests {
             },
             player_tox: ToxProfile::new(player),
             plant_tox: ToxProfile::new(plant),
+            tint: Vec::new(),
         }
     }
 
