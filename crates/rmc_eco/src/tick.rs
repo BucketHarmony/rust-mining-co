@@ -16,9 +16,10 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
-use crate::runner::{Exec, run_sweep};
+use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
+use crate::transitions::TransitionsPass;
 use crate::water::WaterPass;
 
 /// What one season tick did. Everything but `substep_ms` is a function of
@@ -40,6 +41,7 @@ pub struct TickReport {
 /// row.
 struct Passes {
     temperature: TemperaturePass,
+    transitions: TransitionsPass,
     water: WaterPass,
 }
 
@@ -60,6 +62,7 @@ pub fn season_tick(
     );
     let mut passes = Passes {
         temperature: TemperaturePass::new(tables, season),
+        transitions: TransitionsPass::new(tables),
         water: WaterPass::new(tables),
     };
     let mut report = TickReport::default();
@@ -89,19 +92,44 @@ fn substep(
     exec: Exec,
     report: &mut TickReport,
 ) {
-    let mut jacobi = |kind: JacobiKind, pass, world: &mut World, report: &mut TickReport| {
-        let r = activity.run(world, kind, pass, exec, &mut report.ledger);
-        report
-            .active_chunks_per_jacobi
-            .push(u32::try_from(r.computed.len()).unwrap_or(u32::MAX));
-    };
-    jacobi(JacobiKind::Temperature, &passes.temperature, world, report);
+    jacobi(
+        JacobiKind::Temperature,
+        &passes.temperature,
+        world,
+        activity,
+        exec,
+        report,
+    );
+    jacobi(
+        JacobiKind::Transitions,
+        &passes.transitions,
+        world,
+        activity,
+        exec,
+        report,
+    );
     for _ in 0..passes.water.flow_iters() {
         let r = run_sweep(world, &mut passes.water, &mut report.ledger);
         report
             .active_cells_per_sweep
             .push(u32::try_from(r.visits).unwrap_or(u32::MAX));
     }
+}
+
+/// Runs one Jacobi pass through `activity` and records how many chunks it
+/// computed.
+fn jacobi(
+    kind: JacobiKind,
+    pass: &impl JacobiPass,
+    world: &mut World,
+    activity: &mut Activity,
+    exec: Exec,
+    report: &mut TickReport,
+) {
+    let r = activity.run(world, kind, pass, exec, &mut report.ledger);
+    report
+        .active_chunks_per_jacobi
+        .push(u32::try_from(r.computed.len()).unwrap_or(u32::MAX));
 }
 
 #[cfg(test)]
@@ -225,9 +253,9 @@ mod tests {
                 );
             }
             // One Jacobi entry per Jacobi pass per sub-step (temperature
-            // only so far), never more chunks than the world has.
+            // and transitions so far), never more chunks than the world has.
             for r in &ra {
-                assert_eq!(r.active_chunks_per_jacobi.len(), substeps);
+                assert_eq!(r.active_chunks_per_jacobi.len(), 2 * substeps);
                 assert!(r.active_chunks_per_jacobi.iter().all(|&n| n <= 2));
             }
             // The season row matters: the next row's `air_temp` gives a

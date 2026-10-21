@@ -44,4 +44,10 @@
     (id: 13, key: "water", phase: Liquid, tags: [],
      hardness: 0, diggable: true, yield_count: 0, color: (40, 90, 200, 160), emissive: 0.0,
      conductivity: 64, heat_capacity: 8, light_attenuation: Some(32)),
+    // Ice: frozen water (transitions.ron); its `moisture` layer keeps the fill
+    // it froze with. A solid, so it is meshed and walked on; digging it leaves
+    // the fill as a puddle and yields nothing. Light passes through it.
+    (id: 14, key: "ice", phase: Solid, tags: [],
+     hardness: 10, diggable: true, yield_count: 0, color: (196, 226, 242, 255), emissive: 0.0,
+     conductivity: 64, heat_capacity: 8, light_attenuation: Some(0)),
 ]
