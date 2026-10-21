@@ -10,6 +10,13 @@
 //!   [`EmissiveMaterialPlugin`], and every [`ChunkMesh`] entity gets the
 //!   shared [`EmissiveChunkMaterial`] (the same StandardMaterial extended to
 //!   glow by the color alpha) instead; otherwise it gets [`ChunkMaterial`].
+//! - The [`LiquidMaterial`] (SAD-P2 §10): every [`LiquidMesh`] entity, the
+//!   chunk's liquid pass, gets this shared `StandardMaterial`. It is white,
+//!   so the vertex colors are the liquid's color and the vertex alpha its
+//!   opacity; alpha-blended, so it draws after the opaque pass and the
+//!   terrain shows through; double-sided, so a surface is seen from below
+//!   too. It is created when the first liquid mesh appears, and liquid
+//!   meshes cast no shadow.
 //! - The [`GameCamera`]: `Camera3d` with `Hdr` and `Bloom::NATURAL`, order 0
 //!   (the camera the mesh pipeline meshes nearest to), starting at
 //!   [`CameraStart`].
@@ -33,7 +40,7 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::{Exposure, Hdr, ShadowLodOrigin};
-use bevy::light::{CascadeShadowConfigBuilder, Skybox};
+use bevy::light::{CascadeShadowConfigBuilder, NotShadowCaster, Skybox};
 use bevy::pbr::{DistanceFog, FogFalloff, PbrPlugin};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -43,7 +50,7 @@ use bevy::render::render_resource::{
 use rmc_world::coords::{CELL_SIZE_M, CellAabb};
 
 use crate::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial, EmissiveMaterialPlugin};
-use crate::meshpipe::{ChunkMesh, MeshSystems};
+use crate::meshpipe::{ChunkMesh, LiquidMesh, MeshSystems};
 use crate::replica::Replica;
 
 /// The sky at and below the horizon, and the fog's color: terrain fades
@@ -143,6 +150,10 @@ pub struct Lantern;
 #[derive(Resource, Clone, Debug)]
 pub struct ChunkMaterial(pub Handle<StandardMaterial>);
 
+/// The material every liquid mesh is drawn with (see the module docs).
+#[derive(Resource, Clone, Debug)]
+pub struct LiquidMaterial(pub Handle<StandardMaterial>);
+
 /// Where the game camera starts. Insert before the first update to change
 /// it.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
@@ -186,7 +197,10 @@ impl Plugin for GameRenderPlugin {
                 affects_lightmapped_meshes: true,
             })
             .add_systems(Startup, (create_chunk_material, spawn_camera, spawn_sun))
-            .add_systems(Update, add_chunk_material.after(MeshSystems))
+            .add_systems(
+                Update,
+                (add_chunk_material, add_liquid_material).after(MeshSystems),
+            )
             .add_systems(PostUpdate, fog_follows_height);
     }
 }
@@ -474,6 +488,53 @@ fn add_chunk_material(
     }
 }
 
+/// White, smooth, alpha-blended and double-sided: the vertex colors are
+/// the liquid's color, the vertex alpha its opacity.
+pub(crate) fn liquid_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.1,
+        metallic: 0.0,
+        reflectance: 0.5,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    }
+}
+
+/// Liquid meshes that have no material yet.
+type WithoutLiquidMaterial = (With<LiquidMesh>, Without<MeshMaterial3d<StandardMaterial>>);
+
+/// Gives every liquid mesh without a material the shared
+/// [`LiquidMaterial`], creating it on the first one, and keeps liquid
+/// meshes out of the shadow maps. Without materials (a logic-only app)
+/// nothing is added.
+fn add_liquid_material(
+    mut commands: Commands,
+    liquid: Option<Res<LiquidMaterial>>,
+    materials: Option<ResMut<Assets<StandardMaterial>>>,
+    meshes: Query<Entity, WithoutLiquidMaterial>,
+) {
+    if meshes.is_empty() {
+        return;
+    }
+    let handle = match (liquid, materials) {
+        (Some(liquid), _) => liquid.0.clone(),
+        (None, Some(mut materials)) => {
+            let handle = materials.add(liquid_material());
+            commands.insert_resource(LiquidMaterial(handle.clone()));
+            handle
+        }
+        (None, None) => return,
+    };
+    for entity in &meshes {
+        commands
+            .entity(entity)
+            .insert((MeshMaterial3d(handle.clone()), NotShadowCaster));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +610,80 @@ mod tests {
         let d = spawn_chunk(&mut logic, 0);
         logic.update();
         assert!(!logic.world().contains_resource::<ChunkMaterial>());
+        assert!(
+            logic
+                .world()
+                .get::<MeshMaterial3d<StandardMaterial>>(d)
+                .is_none()
+        );
+    }
+
+    fn spawn_liquid(app: &mut App, x: i32) -> Entity {
+        app.world_mut()
+            .spawn((
+                LiquidMesh {
+                    pos: ChunkPos::new(x, 0, 0),
+                    revision: 1,
+                    quads: 1,
+                },
+                Transform::default(),
+            ))
+            .id()
+    }
+
+    #[test]
+    fn liquid_meshes_get_shared_blended_material() {
+        let mut app = render_app(true);
+        let chunk = spawn_chunk(&mut app, 0);
+        app.update();
+        assert!(
+            !app.world().contains_resource::<LiquidMaterial>(),
+            "no liquid material before the first liquid mesh"
+        );
+        let a = spawn_liquid(&mut app, 0);
+        let b = spawn_liquid(&mut app, 1);
+        app.update();
+
+        let handle = app.world().resource::<LiquidMaterial>().0.clone();
+        let opaque = app.world().resource::<ChunkMaterial>().0.clone();
+        assert_ne!(handle, opaque, "a second material");
+        for e in [a, b] {
+            let m = app
+                .world()
+                .get::<MeshMaterial3d<StandardMaterial>>(e)
+                .expect("liquid mesh has the liquid material");
+            assert_eq!(m.0, handle, "one shared liquid material");
+            assert!(app.world().get::<NotShadowCaster>(e).is_some());
+        }
+        let on_chunk = app.world().get::<MeshMaterial3d<StandardMaterial>>(chunk);
+        assert_eq!(on_chunk.unwrap().0, opaque, "the opaque mesh keeps its own");
+        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        assert_eq!(materials.len(), 2);
+        let mat = materials.get(&handle).expect("material asset");
+        assert_eq!(mat.base_color, Color::WHITE, "vertex colors multiply white");
+        assert_eq!(
+            mat.alpha_mode,
+            AlphaMode::Blend,
+            "alpha-blended after opaque"
+        );
+        assert!(
+            mat.double_sided && mat.cull_mode.is_none(),
+            "seen from below"
+        );
+        assert!(!mat.unlit, "lit");
+
+        // A later liquid mesh reuses it.
+        let c = spawn_liquid(&mut app, 2);
+        app.update();
+        let m = app.world().get::<MeshMaterial3d<StandardMaterial>>(c);
+        assert_eq!(m.unwrap().0, handle);
+        assert_eq!(app.world().resource::<Assets<StandardMaterial>>().len(), 2);
+
+        // Logic-only: nothing is added and nothing fails.
+        let mut logic = render_app(false);
+        let d = spawn_liquid(&mut logic, 0);
+        logic.update();
+        assert!(!logic.world().contains_resource::<LiquidMaterial>());
         assert!(
             logic
                 .world()

@@ -17,7 +17,10 @@
 //! step in from the bounds' x or z edge also marks the chunks below it
 //! there, because the mesh hides the shell beside a column open to the sky
 //! (F095). Only resident chunks are marked; a chunk that becomes resident
-//! later is marked then.
+//! later is marked then. Layer changes (`LayerSnapshot`, `ChunkDelta::Layers`)
+//! change meshes only through the fill of liquid-pass cells (SAD-P2 §10), so
+//! they mark a chunk only if it holds a liquid-pass material, together with
+//! its neighbours that hold one too.
 //!
 //! If a message was lost, the next delta for an affected chunk is more than
 //! one revision ahead of the replica's. The replica then writes a
@@ -37,7 +40,7 @@ use rmc_world::edit::{ChunkDelta, PlayerId};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::{DeltaError, World};
 
-use crate::mesher::{is_shell, shell_interior};
+use crate::mesher::{is_liquid_pass, is_shell, shell_interior};
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 
 /// Why a host message could not be applied to the [`Replica`].
@@ -146,7 +149,7 @@ impl Replica {
     ///   its layers and plants come with it.
     /// - `LayerSnapshot` replaces a resident chunk's layers and plants,
     ///   unless the replica is waiting for that chunk's full snapshot.
-    ///   Layers do not change meshes, so nothing is marked dirty.
+    ///   Layers change only liquid meshes ([`Replica::mark_liquid`]).
     /// - `Applied` applies each delta in order. A delta for a chunk the
     ///   replica is waiting for is ignored. A delta more than one revision
     ///   ahead is a gap: `pos` goes into `requests` and the replica waits for
@@ -215,7 +218,7 @@ impl Replica {
                                 self.mark_with_neighbours(pos);
                                 self.mark_shell_below_chunk(pos);
                             }
-                            ChunkDelta::Layers { .. } => {}
+                            ChunkDelta::Layers { .. } => self.mark_liquid(pos),
                         },
                         Err(DeltaError::RevisionGap { local, got, .. }) if got > local => {
                             debug!(?pos, local, got, "revision gap, requesting chunk");
@@ -241,6 +244,7 @@ impl Replica {
                 self.world
                     .apply_eco_snapshot(*pos, *eco_revision, layers.clone(), plants.clone())
                     .map_err(ReplicaError::LayerSnapshot)?;
+                self.mark_liquid(*pos);
             }
             ServerMsg::Welcome { .. }
             | ServerMsg::Rejected { .. }
@@ -341,6 +345,43 @@ impl Replica {
         }
     }
 
+    /// Whether the chunk at `pos` is resident and its storage names a
+    /// liquid-pass material.
+    fn holds_liquid(&self, pos: ChunkPos) -> bool {
+        let Some(chunk) = self.world.chunk(pos) else {
+            return false;
+        };
+        let palette = match &chunk.storage {
+            ChunkStorage::Uniform(id) => std::slice::from_ref(id),
+            ChunkStorage::Paletted { palette, .. } => palette.as_slice(),
+        };
+        let materials = self.world.materials();
+        palette
+            .iter()
+            .any(|&id| materials.get(id).is_some_and(is_liquid_pass))
+    }
+
+    /// After a layer change in `pos`: the fills of its liquid cells may have
+    /// changed, which moves liquid faces in its own mesh and, through the
+    /// one-cell border, in its neighbours' liquid meshes. Marks `pos` and
+    /// each neighbour that holds a liquid, if `pos` holds one.
+    fn mark_liquid(&mut self, pos: ChunkPos) {
+        if !self.holds_liquid(pos) {
+            return;
+        }
+        let p = pos.0;
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let n = ChunkPos::new(p.x + dx, p.y + dy, p.z + dz);
+                    if self.holds_liquid(n) {
+                        self.dirty.insert(n);
+                    }
+                }
+            }
+        }
+    }
+
     /// Marks `pos` and all 26 neighbours, for a chunk whose every cell may
     /// have changed.
     fn mark_with_neighbours(&mut self, pos: ChunkPos) {
@@ -424,6 +465,7 @@ mod tests {
 
     use rmc_world::coords::CellPos;
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditResult};
+    use rmc_world::layers::LayerId;
     use rmc_world::shape::Shape;
 
     use crate::net::{HostConnection, HostLink, NetPlugin};
@@ -751,6 +793,88 @@ mod tests {
             assert!(dirty.contains(&c(0, 0, z)), "{z}: {dirty:?}");
         }
         assert!(!dirty.contains(&c(1, 0, 1)), "{dirty:?}");
+    }
+
+    #[test]
+    fn layer_change_marks_chunks_with_liquid() {
+        let mut f = Fixture::new(&[]);
+        let water = f.host.materials().id("water").unwrap();
+        let layers_of = |f: &Fixture, pos: ChunkPos| {
+            let chunk = f.replica().world().chunk(pos).unwrap();
+            (chunk.eco_revision, chunk.layers.clone())
+        };
+        let snapshot = |pos: ChunkPos, eco_revision: u64, layers| ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision,
+            layers,
+            plants: Default::default(),
+        };
+
+        // No liquid anywhere: a layer snapshot marks nothing.
+        let (rev, layers) = layers_of(&f, c(1, 1, 1));
+        f.deliver(vec![snapshot(c(1, 1, 1), rev + 1, layers)]);
+        assert!(f.take_dirty().is_empty(), "layers alone change no mesh");
+
+        // Water in (1,1,1) and in two of its neighbours, none in the rest.
+        for cell in [
+            CellPos::new(40, 40, 40),
+            CellPos::new(70, 40, 40),
+            CellPos::new(40, 10, 40),
+        ] {
+            f.seq += 1;
+            let r = f.host.apply(&EditCommand {
+                id: CommandId {
+                    issuer: PLAYER,
+                    seq: f.seq,
+                },
+                issuer: PLAYER,
+                op: EditOp::Set(water),
+                shape: Shape::Cell(cell),
+            });
+            f.deliver(vec![ServerMsg::Applied(r)]);
+        }
+        f.take_dirty();
+
+        // A layer snapshot of a chunk with water: it and its neighbours
+        // with water, whose border holds its fills.
+        let (rev, mut layers) = layers_of(&f, c(1, 1, 1));
+        layers.set_u8(LayerId::Moisture, LocalPos::new(8, 8, 8), 99);
+        f.deliver(vec![snapshot(c(1, 1, 1), rev + 1, layers)]);
+        assert_eq!(f.take_dirty(), set(&[c(1, 1, 1), c(2, 1, 1), c(1, 0, 1)]));
+        // Of a chunk without water, next to water: nothing.
+        let (rev, layers) = layers_of(&f, c(0, 1, 1));
+        f.deliver(vec![snapshot(c(0, 1, 1), rev + 1, layers)]);
+        assert!(f.take_dirty().is_empty(), "no liquid in the chunk");
+        // While waiting for a chunk's full snapshot, its layers are ignored.
+        f.app
+            .world_mut()
+            .resource_mut::<Replica>()
+            .awaiting
+            .insert(c(2, 1, 1));
+        let (rev, layers) = layers_of(&f, c(2, 1, 1));
+        f.deliver(vec![snapshot(c(2, 1, 1), rev + 1, layers)]);
+        assert!(f.take_dirty().is_empty(), "awaiting: ignored");
+        f.app.world_mut().resource_mut::<Replica>().awaiting.clear();
+
+        // A Layers delta does the same.
+        let (rev, _) = layers_of(&f, c(1, 0, 1));
+        let mut r = f.edit(Shape::Cell(CellPos::new(40, 40, 40)));
+        r.deltas = vec![ChunkDelta::Layers {
+            pos: c(1, 0, 1),
+            eco_revision: rev + 1,
+            changes: vec![(LocalPos::new(8, 10, 8).index(), LayerId::Moisture, 200)],
+            plants: vec![],
+        }];
+        f.deliver(vec![ServerMsg::Applied(r)]);
+        // (2,1,1) is (1,0,1)'s edge neighbour.
+        assert_eq!(f.take_dirty(), set(&[c(1, 0, 1), c(1, 1, 1), c(2, 1, 1)]));
+        let chunk = f.replica().world().chunk(c(1, 0, 1)).unwrap();
+        assert_eq!(
+            chunk
+                .layers
+                .get_u8(LayerId::Moisture, LocalPos::new(8, 10, 8)),
+            200
+        );
     }
 
     #[test]

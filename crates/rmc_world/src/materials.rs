@@ -29,7 +29,8 @@ pub enum Phase {
     Air,
     Solid,
     /// Water and magma (Phase 2). Not solid for collision; hit by raycasts;
-    /// meshed in the opaque pass until the liquid pass exists.
+    /// a translucent liquid is meshed in the client's liquid pass, an opaque
+    /// one (magma) in the opaque pass.
     Liquid,
 }
 
@@ -128,7 +129,7 @@ impl MaterialDef {
         self.phase == Phase::Solid
     }
 
-    /// `Solid` or `Liquid`: what raycasts hit and the opaque pass meshes.
+    /// `Solid` or `Liquid`: what raycasts hit.
     pub fn is_solid_or_liquid(&self) -> bool {
         self.phase != Phase::Air
     }

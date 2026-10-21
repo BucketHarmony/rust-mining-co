@@ -47,10 +47,10 @@ pub use material::{
     CELL_JITTER_AMPLITUDE, CELL_JITTER_INSET_M, ChunkEmissiveMaterial, EmissiveChunkMaterial,
     EmissiveFromAlpha, EmissiveMaterialPlugin, cell_jitter, fragment_cell,
 };
-pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
+pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput, is_liquid_pass, is_opaque};
 pub use meshpipe::{
-    ChunkMesh, ChunkMeshState, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats, MeshSystems,
-    Mesher,
+    ChunkMesh, ChunkMeshState, LiquidMesh, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats,
+    MeshSystems, Mesher,
 };
 pub use net::{
     ClientMaterials, CommandSeq, FromHost, HostConnection, HostLink, NetPlugin, NetSystems, ToHost,
@@ -63,7 +63,7 @@ pub use pickaxe::{
     PLACE_BUTTON, PickTarget, Pickaxe, PickaxePlugin, PickaxeSystems, PlaceState, SWING_BUTTON,
     SWING_SLACK, SwingState,
 };
-pub use render::{CameraStart, GameCamera, GameRenderPlugin};
+pub use render::{CameraStart, GameCamera, GameRenderPlugin, LiquidMaterial};
 pub use replica::{Replica, ReplicaError, ReplicaPlugin};
 pub use save::{
     AUTOSAVE_INTERVAL, Autosave, SaveCause, SaveOutcome, SavePlugin, SaveStatus, SaveSystems,

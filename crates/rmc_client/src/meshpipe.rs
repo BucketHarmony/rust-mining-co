@@ -24,6 +24,12 @@
 //! - A new `Welcome` drops every job, queue entry and chunk mesh: the new
 //!   replica marks all its chunks dirty itself.
 //!
+//! Each job runs both passes of the [`Mesher`]: the opaque mesh goes on a
+//! [`ChunkMesh`] entity, and the liquid pass (SAD-P2 §10) on a separate
+//! [`LiquidMesh`] entity at the same corner, which the renderer draws
+//! alpha-blended after the opaque pass. The two upload together, and each
+//! has an entity only while its mesh is not empty.
+//!
 //! A chunk whose mesh is empty has no entity. Mesh assets are created only
 //! when `Assets<Mesh>` exists (a logic-only app has no asset plugin) and use
 //! `RenderAssetUsages::RENDER_WORLD`. [`MeshStats`] mirrors the queue for the
@@ -34,6 +40,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::ecs::component::Mutable;
+use bevy::ecs::query::QueryFilter;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
@@ -86,6 +94,16 @@ pub struct ChunkMesh {
     pub quads: u32,
 }
 
+/// The uploaded liquid-pass mesh of one chunk (SAD-P2 §10), on its own
+/// entity at the chunk's minimum corner.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiquidMesh {
+    pub pos: ChunkPos,
+    /// The chunk revision the mesh was built from.
+    pub revision: u64,
+    pub quads: u32,
+}
+
 /// Where a chunk is in the pipeline. A chunk can be in several states at
 /// once (meshed and queued again, say); [`MeshQueue::state`] reports the
 /// earliest.
@@ -108,9 +126,13 @@ pub struct MeshStats {
     pub meshed_chunks: usize,
     /// Meshed chunks whose mesh has at least one quad (one entity each).
     pub chunks_with_geometry: usize,
-    /// Quads over all uploaded meshes.
+    /// Quads over all uploaded opaque meshes.
     pub quads: u64,
-    /// Vertex and index bytes over all uploaded meshes.
+    /// Meshed chunks whose liquid mesh has at least one quad.
+    pub chunks_with_liquid: usize,
+    /// Quads over all uploaded liquid meshes.
+    pub liquid_quads: u64,
+    /// Vertex and index bytes over all uploaded meshes, both passes.
     pub mesh_bytes: u64,
     /// Chunks waiting for a job.
     pub queued: usize,
@@ -133,14 +155,18 @@ pub struct MeshStats {
     pub initial_load_done: bool,
 }
 
+/// A job's output: the opaque mesh and the liquid mesh.
+type Meshes = (MeshData, MeshData);
+
 struct Job {
     revision: u64,
-    task: Task<(MeshData, Duration)>,
+    task: Task<(Meshes, Duration)>,
 }
 
 struct Finished {
     revision: u64,
     data: MeshData,
+    liquid: MeshData,
     took: Duration,
 }
 
@@ -148,6 +174,8 @@ struct Meshed {
     revision: u64,
     entity: Option<Entity>,
     quads: u32,
+    liquid_entity: Option<Entity>,
+    liquid_quads: u32,
     bytes: u64,
 }
 
@@ -221,6 +249,12 @@ impl MeshQueue {
         self.meshed.get(&pos).and_then(|m| m.entity)
     }
 
+    /// The entity of `pos`'s uploaded liquid mesh (`None` if not meshed or
+    /// empty).
+    pub fn liquid_entity(&self, pos: ChunkPos) -> Option<Entity> {
+        self.meshed.get(&pos).and_then(|m| m.liquid_entity)
+    }
+
     /// Running jobs whose task has finished (collected at the next poll).
     pub fn jobs_finished(&self) -> usize {
         self.in_flight
@@ -239,6 +273,12 @@ impl MeshQueue {
             meshed_chunks: self.meshed.len(),
             chunks_with_geometry: self.meshed.values().filter(|m| m.quads > 0).count(),
             quads: self.meshed.values().map(|m| u64::from(m.quads)).sum(),
+            chunks_with_liquid: self.meshed.values().filter(|m| m.liquid_quads > 0).count(),
+            liquid_quads: self
+                .meshed
+                .values()
+                .map(|m| u64::from(m.liquid_quads))
+                .sum(),
             mesh_bytes: self.meshed.values().map(|m| m.bytes).sum(),
             queued: self.queued.len(),
             in_flight: self.in_flight.len(),
@@ -300,12 +340,15 @@ fn focus_cell(cameras: &Query<(Entity, &Camera, &GlobalTransform), With<Camera3d
         .unwrap_or_default()
 }
 
+/// Either mesh entity of a chunk.
+type AnyMesh = Or<(With<ChunkMesh>, With<LiquidMesh>)>;
+
 /// Drops all pipeline state and chunk meshes when a new replica starts.
 fn reset_on_welcome(
     mut commands: Commands,
     mut inbox: MessageReader<FromHost>,
     mut queue: ResMut<MeshQueue>,
-    meshes: Query<Entity, With<ChunkMesh>>,
+    meshes: Query<Entity, AnyMesh>,
 ) {
     let welcomed = inbox
         .read()
@@ -347,7 +390,7 @@ fn poll_jobs(mut commands: Commands, replica: Option<Res<Replica>>, mut queue: R
             done.push((pos, job.revision, output));
         }
     }
-    for (pos, revision, (data, took)) in done {
+    for (pos, revision, ((data, liquid), took)) in done {
         queue.in_flight.remove(&pos);
         match replica.world().chunk(pos) {
             None => {
@@ -370,6 +413,7 @@ fn poll_jobs(mut commands: Commands, replica: Option<Res<Replica>>, mut queue: R
                     Finished {
                         revision,
                         data,
+                        liquid,
                         took,
                     },
                 );
@@ -423,7 +467,8 @@ fn start_jobs(
         let task = pool.spawn(async move {
             let start = Instant::now();
             let data = mesher.mesh(&input);
-            (data, start.elapsed())
+            let liquid = mesher.mesh_liquid(&input);
+            ((data, liquid), start.elapsed())
         });
         queue.in_flight.insert(pos, Job { revision, task });
         queue.jobs_started += 1;
@@ -440,7 +485,8 @@ fn upload_meshes(
     budget: Res<MeshBudget>,
     cameras: Query<(Entity, &Camera, &GlobalTransform), With<Camera3d>>,
     mut assets: Option<ResMut<Assets<Mesh>>>,
-    mut existing: Query<(&mut ChunkMesh, Option<&mut Mesh3d>)>,
+    mut existing: OpaqueMeshes,
+    mut liquids: LiquidMeshes,
     mut queue: ResMut<MeshQueue>,
     mut stats: ResMut<MeshStats>,
 ) {
@@ -481,6 +527,7 @@ fn upload_meshes(
                 &mut commands,
                 assets.as_deref_mut(),
                 &mut existing,
+                &mut liquids,
                 queue,
                 pos,
                 finished,
@@ -507,11 +554,18 @@ fn fully_resident(world: &rmc_world::world::World) -> bool {
     world.chunk_count() == world.bounds().chunks().count()
 }
 
-/// Replaces `pos`'s mesh with `finished`.
+/// The mesh entities [`upload`] updates in place: opaque, then liquid.
+type OpaqueEntity = (&'static mut ChunkMesh, Option<&'static mut Mesh3d>);
+type LiquidEntity = (&'static mut LiquidMesh, Option<&'static mut Mesh3d>);
+type OpaqueMeshes<'w, 's> = Query<'w, 's, OpaqueEntity, Without<LiquidMesh>>;
+type LiquidMeshes<'w, 's> = Query<'w, 's, LiquidEntity, Without<ChunkMesh>>;
+
+/// Replaces `pos`'s opaque and liquid meshes with `finished`.
 fn upload(
     commands: &mut Commands,
-    assets: Option<&mut Assets<Mesh>>,
-    existing: &mut Query<(&mut ChunkMesh, Option<&mut Mesh3d>)>,
+    mut assets: Option<&mut Assets<Mesh>>,
+    existing: &mut OpaqueMeshes,
+    liquids: &mut LiquidMeshes,
     queue: &mut MeshQueue,
     pos: ChunkPos,
     finished: Finished,
@@ -519,51 +573,47 @@ fn upload(
     let Finished {
         revision,
         data,
+        liquid,
         took,
     } = finished;
     let quads = data.quad_count;
-    let bytes = mesh_bytes(&data);
+    let liquid_quads = liquid.quad_count;
+    let bytes = mesh_bytes(&data) + mesh_bytes(&liquid);
+    let old = queue.meshed.get(&pos);
+    let (old, old_liquid) = (
+        old.and_then(|m| m.entity),
+        old.and_then(|m| m.liquid_entity),
+    );
     let component = ChunkMesh {
         pos,
         revision,
         quads,
     };
-    let old = queue.meshed.get(&pos).and_then(|m| m.entity);
-    let entity = if data.is_empty() {
-        if let Some(entity) = old {
-            commands.entity(entity).despawn();
-        }
-        None
-    } else {
-        let handle = assets.map(|assets| assets.add(mesh_asset(data)));
-        match old.and_then(|e| existing.get_mut(e).ok().map(|q| (e, q))) {
-            Some((entity, (mut chunk_mesh, mesh3d))) => {
-                *chunk_mesh = component;
-                match (handle, mesh3d) {
-                    (Some(handle), Some(mut mesh3d)) => mesh3d.0 = handle,
-                    (Some(handle), None) => {
-                        commands.entity(entity).insert(Mesh3d(handle));
-                    }
-                    (None, _) => {}
-                }
-                Some(entity)
-            }
-            None => {
-                let origin = pos.origin_cell().min_corner_m();
-                let mut e = commands.spawn((component, Transform::from_translation(origin)));
-                if let Some(handle) = handle {
-                    e.insert(Mesh3d(handle));
-                }
-                Some(e.id())
-            }
-        }
+    let entity = replace_mesh(
+        commands,
+        assets.as_deref_mut(),
+        existing,
+        old,
+        pos,
+        data,
+        component,
+    );
+    let component = LiquidMesh {
+        pos,
+        revision,
+        quads: liquid_quads,
     };
+    let liquid_entity = replace_mesh(
+        commands, assets, liquids, old_liquid, pos, liquid, component,
+    );
     queue.meshed.insert(
         pos,
         Meshed {
             revision,
             entity,
             quads,
+            liquid_entity,
+            liquid_quads,
             bytes,
         },
     );
@@ -572,14 +622,58 @@ fn upload(
     queue.last_mesh_ms = took.as_secs_f32() * 1000.0;
 }
 
-/// Forgets `pos`'s mesh and despawns its entity.
+/// Puts `data` on the mesh entity `old` with `component`, spawning one at
+/// `pos`'s corner if there is none, or despawns `old` when `data` is empty.
+/// Returns the entity that holds the mesh.
+fn replace_mesh<C, F>(
+    commands: &mut Commands,
+    assets: Option<&mut Assets<Mesh>>,
+    existing: &mut Query<(&mut C, Option<&mut Mesh3d>), F>,
+    old: Option<Entity>,
+    pos: ChunkPos,
+    data: MeshData,
+    component: C,
+) -> Option<Entity>
+where
+    C: Component<Mutability = Mutable>,
+    F: QueryFilter,
+{
+    if data.is_empty() {
+        if let Some(entity) = old {
+            commands.entity(entity).despawn();
+        }
+        return None;
+    }
+    let handle = assets.map(|assets| assets.add(mesh_asset(data)));
+    match old.and_then(|e| existing.get_mut(e).ok().map(|q| (e, q))) {
+        Some((entity, (mut mesh, mesh3d))) => {
+            *mesh = component;
+            match (handle, mesh3d) {
+                (Some(handle), Some(mut mesh3d)) => mesh3d.0 = handle,
+                (Some(handle), None) => {
+                    commands.entity(entity).insert(Mesh3d(handle));
+                }
+                (None, _) => {}
+            }
+            Some(entity)
+        }
+        None => {
+            let origin = pos.origin_cell().min_corner_m();
+            let mut e = commands.spawn((component, Transform::from_translation(origin)));
+            if let Some(handle) = handle {
+                e.insert(Mesh3d(handle));
+            }
+            Some(e.id())
+        }
+    }
+}
+
+/// Forgets `pos`'s meshes and despawns their entities.
 fn remove_mesh(commands: &mut Commands, queue: &mut MeshQueue, pos: ChunkPos) {
-    if let Some(Meshed {
-        entity: Some(entity),
-        ..
-    }) = queue.meshed.remove(&pos)
-    {
-        commands.entity(entity).despawn();
+    if let Some(meshed) = queue.meshed.remove(&pos) {
+        for entity in [meshed.entity, meshed.liquid_entity].into_iter().flatten() {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
@@ -608,8 +702,9 @@ mod tests {
 
     use rmc_protocol::ClientMsg;
     use rmc_world::chunk::Chunk;
-    use rmc_world::coords::CellAabb;
+    use rmc_world::coords::{CellAabb, LocalPos};
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditResult, PlayerId};
+    use rmc_world::layers::LayerId;
     use rmc_world::materials::{MaterialId, MaterialTable};
     use rmc_world::shape::Shape;
     use rmc_world::world::World;
@@ -1457,5 +1552,142 @@ mod tests {
         for (_, (entity, _)) in meshes {
             assert!(f.app.world().get::<Mesh3d>(entity).is_none());
         }
+    }
+
+    /// The render-world positions of the mesh on `entity`.
+    fn asset_positions(app: &App, entity: Entity) -> Vec<[f32; 3]> {
+        let world = app.world();
+        let handle = &world.get::<Mesh3d>(entity).expect("a mesh").0;
+        let asset = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+        match asset.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(v)) => v.clone(),
+            other => panic!("positions {other:?}"),
+        }
+    }
+
+    #[test]
+    fn liquid_mesh_uploads_on_its_own_entity() {
+        let mut f = Fixture::new(true, MeshBudget::default(), true);
+        f.app.insert_resource(Mesher(Arc::new(GreedyMesher)));
+        f.join();
+        f.drain();
+        let s = f.stats();
+        assert_eq!(
+            (s.chunks_with_liquid, s.liquid_quads),
+            (0, 0),
+            "no water yet"
+        );
+        let liquids = |f: &mut Fixture| {
+            let world = f.app.world_mut();
+            let mut q = world.query::<(Entity, &LiquidMesh, &Transform)>();
+            q.iter(world)
+                .map(|(e, m, t)| (e, *m, t.translation))
+                .collect::<Vec<_>>()
+        };
+        assert!(liquids(&mut f).is_empty());
+        let (quads, bytes) = (s.quads, s.mesh_bytes);
+
+        // A shallow pool on the stone floor of chunk (1,1,1), by snapshot.
+        let pos = c(1, 1, 1);
+        let water = f.host.materials().id("water").unwrap();
+        let mut chunk = f.host.chunk(pos).unwrap().clone();
+        for x in 8..11 {
+            for z in 8..11 {
+                let local = LocalPos::new(x, 8, z);
+                chunk.storage.set(local, water);
+                chunk.layers.set_u8(LayerId::Moisture, local, 128);
+            }
+        }
+        chunk.revision += 1;
+        f.host.insert_chunk(pos, chunk.clone()).unwrap();
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &chunk)]);
+        f.drain();
+        let input = MeshInput::from_world(&f.host, pos).unwrap();
+        let want = GreedyMesher.mesh_liquid(&input);
+        assert_eq!(
+            want.quad_count, 5,
+            "a 3×3 pool on the floor: the top and 4 sides"
+        );
+        let s = f.stats();
+        assert_eq!(s.chunks_with_liquid, 1);
+        assert_eq!(s.liquid_quads, u64::from(want.quad_count));
+        assert_eq!(
+            s.quads, quads,
+            "the floor's top stays: water hides no stone face"
+        );
+        assert_eq!(
+            s.mesh_bytes,
+            bytes + (want.positions.len() * 40 + want.indices.len() * 4) as u64,
+            "both passes count"
+        );
+        let found = liquids(&mut f);
+        assert_eq!(found.len(), 1, "one liquid entity");
+        let (entity, mesh, at) = found[0];
+        assert_eq!(f.queue().liquid_entity(pos), Some(entity));
+        assert_ne!(
+            f.queue().entity(pos),
+            Some(entity),
+            "apart from the opaque one"
+        );
+        assert_eq!(
+            mesh,
+            LiquidMesh {
+                pos,
+                revision: chunk.revision,
+                quads: want.quad_count
+            }
+        );
+        assert_eq!(at, pos.origin_cell().min_corner_m());
+        assert!(f.app.world().get::<ChunkMesh>(entity).is_none());
+        assert_eq!(asset_positions(&f.app, entity), want.positions);
+
+        // A layer snapshot that fills the pool: remeshed at the new height,
+        // on the same entity.
+        let mut layers = chunk.layers.clone();
+        for x in 8..11 {
+            for z in 8..11 {
+                layers.set_u8(LayerId::Moisture, LocalPos::new(x, 8, z), 255);
+            }
+        }
+        let eco_revision = chunk.eco_revision + 1;
+        f.host
+            .apply_eco_snapshot(pos, eco_revision, layers.clone(), Default::default())
+            .unwrap();
+        f.deliver(vec![ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision,
+            layers,
+            plants: Default::default(),
+        }]);
+        f.drain();
+        let want_full = GreedyMesher.mesh_liquid(&MeshInput::from_world(&f.host, pos).unwrap());
+        assert_ne!(want_full.positions, want.positions, "the surface moved up");
+        assert_eq!(f.queue().liquid_entity(pos), Some(entity), "same entity");
+        assert_eq!(asset_positions(&f.app, entity), want_full.positions);
+
+        // A new Welcome despawns liquid meshes with the rest.
+        f.join();
+        f.step();
+        assert!(liquids(&mut f).is_empty(), "old liquid meshes despawned");
+        f.drain();
+        assert_eq!(liquids(&mut f).len(), 1, "meshed again");
+
+        // Draining the pool removes the liquid entity; the chunk's opaque
+        // mesh stays.
+        let mut dry = f.host.chunk(pos).unwrap().clone();
+        for x in 8..11 {
+            for z in 8..11 {
+                dry.storage.set(LocalPos::new(x, 8, z), MaterialId::AIR);
+            }
+        }
+        dry.revision += 1;
+        f.host.insert_chunk(pos, dry.clone()).unwrap();
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &dry)]);
+        f.drain();
+        let s = f.stats();
+        assert_eq!((s.chunks_with_liquid, s.liquid_quads), (0, 0));
+        assert_eq!(f.queue().liquid_entity(pos), None);
+        assert!(liquids(&mut f).is_empty(), "liquid entity despawned");
+        assert!(f.queue().entity(pos).is_some(), "the opaque mesh stays");
     }
 }

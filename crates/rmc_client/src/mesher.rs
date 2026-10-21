@@ -6,8 +6,9 @@
 //! cells of chunks that are not resident read as air, and so does the
 //! bounds shell above the surface (F095; see [`MeshInput::from_world`]).
 //!
-//! [`GreedyMesher`] emits a face wherever a `Solid` cell of the chunk meets a
-//! cell that is not `Solid`, and merges equal faces in each slice into
+//! [`GreedyMesher`] emits a face wherever an opaque cell of the chunk
+//! ([`is_opaque`]: `Solid`, or an opaque liquid such as magma) meets a cell
+//! that is not opaque, and merges equal faces in each slice into
 //! rectangles. Faces merge only when their material, normal and all four
 //! corner AO values match (the 0fps scheme), so a merged quad never smears AO
 //! across cells that should be shaded differently. AO is 3-sample voxel AO
@@ -18,13 +19,21 @@
 //! material color in linear RGB times the face's shade for its normal
 //! ([`face_shade`]) times the vertex's AO factor; alpha holds the material's
 //! emissive strength.
+//!
+//! The liquid pass ([`ChunkMesher::mesh_liquid`], SAD-P2 §10) is a second
+//! [`MeshData`] with the faces of translucent liquid cells
+//! ([`is_liquid_pass`]: water): the top at the cell's fill height, the sides
+//! clipped to the fill, no AO. Its vertex alpha is the liquid's opacity, and
+//! the renderer draws it alpha-blended after the opaque pass. The fill is
+//! the cell's `moisture` layer, which [`MeshInput`] carries for liquid cells.
 
 use std::sync::Arc;
 
 use bevy::color::Color;
-use bevy::prelude::IVec3;
+use bevy::prelude::{IVec3, Vec3};
 use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
-use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::layers::LayerId;
+use rmc_world::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
 use rmc_world::world::World;
 
 /// Edge length of a [`MeshInput`] in cells: the chunk plus one border cell on
@@ -59,7 +68,28 @@ pub fn face_shade(normal: IVec3) -> f32 {
 
 /// Builds a mesh from one chunk's cells.
 pub trait ChunkMesher: Send + Sync {
+    /// The opaque pass.
     fn mesh(&self, input: &MeshInput) -> MeshData;
+
+    /// The liquid pass (SAD-P2 §10): the faces of [`is_liquid_pass`] cells,
+    /// drawn alpha-blended after the opaque pass. Empty by default.
+    fn mesh_liquid(&self, _input: &MeshInput) -> MeshData {
+        MeshData::default()
+    }
+}
+
+/// Whether `def` is meshed in the liquid pass (SAD-P2 §10): a `Liquid`
+/// whose color is translucent (alpha below 255), such as water. An opaque
+/// liquid (magma) is a full cell in the opaque pass.
+pub fn is_liquid_pass(def: &MaterialDef) -> bool {
+    def.phase == Phase::Liquid && def.color[3] < u8::MAX
+}
+
+/// Whether `def` is meshed in the opaque pass: `Solid`, or a `Liquid` that
+/// is not [`is_liquid_pass`]. Opaque cells hide the faces behind them in
+/// both passes.
+pub fn is_opaque(def: &MaterialDef) -> bool {
+    def.is_solid_or_liquid() && !is_liquid_pass(def)
 }
 
 /// One chunk's cells with a one-cell border, indexed by chunk-local
@@ -69,6 +99,9 @@ pub struct MeshInput {
     pub pos: ChunkPos,
     pub revision: u64,
     pub cells: Box<[MaterialId; MESH_INPUT_VOLUME]>,
+    /// The fill (`moisture` layer) of every [`is_liquid_pass`] cell; 0 for
+    /// every other cell.
+    pub fills: Box<[u8; MESH_INPUT_VOLUME]>,
     pub materials: Arc<MaterialTable>,
 }
 
@@ -79,10 +112,15 @@ impl MeshInput {
         let cells = cells
             .try_into()
             .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"));
+        let fills: Box<[u8]> = vec![0; MESH_INPUT_VOLUME].into_boxed_slice();
+        let fills = fills
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"));
         Self {
             pos,
             revision,
             cells,
+            fills,
             materials,
         }
     }
@@ -91,10 +129,12 @@ impl MeshInput {
     /// that chunk is not resident. The revision is the chunk's. Border cells in
     /// chunks that are not resident, or outside the bounds, are air (the same
     /// as [`World::get_cell`] returning `None`). The bounds shell above the
-    /// surface is air too (see `open_shell_above_surface`).
+    /// surface is air too (see `open_shell_above_surface`). Liquid-pass cells
+    /// bring their fill.
     pub fn from_world(world: &World, pos: ChunkPos) -> Option<Self> {
         let revision = world.chunk(pos)?.revision;
         let mut input = Self::empty(pos, revision, world.materials().clone());
+        let liquid: Vec<bool> = input.materials.iter().map(is_liquid_pass).collect();
         // The 27 chunks the 34³ box touches, indexed by offset + 1.
         let mut near = [None; 27];
         for (i, slot) in near.iter_mut().enumerate() {
@@ -113,7 +153,12 @@ impl MeshInput {
                     let (cp, local) = cell.split();
                     let o = cp.0 - pos.0 + IVec3::ONE;
                     if let Some(chunk) = near[(o.x + o.z * 3 + o.y * 9) as usize] {
-                        input.cells[Self::index(x, y, z)] = chunk.storage.get(local);
+                        let id = chunk.storage.get(local);
+                        let i = Self::index(x, y, z);
+                        input.cells[i] = id;
+                        if liquid.get(usize::from(id.0)).copied().unwrap_or(false) {
+                            input.fills[i] = chunk.layers.get_u8(LayerId::Moisture, local);
+                        }
                     }
                 }
             }
@@ -181,6 +226,19 @@ impl MeshInput {
     /// edits the input; the world is unchanged.
     pub fn set(&mut self, x: i32, y: i32, z: i32, id: MaterialId) {
         self.cells[Self::index(x, y, z)] = id;
+    }
+
+    /// Fill at the chunk-local cell `(x, y, z)`, each in `-1..=32`.
+    pub fn fill(&self, x: i32, y: i32, z: i32) -> u8 {
+        self.fills[Self::index(x, y, z)]
+    }
+
+    /// Writes the cell `(x, y, z)` as `id` with fill `fill`. This only edits
+    /// the input; the world is unchanged.
+    pub fn set_liquid(&mut self, x: i32, y: i32, z: i32, id: MaterialId, fill: u8) {
+        let i = Self::index(x, y, z);
+        self.cells[i] = id;
+        self.fills[i] = fill;
     }
 }
 
@@ -258,8 +316,7 @@ impl ChunkMesher for GreedyMesher {
         let solid: Vec<bool> = input
             .cells
             .iter()
-            // Liquids mesh in the opaque pass until the liquid pass exists (SAD-P2 §5).
-            .map(|&id| table.get(id).is_some_and(|d| d.is_solid_or_liquid()))
+            .map(|&id| table.get(id).is_some_and(is_opaque))
             .collect();
         let is_solid = |p: IVec3| solid[MeshInput::index(p.x, p.y, p.z)];
         let base_colors: Vec<[f32; 4]> = table
@@ -302,53 +359,254 @@ impl ChunkMesher for GreedyMesher {
                             };
                         }
                     }
-                    // Greedy merge: grow along u, then along v while the whole
-                    // row matches.
-                    for j in 0..N {
-                        let mut i = 0;
-                        while i < N {
-                            let Some(key) = mask[(i + j * N) as usize] else {
-                                i += 1;
-                                continue;
-                            };
-                            let mut w = 1;
-                            while i + w < N && mask[(i + w + j * N) as usize] == Some(key) {
-                                w += 1;
-                            }
-                            let mut h = 1;
-                            while j + h < N
-                                && (i..i + w).all(|k| mask[(k + (j + h) * N) as usize] == Some(key))
-                            {
-                                h += 1;
-                            }
-                            for jj in j..j + h {
-                                for k in i..i + w {
-                                    mask[(k + jj * N) as usize] = None;
-                                }
-                            }
-                            let mut origin = IVec3::ZERO;
-                            origin[d] = if positive { s + 1 } else { s };
-                            origin[u] = i;
-                            origin[v] = j;
-                            let corners = [
-                                origin,
-                                origin + eu * w,
-                                origin + eu * w + ev * h,
-                                origin + ev * h,
-                            ];
-                            let base = base_colors
-                                .get(usize::from(key.material.0))
-                                .copied()
-                                .unwrap_or_default();
-                            push_quad(&mut out, corners, n, base, key.ao, positive);
-                            i += w;
-                        }
-                    }
+                    merge_rects(&mut mask, |i, j, w, h, key| {
+                        let mut origin = IVec3::ZERO;
+                        origin[d] = if positive { s + 1 } else { s };
+                        origin[u] = i;
+                        origin[v] = j;
+                        let corners = [
+                            origin,
+                            origin + eu * w,
+                            origin + eu * w + ev * h,
+                            origin + ev * h,
+                        ];
+                        let base = base_colors
+                            .get(usize::from(key.material.0))
+                            .copied()
+                            .unwrap_or_default();
+                        push_quad(&mut out, corners, n, base, key.ao, positive);
+                    });
                 }
             }
         }
         out
     }
+
+    /// Emits a face of a liquid-pass cell with fill above 0 wherever it does
+    /// not meet an opaque cell or the same liquid (SAD-P2 §10):
+    ///
+    /// - the top at `y + fill/255`, unless the cell above is the same liquid,
+    ///   or is opaque and the cell is full;
+    /// - the bottom on the cell's floor;
+    /// - each side from the floor to the fill, or, toward the same liquid at
+    ///   a lower fill, from that fill up; none toward an equal or higher one.
+    ///
+    /// Faces merge as in the opaque pass when their material, color and
+    /// extent match, without AO. A side that is not the full cell height
+    /// merges only along its row. The color is the material's in linear
+    /// RGB times [`face_shade`], through [`liquid_tint`], with the
+    /// material's alpha as opacity.
+    fn mesh_liquid(&self, input: &MeshInput) -> MeshData {
+        const N: i32 = CHUNK_SIZE;
+        let table = &input.materials;
+        let flags = |f: fn(&MaterialDef) -> bool| -> Vec<bool> { table.iter().map(f).collect() };
+        let (liquid, opaque) = (flags(is_liquid_pass), flags(is_opaque));
+        let has = |v: &[bool], id: MaterialId| v.get(usize::from(id.0)).copied().unwrap_or(false);
+        let base_colors: Vec<[f32; 4]> = table
+            .iter()
+            .map(|def| liquid_base_color(table, def.id))
+            .collect();
+        let cell = |p: IVec3| (input.get(p.x, p.y, p.z), input.fill(p.x, p.y, p.z));
+
+        let mut out = MeshData::default();
+        let mut mask: Vec<Option<LiquidKey>> = vec![None; (N * N) as usize];
+        for d in 0..3 {
+            let (u, v) = ((d + 1) % 3, (d + 2) % 3);
+            for positive in [true, false] {
+                let n = if positive { unit(d) } else { -unit(d) };
+                for s in 0..N {
+                    for j in 0..N {
+                        for i in 0..N {
+                            let mut p = IVec3::ZERO;
+                            p[d] = s;
+                            p[u] = i;
+                            p[v] = j;
+                            let (m, fill) = cell(p);
+                            mask[(i + j * N) as usize] = if has(&liquid, m) && fill > 0 {
+                                let (qm, q_fill) = cell(p + n);
+                                let same = qm == m && q_fill > 0;
+                                let q_opaque = has(&opaque, qm);
+                                liquid_extent(d, positive, fill, same, q_fill, q_opaque).map(
+                                    |(lo, hi)| {
+                                        let base = base_colors
+                                            .get(usize::from(m.0))
+                                            .copied()
+                                            .unwrap_or_default();
+                                        let color = liquid_tint(input, p, base);
+                                        let partial = d != 1 && (lo, hi) != (0, u8::MAX);
+                                        LiquidKey {
+                                            material: m,
+                                            color: color.map(f32::to_bits),
+                                            lo,
+                                            hi,
+                                            row: if partial { Some(p.y) } else { None },
+                                        }
+                                    },
+                                )
+                            } else {
+                                None
+                            };
+                        }
+                    }
+                    merge_rects(&mut mask, |i, j, w, h, key| {
+                        let height = |f: u8| f32::from(f) / f32::from(u8::MAX);
+                        // Per axis, the quad's extent in cells.
+                        let mut lo = Vec3::ZERO;
+                        let mut hi = Vec3::ZERO;
+                        let plane = if d == 1 && positive {
+                            s as f32 + height(key.hi)
+                        } else if positive {
+                            (s + 1) as f32
+                        } else {
+                            s as f32
+                        };
+                        lo[d] = plane;
+                        hi[d] = plane;
+                        (lo[u], hi[u]) = (i as f32, (i + w) as f32);
+                        (lo[v], hi[v]) = (j as f32, (j + h) as f32);
+                        if d != 1 {
+                            // A side: from `lo` in its bottom row to `hi` in
+                            // its top row.
+                            let (y0, y1) = (lo.y, hi.y);
+                            lo.y = y0 + height(key.lo);
+                            hi.y = y1 - 1.0 + height(key.hi);
+                        }
+                        let corners = [lo, with_axis(lo, u, hi[u]), hi, with_axis(lo, v, hi[v])];
+                        let color = key.color.map(f32::from_bits);
+                        push_liquid_quad(&mut out, corners, n, color, positive);
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What a liquid face must share with its neighbour in the slice to merge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiquidKey {
+    material: MaterialId,
+    /// The face color's bits, before the face shade.
+    color: [u32; 4],
+    /// For a side, the fill it starts from and the fill it ends at, in its
+    /// own cell; for a top, the fill (`hi`); 0 for a bottom.
+    lo: u8,
+    hi: u8,
+    /// A side that is not the full cell height keeps to its row `y`, so
+    /// stacked partial sides never merge into one tall quad.
+    row: Option<i32>,
+}
+
+/// The extent of a liquid cell's face toward a neighbour along axis `d`
+/// (`positive` toward +d), as `(lo, hi)` fills (see [`LiquidKey`]), or
+/// `None` when no face is drawn there. `fill` is above 0; `same` says the
+/// neighbour is the same liquid with fill `q_fill` above 0.
+fn liquid_extent(
+    d: usize,
+    positive: bool,
+    fill: u8,
+    same: bool,
+    q_fill: u8,
+    q_opaque: bool,
+) -> Option<(u8, u8)> {
+    if d == 1 {
+        let hidden = if positive {
+            same || (q_opaque && fill == u8::MAX)
+        } else {
+            same || q_opaque
+        };
+        let hi = if positive { fill } else { 0 };
+        (!hidden).then_some((0, hi))
+    } else {
+        let lo = if same { q_fill } else { 0 };
+        (!q_opaque && fill > lo).then_some((lo, fill))
+    }
+}
+
+/// `p` with its component on axis `a` replaced by `value`.
+fn with_axis(mut p: Vec3, a: usize, value: f32) -> Vec3 {
+    p[a] = value;
+    p
+}
+
+/// Greedy merge of one slice's face mask (`N`×`N`, indexed `i + j*N`):
+/// grows each face along u, then along v while the whole row matches, and
+/// calls `emit(i, j, w, h, key)` per rectangle, clearing the mask.
+fn merge_rects<K: Copy + PartialEq>(
+    mask: &mut [Option<K>],
+    mut emit: impl FnMut(i32, i32, i32, i32, K),
+) {
+    const N: i32 = CHUNK_SIZE;
+    for j in 0..N {
+        let mut i = 0;
+        while i < N {
+            let Some(key) = mask[(i + j * N) as usize] else {
+                i += 1;
+                continue;
+            };
+            let mut w = 1;
+            while i + w < N && mask[(i + w + j * N) as usize] == Some(key) {
+                w += 1;
+            }
+            let mut h = 1;
+            while j + h < N && (i..i + w).all(|k| mask[(k + (j + h) * N) as usize] == Some(key)) {
+                h += 1;
+            }
+            for jj in j..j + h {
+                for k in i..i + w {
+                    mask[(k + jj * N) as usize] = None;
+                }
+            }
+            emit(i, j, w, h, key);
+            i += w;
+        }
+    }
+}
+
+/// Appends one liquid quad. `corners` are in cells, in (u, v) order. The
+/// color is shaded for the normal; its alpha (opacity) is kept.
+fn push_liquid_quad(
+    out: &mut MeshData,
+    corners: [Vec3; 4],
+    normal: IVec3,
+    color: [f32; 4],
+    positive: bool,
+) {
+    let first = out.positions.len() as u32;
+    let shade = face_shade(normal);
+    for c in corners {
+        out.positions.push((c * CELL_SIZE_M).to_array());
+        out.normals.push(normal.as_vec3().to_array());
+        out.colors.push([
+            color[0] * shade,
+            color[1] * shade,
+            color[2] * shade,
+            color[3],
+        ]);
+    }
+    for [a, b, c] in [[0, 1, 2], [0, 2, 3]] {
+        let tri = if positive { [a, b, c] } else { [a, c, b] };
+        out.indices.extend(tri.map(|k| first + k));
+    }
+    out.quad_count += 1;
+}
+
+/// Linear RGB of a liquid's sRGB color, with its alpha as opacity `0..=1`.
+fn liquid_base_color(materials: &MaterialTable, id: MaterialId) -> [f32; 4] {
+    materials.get(id).map_or([0.0; 4], |def| {
+        let [r, g, b, a] = def.color;
+        let c = Color::srgba_u8(r, g, b, a).to_linear();
+        [c.red, c.green, c.blue, f32::from(a) / f32::from(u8::MAX)]
+    })
+}
+
+/// The color of the liquid cell `p` (chunk-local): its material's color,
+/// unchanged. This is the hook for the substance tint (SAD-P2 §10,
+/// `eco.tint`): water's color will shift here by the cell's dissolved
+/// substances. The color is part of [`LiquidKey`], so cells merge only with
+/// equal tints.
+fn liquid_tint(_input: &MeshInput, _p: IVec3, base: [f32; 4]) -> [f32; 4] {
+    base
 }
 
 /// Appends one quad. `corners` are in cells, in (u, v) order; `positive`
@@ -495,6 +753,12 @@ mod tests {
     /// quad, one axis-aligned unit normal per quad, a planar rectangle, and
     /// triangles wound counter-clockwise seen from the normal side.
     fn quads(data: &MeshData) -> Vec<Quad> {
+        decode(data, true)
+    }
+
+    /// [`quads`] with the whole-cell check only when `whole_cells`: liquid
+    /// quads may end at a fill height inside a cell.
+    fn decode(data: &MeshData, whole_cells: bool) -> Vec<Quad> {
         let q = data.quad_count as usize;
         assert_eq!(data.positions.len(), 4 * q, "4 positions per quad");
         assert_eq!(data.normals.len(), 4 * q, "4 normals per quad");
@@ -563,7 +827,11 @@ mod tests {
                         (b - a).cross(c - a).length() / 2.0
                     })
                     .sum();
-                assert!(w >= 1.0 && h >= 1.0, "quad {corners:?} spans whole cells");
+                if whole_cells {
+                    assert!(w >= 1.0 && h >= 1.0, "quad {corners:?} spans whole cells");
+                } else {
+                    assert!(w > 0.0 && h > 0.0, "quad {corners:?} is not degenerate");
+                }
                 assert!(
                     (area - w * h).abs() < 1e-3,
                     "quad {corners:?} is a rectangle"
@@ -1351,5 +1619,355 @@ mod tests {
         }
         let input = MeshInput::from_world(&world, center).unwrap();
         assert!(mesh(&input).is_empty(), "neighbour faces are not ours");
+    }
+
+    /// The liquid pass's quads, decoded with fractional heights allowed.
+    fn liquid(input: &MeshInput) -> Vec<Quad> {
+        decode(&GreedyMesher.mesh_liquid(input), false)
+    }
+
+    /// Height of `fill` in cells.
+    fn h(fill: u8) -> f32 {
+        f32::from(fill) / 255.0
+    }
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        a.distance(b) < 1e-5
+    }
+
+    /// The color every corner of a liquid face facing `normal` has: the
+    /// material color in linear RGB times the face shade, with the
+    /// material's alpha as opacity.
+    fn liquid_color(t: &MaterialTable, mat: MaterialId, normal: IVec3) -> [f32; 4] {
+        let def = t.get(mat).unwrap();
+        let [r, g, b, a] = def.color;
+        let c = Color::srgba_u8(r, g, b, a).to_linear();
+        let f = face_shade(normal);
+        [c.red * f, c.green * f, c.blue * f, f32::from(a) / 255.0]
+    }
+
+    #[test]
+    fn liquid_top_face_at_fill_height() {
+        let t = table();
+        let water = id(&t, "water");
+        let stone = id(&t, "stone");
+
+        // A lone water cell in air: six faces, the top at y + fill/255 and
+        // the sides clipped to it, the bottom on the cell's floor.
+        for fill in [1u8, 64, 128, 200, 254, 255] {
+            let mut input = origin_input(&t);
+            input.set_liquid(5, 5, 5, water, fill);
+            let qs = liquid(&input);
+            assert_eq!(qs.len(), 6, "fill {fill}: 6 faces");
+            let top = with_normal(&qs, IVec3::Y)[0];
+            assert!(
+                (top.plane() - (5.0 + h(fill))).abs() < 1e-5,
+                "fill {fill}: top"
+            );
+            assert!(close(top.min(), Vec3::new(5.0, 5.0 + h(fill), 5.0)));
+            assert!(close(top.max(), Vec3::new(6.0, 5.0 + h(fill), 6.0)));
+            let bottom = with_normal(&qs, IVec3::NEG_Y)[0];
+            assert_eq!(bottom.plane(), 5.0, "fill {fill}: bottom on the floor");
+            for dir in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+                let side = with_normal(&qs, dir);
+                assert_eq!(side.len(), 1, "fill {fill}: one side {dir}");
+                assert!((side[0].min().y - 5.0).abs() < 1e-5, "side from the floor");
+                assert!(
+                    (side[0].max().y - (5.0 + h(fill))).abs() < 1e-5,
+                    "fill {fill}: side {dir} clipped to the fill"
+                );
+            }
+            for q in &qs {
+                for c in q.colors {
+                    assert_eq!(c, liquid_color(&t, water, q.normal), "fill {fill}");
+                }
+            }
+            assert!(
+                mesh(&input).is_empty(),
+                "fill {fill}: not in the opaque pass"
+            );
+        }
+
+        // Fill 0 draws nothing.
+        let mut input = origin_input(&t);
+        input.set_liquid(5, 5, 5, water, 0);
+        assert!(GreedyMesher.mesh_liquid(&input).is_empty(), "fill 0");
+
+        // Water on a stone floor: no bottom face; the stone's top shows
+        // through the water in the opaque pass, without AO from the water.
+        let mut input = origin_input(&t);
+        input.set(5, 4, 5, stone);
+        input.set_liquid(5, 5, 5, water, 100);
+        let qs = liquid(&input);
+        assert_eq!(qs.len(), 5, "no face against the floor");
+        assert!(with_normal(&qs, IVec3::NEG_Y).is_empty());
+        let opaque = quads(&mesh(&input));
+        assert_eq!(opaque.len(), 6, "the stone keeps all six faces");
+        let top = tops_at(&opaque, 4);
+        assert_eq!(top.len(), 1, "the stone top under the water");
+        let base = vertex_base_color(&t, stone);
+        assert!((0..4).all(|i| top[0].level(i, base) == 3), "no AO");
+
+        // A column: a full cell under a partial one has no face between them;
+        // one top at the upper cell's fill; sides from the floor of the lower
+        // cell to that fill.
+        let mut input = origin_input(&t);
+        input.set_liquid(8, 3, 8, water, 255);
+        input.set_liquid(8, 4, 8, water, 90);
+        let qs = liquid(&input);
+        let tops = with_normal(&qs, IVec3::Y);
+        assert_eq!(tops.len(), 1, "one top for the column");
+        assert!((tops[0].plane() - (4.0 + h(90))).abs() < 1e-5);
+        let bottoms = with_normal(&qs, IVec3::NEG_Y);
+        assert_eq!(bottoms.len(), 1);
+        assert_eq!(bottoms[0].plane(), 3.0);
+        for dir in [IVec3::X, IVec3::NEG_X, IVec3::Z, IVec3::NEG_Z] {
+            let mut spans: Vec<(f32, f32)> = with_normal(&qs, dir)
+                .iter()
+                .map(|q| (q.min().y, q.max().y))
+                .collect();
+            spans.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let covered: f32 = spans.iter().map(|(lo, hi)| hi - lo).sum();
+            assert!(
+                (covered - (1.0 + h(90))).abs() < 1e-5,
+                "side {dir}: {spans:?}"
+            );
+            assert!((spans[0].0 - 3.0).abs() < 1e-5);
+            assert!((spans.last().unwrap().1 - (4.0 + h(90))).abs() < 1e-5);
+        }
+
+        // Two cells side by side at different fills: the higher has a side
+        // toward the lower only above the lower one's level, the lower none
+        // toward the higher, and the tops do not merge.
+        let mut input = origin_input(&t);
+        input.set_liquid(10, 2, 10, water, 200);
+        input.set_liquid(11, 2, 10, water, 50);
+        let qs = liquid(&input);
+        let east: Vec<&Quad> = with_normal(&qs, IVec3::X)
+            .into_iter()
+            .filter(|q| q.plane() == 11.0)
+            .collect();
+        assert_eq!(east.len(), 1, "the high cell's face toward the low one");
+        assert!(
+            (east[0].min().y - (2.0 + h(50))).abs() < 1e-5,
+            "from the low fill"
+        );
+        assert!(
+            (east[0].max().y - (2.0 + h(200))).abs() < 1e-5,
+            "to the high fill"
+        );
+        assert!(
+            with_normal(&qs, IVec3::NEG_X)
+                .iter()
+                .all(|q| q.plane() != 11.0),
+            "the low cell has no face toward the high one"
+        );
+        assert_eq!(with_normal(&qs, IVec3::Y).len(), 2, "different fills");
+        // Equal fills side by side: no face between them, one merged top.
+        let mut input = origin_input(&t);
+        input.set_liquid(10, 2, 10, water, 120);
+        input.set_liquid(11, 2, 10, water, 120);
+        let qs = liquid(&input);
+        assert!(
+            qs.iter().all(|q| q.normal.x == 0 || q.plane() != 11.0),
+            "no face between equal fills"
+        );
+        let tops = with_normal(&qs, IVec3::Y);
+        assert_eq!(tops.len(), 1);
+        assert_eq!(tops[0].size(), (2.0, 1.0));
+
+        // Under a ceiling: a full cell hides its top, a partial one does not.
+        for (fill, tops) in [(255u8, 0usize), (180, 1)] {
+            let mut input = origin_input(&t);
+            input.set_liquid(3, 3, 3, water, fill);
+            input.set(3, 4, 3, stone);
+            let qs = liquid(&input);
+            assert_eq!(with_normal(&qs, IVec3::Y).len(), tops, "fill {fill}");
+        }
+
+        // A walled 4×4 pool at one fill: its surface is one merged quad.
+        let mut input = origin_input(&t);
+        for x in 3..=8 {
+            for z in 3..=8 {
+                input.set(x, 1, z, stone);
+                if (4..=7).contains(&x) && (4..=7).contains(&z) {
+                    input.set_liquid(x, 2, z, water, 230);
+                } else {
+                    input.set(x, 2, z, stone);
+                }
+            }
+        }
+        let qs = liquid(&input);
+        assert_eq!(
+            qs.len(),
+            1,
+            "only the surface: walls and floor hide the rest"
+        );
+        assert_eq!(qs[0].normal, IVec3::Y);
+        assert_eq!(qs[0].size(), (4.0, 4.0));
+        assert!((qs[0].plane() - (2.0 + h(230))).abs() < 1e-5);
+
+        // A full lake face against air merges over its height and width.
+        let mut input = origin_input(&t);
+        for y in 0..4 {
+            for z in 0..32 {
+                input.set_liquid(0, y, z, water, 255);
+            }
+        }
+        let qs = liquid(&input);
+        let west = with_normal(&qs, IVec3::NEG_X);
+        assert_eq!(west.len(), 1);
+        assert_eq!(west[0].size(), (4.0, 32.0));
+
+        // Fills come from the world's moisture layer, for liquid cells only.
+        let mut world = world_3x3x3(&t);
+        let center = ChunkPos::new(0, 0, 0);
+        let mut chunk = chunk_with(center, &[IVec3::new(6, 6, 6)], water);
+        chunk
+            .layers
+            .set_u8(LayerId::Moisture, LocalPos::new(6, 6, 6), 77);
+        chunk.storage.set(LocalPos::new(6, 5, 6), stone);
+        chunk
+            .layers
+            .set_u8(LayerId::Moisture, LocalPos::new(6, 5, 6), 9);
+        insert(&mut world, center, chunk);
+        let input = MeshInput::from_world(&world, center).unwrap();
+        assert_eq!(input.fill(6, 6, 6), 77, "a water cell brings its fill");
+        assert_eq!(input.fill(6, 5, 6), 0, "a wet stone brings none");
+        let qs = liquid(&input);
+        let top = with_normal(&qs, IVec3::Y);
+        assert_eq!(top.len(), 1);
+        assert!((top[0].plane() - (6.0 + h(77))).abs() < 1e-5);
+    }
+
+    /// The shipped table plus `lava`: an opaque, glowing liquid, as magma is.
+    fn table_with_opaque_liquid() -> Arc<MaterialTable> {
+        let t = table();
+        let mut defs: Vec<MaterialDef> = t.iter().cloned().collect();
+        let mut lava = t.get(id(&t, "water")).unwrap().clone();
+        lava.id = MaterialId(defs.len() as u16);
+        lava.key = "lava".into();
+        lava.color = [230, 90, 20, 255];
+        lava.emissive = 2.0;
+        defs.push(lava);
+        Arc::new(MaterialTable::from_defs(defs).expect("table with lava"))
+    }
+
+    #[test]
+    fn liquid_faces_in_second_mesh() {
+        let t = table_with_opaque_liquid();
+        let water = id(&t, "water");
+        let lava = id(&t, "lava");
+        let stone = id(&t, "stone");
+
+        // Which materials go where: translucent liquids in the liquid pass,
+        // solids and opaque liquids in the opaque pass, air in neither.
+        assert!(is_liquid_pass(t.get(water).unwrap()), "water");
+        assert!(!is_liquid_pass(t.get(lava).unwrap()), "an opaque liquid");
+        for def in t.iter() {
+            let translucent = def.phase == Phase::Liquid && def.color[3] < u8::MAX;
+            assert_eq!(is_liquid_pass(def), translucent, "{}", def.key);
+            let opaque = def.phase == Phase::Solid || (def.phase == Phase::Liquid && !translucent);
+            assert_eq!(is_opaque(def), opaque, "{}", def.key);
+        }
+
+        // Water is only in the second mesh, solids only in the first.
+        let mut input = origin_input(&t);
+        input.set_liquid(4, 4, 4, water, 255);
+        input.set(10, 4, 4, stone);
+        let opaque = quads(&mesh(&input));
+        let liquid_qs = liquid(&input);
+        assert_eq!(opaque.len(), 6, "the stone");
+        assert!(
+            opaque.iter().all(|q| q.min().x >= 10.0),
+            "no water in the first"
+        );
+        assert_eq!(liquid_qs.len(), 6, "the water");
+        assert!(
+            liquid_qs.iter().all(|q| q.max().x <= 5.0),
+            "no stone in the second"
+        );
+        let base = vertex_base_color(&t, stone);
+        for q in &opaque {
+            assert!(q.colors.iter().all(|c| *c == shaded(base, q.normal)));
+        }
+        let alpha = f32::from(t.get(water).unwrap().color[3]) / 255.0;
+        for q in &liquid_qs {
+            for c in q.colors {
+                assert_eq!(c[3], alpha, "opacity from the material color");
+                assert!(c[3] < 1.0, "translucent");
+            }
+        }
+
+        // Stone beside water: the stone's face toward the water is drawn
+        // (seen through it), and the water's face toward the stone is not.
+        let mut input = origin_input(&t);
+        input.set(4, 4, 4, stone);
+        input.set_liquid(5, 4, 4, water, 255);
+        assert_eq!(quads(&mesh(&input)).len(), 6, "water hides no stone face");
+        let liquid_qs = liquid(&input);
+        assert_eq!(liquid_qs.len(), 5, "stone hides the water's face");
+        assert!(with_normal(&liquid_qs, IVec3::NEG_X).is_empty());
+
+        // A submerged stone has all six faces; the water body around it only
+        // its outside.
+        let mut input = origin_input(&t);
+        for y in 3..=5 {
+            for z in 3..=5 {
+                for x in 3..=5 {
+                    input.set_liquid(x, y, z, water, 255);
+                }
+            }
+        }
+        input.set(4, 4, 4, stone);
+        assert_eq!(quads(&mesh(&input)).len(), 6, "submerged stone");
+        assert_eq!(
+            shape(&liquid(&input)),
+            expect_shape(DIRS.iter().map(|&d| (d, (3.0, 3.0))).collect()),
+            "the 3×3×3 water body's outside only"
+        );
+
+        // An opaque liquid is a full cell in the opaque pass whatever its
+        // fill, with its emissive strength in alpha; nothing in the second.
+        let lava_base = vertex_base_color(&t, lava);
+        assert_eq!(lava_base[3], 2.0);
+        for fill in [0u8, 40, 255] {
+            let mut input = origin_input(&t);
+            input.set_liquid(7, 7, 7, lava, fill);
+            let qs = quads(&mesh(&input));
+            assert_eq!(qs.len(), 6, "lava fill {fill}");
+            assert!(qs.iter().all(|q| q.size() == (1.0, 1.0)));
+            assert!(
+                qs.iter()
+                    .all(|q| q.colors.iter().all(|c| *c == shaded(lava_base, q.normal)))
+            );
+            assert!(
+                GreedyMesher.mesh_liquid(&input).is_empty(),
+                "lava fill {fill}"
+            );
+        }
+        // Lava hides the water's face toward it, as a solid does.
+        let mut input = origin_input(&t);
+        input.set_liquid(7, 7, 7, lava, 0);
+        input.set_liquid(8, 7, 7, water, 255);
+        assert_eq!(liquid(&input).len(), 5);
+        assert_eq!(quads(&mesh(&input)).len(), 6, "water hides no lava face");
+
+        // The default ChunkMesher has an empty liquid pass; GreedyMesher,
+        // the pipeline's mesher, fills it.
+        struct OpaqueOnly;
+        impl ChunkMesher for OpaqueOnly {
+            fn mesh(&self, input: &MeshInput) -> MeshData {
+                GreedyMesher.mesh(input)
+            }
+        }
+        let mut input = origin_input(&t);
+        input.set_liquid(4, 4, 4, water, 255);
+        assert!(OpaqueOnly.mesh_liquid(&input).is_empty());
+        assert!(!GreedyMesher.mesh_liquid(&input).is_empty());
+
+        // Terrain without water has an empty second mesh.
+        let terrain = plateau_terrain(&table());
+        assert!(GreedyMesher.mesh_liquid(&terrain).is_empty(), "no water");
     }
 }
