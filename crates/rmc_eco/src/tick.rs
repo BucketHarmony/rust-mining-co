@@ -450,26 +450,32 @@ mod tests {
     /// Worlds of that test whose active sets are checked after every pass.
     const SETS_EVERY_PASS: u64 = 2;
 
-    /// The shipped tables with two rows appended to the material table:
-    /// magma (the SAD-P2 §5 row: Liquid, viscosity 3, conductivity 64,
-    /// heat capacity 32), so that the magma swaps and transitions run, and
-    /// the passable `moss` of plants.ron, so that rain finds plants.
+    /// The shipped tables with rows appended to the material table: magma
+    /// if the table lacks it (the SAD-P2 §5 row: Liquid, viscosity 3,
+    /// conductivity 64, with F131's heat capacity 64), so that the magma
+    /// swaps and transitions run, and the passable `moss` of plants.ron, so
+    /// that rain finds plants.
     fn rich_tables() -> EcoTables {
         let base = std::fs::read_to_string(format!("{ASSETS}/materials.ron")).unwrap();
-        let n = rmc_world::materials::MaterialTable::from_ron_str(&base)
+        let mut n = rmc_world::materials::MaterialTable::from_ron_str(&base)
             .unwrap()
             .len();
         let end = base.rfind(']').expect("material list closes");
-        let text = format!(
-            "{}(id: {n}, key: \"magma\", phase: Liquid, tags: [], hardness: 0, \
-             diggable: false, yield_count: 0, color: (255, 90, 0, 255), emissive: 2.0, \
-             viscosity: 3, conductivity: 64, heat_capacity: 32),\n\
-             (id: {}, key: \"moss\", phase: Solid, tags: [\"plant\"], hardness: 1, \
+        let mut rows = String::new();
+        if !base.contains("key: \"magma\"") {
+            rows.push_str(&format!(
+                "(id: {n}, key: \"magma\", phase: Liquid, tags: [], hardness: 0, \
+                 diggable: false, yield_count: 0, color: (255, 90, 0, 255), emissive: 2.0, \
+                 viscosity: 3, conductivity: 64, heat_capacity: 64),\n"
+            ));
+            n += 1;
+        }
+        rows.push_str(&format!(
+            "(id: {n}, key: \"moss\", phase: Solid, tags: [\"plant\"], hardness: 1, \
              diggable: true, yield_count: 1, color: (60, 140, 60, 255), emissive: 0.0, \
-             passable: true),\n]",
-            &base[..end],
-            n + 1,
-        );
+             passable: true),\n"
+        ));
+        let text = format!("{}{rows}]", &base[..end]);
         let m = std::sync::Arc::new(
             rmc_world::materials::MaterialTable::from_ron_str(&text).expect("test table loads"),
         );

@@ -1858,11 +1858,13 @@ mod tests {
                 "{key}"
             );
         }
+        // A key the table lacks (obsidian was one until F133 shipped it).
         let mut p = params();
-        p.bedrock.material = "obsidian".into();
+        assert_eq!(table.id("test_unknown"), None);
+        p.bedrock.material = "test_unknown".into();
         assert!(matches!(
             Generator::new(1, &p, &table),
-            Err(GenError::UnknownMaterial { ref key, .. }) if key == "obsidian"
+            Err(GenError::UnknownMaterial { ref key, .. }) if key == "test_unknown"
         ));
         let mut p = params();
         p.strata.layers.clear();

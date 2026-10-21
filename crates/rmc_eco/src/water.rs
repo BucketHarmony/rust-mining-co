@@ -748,7 +748,8 @@ mod tests {
         loam: MaterialId,
         /// Porous with permeability 0.
         hardpan: MaterialId,
-        /// Role `magma`: the SAD-P2 §5 row (Liquid, viscosity 3).
+        /// Role `magma`: the shipped row, or the SAD-P2 §5 row (Liquid,
+        /// viscosity 3) with F131's heat capacity 64.
         magma: MaterialId,
         /// A liquid of another kind than water or magma.
         brine: MaterialId,
@@ -759,10 +760,10 @@ mod tests {
     }
 
     impl Fix {
-        /// The shipped tables, with two porous test materials, magma (the
-        /// SAD-P2 §5 row), a test liquid and, if the table lacks it,
-        /// obsidian appended to the shipped material table (it has no
-        /// porous or magma row yet).
+        /// The shipped tables, with two porous test materials, a test
+        /// liquid, a passable moss and, if the table lacks them, magma (the
+        /// SAD-P2 §5 row) and obsidian appended to the shipped material
+        /// table.
         fn new() -> Self {
             let base = std::fs::read_to_string(format!("{ASSETS}/materials.ron")).unwrap();
             let n = MaterialTable::from_ron_str(&base).unwrap().len();
@@ -787,30 +788,35 @@ mod tests {
                      emissive: 0.0, passable: true),\n"
                 )
             };
-            let obsidian = if base.contains("key: \"obsidian\"") {
-                String::new()
-            } else {
-                format!(
-                    "(id: {}, key: \"obsidian\", phase: Solid, tags: [], hardness: 70,                      diggable: true, yield_count: 1, color: (30, 20, 40, 255),                      emissive: 0.0),
-",
-                    n + 5
-                )
-            };
+            // Rows in id order from n; magma and obsidian only if the
+            // shipped table lacks them.
+            let has = |key: &str| base.contains(&format!("key: \"{key}\""));
+            let mut rows: Vec<Box<dyn Fn(usize) -> String>> = vec![
+                Box::new(|id| row(id, "test_loam", LOAM_PERM)),
+                Box::new(|id| row(id, "test_hardpan", 0)),
+            ];
+            if !has("magma") {
+                rows.push(Box::new(|id| {
+                    liquid(
+                        id,
+                        "magma",
+                        ", viscosity: 3, conductivity: 64, heat_capacity: 64",
+                    )
+                }));
+            }
+            rows.push(Box::new(|id| liquid(id, "test_brine", "")));
+            rows.push(Box::new(|id| plant(id, "moss")));
+            if !has("obsidian") {
+                rows.push(Box::new(|id| {
+                    format!(
+                        "(id: {id}, key: \"obsidian\", phase: Solid, tags: [], hardness: 70,                          diggable: true, yield_count: 1, color: (30, 20, 40, 255),                          emissive: 0.0),
+"
+                    )
+                }));
+            }
             let end = base.rfind(']').expect("material list closes");
-            let text = format!(
-                "{}{}{}{}{}{}{}]",
-                &base[..end],
-                row(n, "test_loam", LOAM_PERM),
-                row(n + 1, "test_hardpan", 0),
-                liquid(
-                    n + 2,
-                    "magma",
-                    ", viscosity: 3, conductivity: 64, heat_capacity: 32"
-                ),
-                liquid(n + 3, "test_brine", ""),
-                plant(n + 4, "moss"),
-                obsidian,
-            );
+            let appended: String = rows.iter().enumerate().map(|(i, r)| r(n + i)).collect();
+            let text = format!("{}{appended}]", &base[..end]);
             let m = Arc::new(MaterialTable::from_ron_str(&text).expect("test table loads"));
             let t = EcoTables::load_with_materials(m, ASSETS).expect("Phase 2 tables load");
             let water = t.role_material("water").expect("materials.ron has water");

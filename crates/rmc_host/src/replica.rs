@@ -1349,7 +1349,11 @@ mod tests {
         let gas = LayerId::Gas(tables.gas_index("firedamp").unwrap());
         let world = initial_world();
         let table = Arc::clone(world.materials());
-        let ids: Vec<MaterialId> = table.iter().map(|d| d.id).collect();
+        let ids: Vec<MaterialId> = table
+            .iter()
+            .filter(|d| d.heat_source.is_none())
+            .map(|d| d.id)
+            .collect();
         let unknown = MaterialId(1000);
 
         let mut transport = ChannelTransport::new();

@@ -107,16 +107,21 @@ mod tests {
 
     #[test]
     fn sources_then_magma_then_surface_then_profile() {
-        // Magma and its cores arrive with F130/F132; add them here.
+        // A test core, and magma if the table lacks it.
         let base = MaterialTable::load(format!("{ASSETS}/materials.ron")).unwrap();
         let mut defs: Vec<_> = base.iter().cloned().collect();
-        for text in [
+        let rows = [
             r#"(id: 0, key: "magma", phase: Liquid, tags: [], hardness: 0, diggable: false,
                 yield_count: 0, color: (255, 90, 0, 255), emissive: 2.0)"#,
             r#"(id: 0, key: "test_core", phase: Solid, tags: [], hardness: 0, diggable: false,
                 yield_count: 0, color: (255, 60, 0, 255), emissive: 2.0,
                 heat_source: Some(13000))"#,
-        ] {
+        ];
+        let missing = rows.iter().filter(|text| {
+            let d: rmc_world::materials::MaterialDef = ron::from_str(text).unwrap();
+            base.id(&d.key).is_none()
+        });
+        for text in missing {
             let mut d: rmc_world::materials::MaterialDef = ron::from_str(text).unwrap();
             d.id = MaterialId(defs.len() as u16);
             defs.push(d);
