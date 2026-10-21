@@ -2150,3 +2150,32 @@ Decisions:
 - The shader mirror is checked by source text (constants and bindings) and by the E2E rendering with it, not by running the WGSL in a unit test.
 Next: F125 (E2, ice transitions), the first unpassed feature whose blockers all pass. F110 to F114 (E1) are still blocked. The owner playability batch F093 to F097 is done.
 Blockers: none.
+
+## 2026-10-21 10:00 — F125 Ice: transitions water↔ice with hysteresis, moisture preserved — passed
+Done:
+- `assets/materials.ron`: `ice`, appended as id 14. Solid, diggable, tags none, hardness 10, yield_count 0, conductivity 64, heat_capacity 8, `light_attenuation` 0, pale blue opaque color.
+- New `rmc_eco::transitions::TransitionsPass`, the SAD-P2 §7.2 Jacobi pass.
+  - Built once from `transitions.ron`: per material id, the rows whose `from` matches it (by key or by tag), in table order.
+  - Rows whose `from` key or `to` key the material table lacks yet (magma) are dropped. So are rows that would leave a material unchanged.
+  - Per cell: the first row whose condition holds sets the new material. `TempBelow(t)` is `T < t`; `TempAbove(t)` is `T > t`.
+  - The change goes through `World::eco_set`, which already runs the §7.0 rules: water ↔ ice keeps the moisture, and a pass's water → air boils the fill to steam.
+  - Each cell changes at most once per pass, because the pass computes from the previous state.
+  - The ledger gets one `transitions` entry `(from, to, count)` per pair, sorted.
+  - A chunk whose palette has no material with rows is skipped without a cell scan.
+- `season_tick` runs the pass after temperature in every sub-step, through `Activity` (`JacobiKind::Transitions`).
+Tests added:
+- `transitions::tests::{water_freezes_below_zero, ice_melts_above_hysteresis, moisture_preserved_across_freeze, table_order_precedence, shipped_rows_leave_temperate_worlds_alone}`.
+  - `moisture_preserved_across_freeze` freezes a fill of 173, runs a full set of water sweeps over the ice, then thaws it. It checks:
+    - the fill is unchanged at each step;
+    - ice leaves the water active set, and melted water rejoins it;
+    - the water invariant holds throughout.
+  - `table_order_precedence` uses replaced transition tables. It checks key-vs-key and tag-vs-key order, and that a cell changes once per pass (water → ice, then ice → stone on the next pass).
+Decisions:
+- Test updates in the feature commit, not in a separate `test-fix:` commit: `tick::tests::whole_tick_deterministic_100` and `rmc_host season::tests::advance_season_roundtrip` asserted one Jacobi entry per sub-step. They now assert `2 * substeps` (temperature and transitions). The tick test's own comment said "temperature only so far". The count follows the passes the tick runs and is no weaker. Neither test could change before this feature without failing.
+- The `BoilAll` effect is carried by `World::eco_set`: any pass-caused water → air boils, per §7.0. The pass does not branch on `effect`. A table row water → air without `BoilAll` would still boil. The SAD has no such row.
+- The pass implements every row generically. The magma rows stay inert until F130 adds `magma`, which resolves them. The stone → magma row is reachable only above 1250 °C.
+- Ice is yield_count 0. The SAD gives no yield, and an ice item placed from the inventory would create water outside the brush's `water_edit_in` accounting.
+- Ice hardness is 10, like topsoil. The SAD gives no value.
+Next: F126 (worldgen water table) or F127 / F130 / F150 / F160: the next unpassed features with no blockers, in file order. F110 (freeze-thaw bit) is unblocked now.
+  - Open from F107's review: an end-to-end host check that a real season's material change (now possible via freezing) reaches clients as a `ChunkSnapshot`.
+Blockers: none.
