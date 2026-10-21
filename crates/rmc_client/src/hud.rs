@@ -16,6 +16,12 @@
 //!   cell's hardness. A cell's count is forgotten when a delta or snapshot
 //!   changes it (it broke or was replaced) and on `Welcome`. Damage dealt by
 //!   other players, or before a load, is not seen.
+//! - Temperature (SAD-P2 §10): the replica's temperature layer at the cell
+//!   the player's feet stand in, top right, in degrees C with one decimal
+//!   ([`format_temperature`]). The
+//!   replica's layers follow `ChunkSnapshot`, `LayerSnapshot` and
+//!   `ChunkDelta::Layers`. Nothing is shown without a player or outside
+//!   the resident chunks.
 //! - Inventory: the host sends an `Inventory` message with the new totals
 //!   after every `Applied` result that yields (SAD §8.4). [`ClientInventory`]
 //!   holds the last totals; `Welcome` empties it. Yields in `Applied` are
@@ -62,7 +68,9 @@ use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellPos, ChunkPos, LocalPos};
 use rmc_world::edit::{ChunkDelta, EditOp};
 use rmc_world::inventory::Inventory;
+use rmc_world::layers::LayerId;
 use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::world::World;
 
 use crate::controller::Player;
 use crate::editor::EditorState;
@@ -270,6 +278,8 @@ pub struct HudState {
     pub last_break: Option<BreakEffect>,
     /// The material right mouse places ([`SelectedMaterial`]).
     pub selected: Option<MaterialId>,
+    /// The temperature of the player's cell in the replica, in 0.1 °C.
+    pub temperature: Option<i16>,
 }
 
 /// The material right mouse places, if one is selected. It may no longer
@@ -376,6 +386,19 @@ struct DamageFill;
 
 #[derive(Component, Debug)]
 struct InventoryText;
+
+#[derive(Component, Debug)]
+struct TemperatureText;
+
+/// `t` (0.1 °C) as the HUD shows it: whole degrees and one tenth, with
+/// the sign of the whole value (`-0.5 C`). ASCII only: Bevy's default font
+/// has no degree sign.
+pub fn format_temperature(t: i16) -> String {
+    let t = i32::from(t);
+    let sign = if t < 0 { "-" } else { "" };
+    let abs = t.abs();
+    format!("{sign}{}.{} C", abs / 10, abs % 10)
+}
 
 /// The HUD. Needs [`NetPlugin`](crate::net::NetPlugin) for host messages
 /// and [`PickaxePlugin`](crate::pickaxe::PickaxePlugin) for the target.
@@ -587,7 +610,7 @@ fn update_state(
     swings: Option<Res<SwingState>>,
     time: Res<Time>,
     mut feedback: ResMut<Feedback>,
-    players: Query<(), With<Player>>,
+    players: Query<&Player>,
     mut hud: ResMut<HudState>,
 ) {
     let now = time.elapsed();
@@ -627,6 +650,11 @@ fn update_state(
             })
         }),
         selected: selected.0,
+        temperature: players
+            .iter()
+            .next()
+            .zip(world)
+            .and_then(|(player, world)| cell_temperature(world, CellPos::from_meters(player.feet))),
         ..default()
     };
     let aimed = target.0.filter(|_| crosshair && !flying);
@@ -645,6 +673,14 @@ fn update_state(
         }
     }
     hud.set_if_neq(next);
+}
+
+/// The temperature of `cell` in 0.1 °C, if its chunk is resident.
+fn cell_temperature(world: &World, cell: CellPos) -> Option<i16> {
+    let (pos, local) = cell.split();
+    world
+        .chunk(pos)
+        .map(|chunk| chunk.layers.get_i16(LayerId::Temperature, local))
 }
 
 /// The material key of `id`, or `#<id>` if the table does not have it.
@@ -745,6 +781,16 @@ fn spawn_hud(mut commands: Commands) {
                     ..default()
                 },
             ),
+            (
+                TemperatureText,
+                text(),
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(8.0),
+                    top: Val::Px(8.0),
+                    ..default()
+                },
+            ),
         ],
     ));
 }
@@ -765,15 +811,37 @@ fn attach_to_camera(
 }
 
 /// Puts [`HudState`] on screen.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn show_state(
     hud: Res<HudState>,
     mut crosshair: Query<&mut Visibility, (With<CrosshairNode>, Without<DamageBar>)>,
     mut bar: Query<&mut Visibility, (With<DamageBar>, Without<CrosshairNode>)>,
     mut fill: Query<&mut Node, With<DamageFill>>,
     mut arms: Query<(&CrosshairArm, &mut Node, &mut BackgroundColor), Without<DamageFill>>,
-    mut target_text: Query<&mut Text, (With<TargetText>, Without<InventoryText>)>,
-    mut inventory_text: Query<&mut Text, (With<InventoryText>, Without<TargetText>)>,
+    mut target_text: Query<
+        &mut Text,
+        (
+            With<TargetText>,
+            Without<InventoryText>,
+            Without<TemperatureText>,
+        ),
+    >,
+    mut inventory_text: Query<
+        &mut Text,
+        (
+            With<InventoryText>,
+            Without<TargetText>,
+            Without<TemperatureText>,
+        ),
+    >,
+    mut temperature_text: Query<
+        &mut Text,
+        (
+            With<TemperatureText>,
+            Without<TargetText>,
+            Without<InventoryText>,
+        ),
+    >,
 ) {
     let pulse = hud.swing_pulse;
     let len = CROSSHAIR_SIZE.x * (1.0 + SWING_PULSE_GROWTH * pulse);
@@ -824,6 +892,10 @@ fn show_state(
         .collect();
     for mut text in &mut inventory_text {
         text.0 = lines.join("\n");
+    }
+    let temperature = hud.temperature.map(format_temperature).unwrap_or_default();
+    for mut text in &mut temperature_text {
+        text.0.clone_from(&temperature);
     }
 }
 
@@ -1030,6 +1102,7 @@ mod tests {
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::CellAabb;
     use rmc_world::edit::{CommandId, EditCommand, EditResult, EditStatus, PlayerId};
+    use rmc_world::layers::LayerId;
     use rmc_world::shape::Shape;
     use rmc_world::world::World;
 
@@ -1248,6 +1321,7 @@ mod tests {
                 swing_pulse: 0.0,
                 last_break: None,
                 selected: None,
+                temperature: Some(0),
             }
         );
 
@@ -1779,5 +1853,112 @@ mod tests {
         rig.swing(1);
         assert!(rig.hud().damage.is_some());
         assert!(cracks(&mut rig).is_empty());
+    }
+
+    /// The text of the HUD's temperature line.
+    fn temperature_text(rig: &mut Rig) -> String {
+        let mut q = rig
+            .app
+            .world_mut()
+            .query_filtered::<&Text, With<TemperatureText>>();
+        let texts: Vec<String> = q.iter(rig.app.world()).map(|t| t.0.clone()).collect();
+        assert_eq!(texts.len(), 1, "one temperature line");
+        texts[0].clone()
+    }
+
+    #[test]
+    fn hud_shows_player_cell_temperature() {
+        // The player's cell is the one its feet stand in: (32, 4, 32), on
+        // the floor's top. Its neighbours get other temperatures, so a HUD
+        // that read the floor, the eye's cell or a neighbour would show them.
+        let feet_cell = CellPos::from_meters(FEET);
+        assert_eq!(feet_cell, CellPos::new(32, 4, 32));
+        let east = CellPos::new(33, 4, 32);
+        let set_temp = |w: &mut World, cell: CellPos, t: i16| {
+            let cmd = EditCommand {
+                id: CommandId::default(),
+                issuer: PlayerId(0),
+                op: EditOp::SetLayer {
+                    layer: LayerId::Temperature,
+                    value: i32::from(t),
+                },
+                shape: Shape::Cell(cell),
+            };
+            let result = w.apply(&cmd);
+            assert_eq!(result.status, EditStatus::Applied);
+            result
+        };
+        let warm = || {
+            let mut w = world("granite", "stone");
+            for (cell, t) in [
+                (feet_cell, 123),
+                (CellPos::new(32, 3, 32), -7),
+                (CellPos::new(32, 5, 32), 456),
+                (CellPos::new(32, 7, 32), 789),
+                (CellPos::new(31, 4, 32), 11),
+                (east, -55),
+            ] {
+                set_temp(&mut w, cell, t);
+            }
+            w
+        };
+        let mut host = warm();
+        let mut rig = Rig::new(warm());
+        rig.frames(1);
+        assert_eq!(rig.hud().temperature, Some(123));
+        assert_eq!(temperature_text(&mut rig), "12.3 C");
+
+        // Stepping into the next cell column follows the feet.
+        rig.player_mut().feet.x += CELL_SIZE_M;
+        rig.frames(1);
+        assert_eq!(rig.hud().temperature, Some(-55));
+        assert_eq!(temperature_text(&mut rig), "-5.5 C");
+
+        // A layers delta from the host moves it.
+        let result = set_temp(&mut host, east, 250);
+        rig.deliver([ServerMsg::Applied(result)]);
+        assert_eq!(rig.hud().temperature, Some(250));
+        assert_eq!(temperature_text(&mut rig), "25.0 C");
+
+        // So does a layer snapshot (the end of a season).
+        let pos = east.chunk();
+        let chunk = rig.replica_world().chunk(pos).unwrap();
+        let mut layers = chunk.layers.clone();
+        let eco_revision = chunk.eco_revision + 1;
+        layers.set_i16(LayerId::Temperature, east.split().1, i16::MIN);
+        rig.deliver([ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision,
+            layers,
+            plants: BTreeMap::new(),
+        }]);
+        assert_eq!(rig.hud().temperature, Some(i16::MIN));
+        assert_eq!(temperature_text(&mut rig), "-3276.8 C");
+
+        // Outside the replica's chunks, and without a player, nothing.
+        rig.player_mut().feet = Vec3::new(16.25, 2.0, -40.0);
+        rig.frames(1);
+        assert_eq!(rig.hud().temperature, None);
+        assert_eq!(temperature_text(&mut rig), "");
+        rig.player_mut().feet = FEET;
+        rig.frames(1);
+        assert_eq!(rig.hud().temperature, Some(123));
+        let player = rig.player;
+        rig.app.world_mut().despawn(player);
+        rig.frames(1);
+        assert_eq!(rig.hud().temperature, None);
+        assert_eq!(temperature_text(&mut rig), "");
+
+        // The format: tenths of a degree, the sign on the whole value.
+        for (t, text) in [
+            (0, "0.0 C"),
+            (-5, "-0.5 C"),
+            (9, "0.9 C"),
+            (-10, "-1.0 C"),
+            (12000, "1200.0 C"),
+            (i16::MAX, "3276.7 C"),
+        ] {
+            assert_eq!(format_temperature(t), text, "{t}");
+        }
     }
 }

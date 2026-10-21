@@ -564,6 +564,40 @@ mod tests {
     }
 
     #[test]
+    fn shipped_volcanic_rows() {
+        // F133 (SAD-P2 §5, §10): magma is an opaque, glowing liquid that
+        // stays in the normal mesh pass; its core is a fixed heat source;
+        // obsidian and basalt are the dark rock it sets to.
+        let t = MaterialTable::load(PHASE1_PATH).expect("assets/materials.ron loads");
+        let get = |k: &str| t.get(t.id(k).unwrap()).unwrap();
+        let magma = get("magma");
+        assert_eq!(magma.phase, Phase::Liquid);
+        assert_eq!(magma.color[3], u8::MAX, "opaque: not the liquid pass");
+        assert!(magma.emissive > 0.0);
+        assert!(!magma.diggable);
+        assert_eq!(
+            (magma.viscosity, magma.conductivity, magma.heat_capacity),
+            (3, 64, 64)
+        );
+        let core = get("magma_source");
+        assert!(core.is_solid() && !core.diggable);
+        assert_eq!(core.heat_source, Some(13000));
+        assert!(core.emissive > 0.0);
+        assert!(!core.has_tag("stone"), "a core never melts");
+        let obsidian = get("obsidian");
+        assert!(obsidian.is_solid() && obsidian.diggable);
+        assert_eq!(obsidian.color[3], u8::MAX);
+        assert_eq!(obsidian.emissive, 0.0);
+        assert!(obsidian.hardness > get("basalt").hardness);
+        let keys: Vec<&str> = get("basalt")
+            .composition
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(keys, ["lime", "fe", "p"]);
+    }
+
+    #[test]
     fn hash_is_stable() {
         let a = MaterialTable::from_ron_str(FIXTURE).unwrap();
         let b = MaterialTable::from_ron_str(FIXTURE).unwrap();

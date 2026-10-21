@@ -19,8 +19,11 @@
      hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
     (id: 5, key: "granite", phase: Solid, tags: ["stone"],
      hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
+    // Basalt (SAD-P2 §5) holds calcium (as lime), iron and phosphorus. It
+    // does not weather, so the composition stays locked in.
     (id: 6, key: "basalt", phase: Solid, tags: ["stone"],
-     hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
+     hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32,
+     composition: [("lime", 40), ("fe", 40), ("p", 20)]),
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0),
@@ -79,4 +82,22 @@
     (id: 19, key: "salt_dust", phase: Solid, tags: ["placeable"],
      hardness: 5, diggable: true, yield_count: 1, color: (232, 230, 220, 255), emissive: 0.0,
      composition: [("salt", 255)]),
+
+    // Magma (SAD-P2 §5, §7.3): a slow liquid (it tries to move on one flow
+    // iteration in viscosity + 1). Opaque and full-cell in the normal mesh
+    // pass (alpha 255, SAD-P2 §10), glowing in its own color. Heat capacity
+    // 64, not §5's 32: at 32 the tip cells of every worldgen chamber cool
+    // below 900.0 °C within 20 sub-steps (PROGRESS.md, F131).
+    (id: 20, key: "magma", phase: Liquid, tags: [],
+     hardness: 0, diggable: false, yield_count: 0, color: (255, 96, 16, 255), emissive: 2.0,
+     viscosity: 3, conductivity: 64, heat_capacity: 64),
+    // The core of a magma chamber: a fixed heat source, never dug. Not
+    // tagged stone, so it never melts.
+    (id: 21, key: "magma_source", phase: Solid, tags: [],
+     hardness: 65535, diggable: false, yield_count: 0, color: (255, 150, 40, 255), emissive: 3.0,
+     heat_source: Some(13000)),
+    // Obsidian: magma quenched by water (contact boiling, §7.3 B7). Glassy
+    // black with a violet cast, harder than basalt.
+    (id: 22, key: "obsidian", phase: Solid, tags: [],
+     hardness: 70, diggable: true, yield_count: 1, color: (30, 20, 40, 255), emissive: 0.0),
 ]
