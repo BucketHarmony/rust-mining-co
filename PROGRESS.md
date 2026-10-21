@@ -2598,3 +2598,39 @@ Decisions:
 - Machine: `.claude/hooks/stop-guard.sh` runs `cargo test --workspace` whenever a turn ends with a dirty tree. Ending a turn while a background gate ran started a second test run alongside it (rule 23), and the first background gate hit its 10-minute limit. Later runs waited in the same turn.
 Next: F129 (E2E pit_becomes_pond) is now unblocked and is the last E2 feature. Run the playtester after it. F131, F141, F151, F154 and F160 are also ready.
 Blockers: none.
+
+## 2026-10-21 09:31 — F114 E2E: freeze_thaw_weathers_cut — passed
+Done:
+- `tests/e2e/tests/freeze_thaw_weathers_cut.rs`, on a 64 × 128 × 64 world. The scenario builds `Fixture::Trench`, then lines its sides, ends and floor with the first `stone` material that has `weathering_rate > 0` and a `weathers_to`. The lining is one cell thick, up to the row below the trench's top. It also places a three-cell control column of the same material under the next step uphill (`dx = 9`), with all six faces solid, at the lining's depths.
+- It digs a sump under the slope's low end, as `season_swale_fills` does (2 steps, 40 cells deep).
+- It runs the shipped seasons up to the row before the first one below 0 °C, then autumn, winter and spring. It asserts:
+  - the rows' air temperature crosses 0 °C twice;
+  - the pond over the trench freezes in winter (ice in the trench's columns);
+  - the trench holds water;
+  - every wall cell with a water face neighbor has regolith > the control cell at its y.
+- Then dry seasons, at most 16, until a wall cell has turned into its `weathers_to` material. It asserts:
+  - the ledger's `weathered_cells` ≥ the converted wall cells;
+  - converted cells start with regolith 0;
+  - the control never weathers or converts.
+- Two screenshots: one at the conversion season (winter), and one after the next summer.
+- `assets/materials.ron`: limestone gains `weathers_to: Some("clay")`.
+- Measured:
+  - wall regolith summed over the 154 wall cells: 7336, 9800, 12264 after autumn, winter, spring (16 per cell per season);
+  - all 154 wall cells beside the water are above the control (0);
+  - 377 ice cells over the trench in winter;
+  - 126 wall cells converted in the 11th dry season, with `weathered_cells` 391 world-wide (worldgen limestone in wet caves converts too).
+- Runtime: about 115 s.
+Tests added: `e2e:freeze_thaw_weathers_cut`.
+Decisions:
+- `weathers_to` for limestone is clay. SAD-P2 §5 gives no material a `weathers_to`, and the §12 row needs a conversion. Clay is limestone's insoluble residue. It is a `soil`, not `carbonate` or `porous`, so a fully weathered limestone cell stops buffering acid. At 2 per sub-step that takes 16 wet, exposed seasons. `limestone_channel_clears` (F14x) should keep this in mind.
+- Wall material: limestone is the only shipped stone that weathers. The test picks it by tags and fields, not by key.
+- SAD gap: freeze-thaw never doubles limestone's weathering with the shipped values.
+  - Limestone has conductivity 16 and capacity 32. An edge between it and water, ice or air moves heat only at ΔT ≥ 25.6 °C (the SAD-P2 §7.1 dead zone).
+  - The season swing (+8 → −8 → +10 °C, against a lining at about 10 °C) never gets there, so the lining's freeze-thaw bit stays clear (logged as 0). The reviewer's point that the test cannot tell a pass that ignores `freeze_thaw` is correct. The unit tests `freeze_thaw_doubles_rate` and `freeze_thaw_bit_set_on_zero_crossing` cover it.
+  - Making it fire on rock would take a thermal retune of stone (against "deep rock stays quiet") or a conductive weathering stone. That is owner or SAD work, so I changed neither.
+- Closed basin: the fixture site also takes the runoff of the terrain around it. Without the sump, the slope was under a lake 5 cells deep after autumn and 13 after winter.
+  - Rain also runs down the slope in a sheet several cells deep, so winter ice forms at the top of the trench's columns, above the trench box. The freeze check counts ice in those columns.
+- The further seasons are dry (`rain: Some(0)`), so 16 more seasons of runoff do not overflow the sump. The lining stays at field capacity, and the trench keeps its pond.
+- Look (rule 21): winter ice slabs over the slope do not melt in the following summer; only the top cell of a column is clamped to `air_temp`. In both screenshots the slope is terraced ice and water, and the cut itself is under it. The playtester judges.
+Next: F129 (pit_becomes_pond) is the last E2 feature; run the playtester after it. F131, F141, F151, F154 and F160 are ready too.
+Blockers: none.
