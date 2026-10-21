@@ -2335,3 +2335,30 @@ Decisions:
 - Rule 21: the semantic assertions are the mesher, meshpipe and render tests plus the E2E's material and entity checks; the screenshot is for the playtester. No pixel checks.
 Next: F130 (magma as whole-cell liquid), the first unpassed feature whose blockers all pass. F140, F150 and F160 are also ready. F128 waits on F124.
 Blockers: none.
+
+## 2026-10-21 17:00 — F130 Magma as whole-cell liquid: viscosity-gated swaps with air carrying temperature; magma count ledger — passed
+Done:
+- `WaterPass` step B6 (`flow_magma`).
+  - A magma cell (role `magma`) moves only on flow iterations where `iter % (viscosity + 1) == 0`. The viscosity comes from the magma row.
+  - It swaps with the air below. Otherwise it swaps with the first air cell among the 4 horizontal neighbours in sorted order.
+  - The swap is two `World::eco_set` calls (magma→air, then air→magma), so the §7.0 displacement runs for the air cell. Its gases and moisture are pushed out, into the vacated cell when that comes first. Then the two temperatures are swapped (§7.1 advection).
+  - Water, porous solids, other liquids and solids block magma.
+- `WaterPass::set_iter(i)` tells the pass the iteration. `tick::substep` calls it before each of the `flow_iters` sweeps.
+- Magma cells are water-sweep holders (`holds`), so they stay in the active set. `eco_set` already activates a cell that becomes magma.
+Tests added (all in `water::tests`):
+- `magma_swaps_with_air_and_carries_temperature`: falls one cell per sweep with its temperature. The air takes the magma's old cell and its own temperature, and the air's steam is displaced. Magma slides onto a ledge (later in order, revisited) and drops off it. On open ground it takes the −z neighbour first. Revision bumps, magma ledger terms 0.
+- `magma_viscosity_gates_moves`: viscosity 3 moves on iterations 0 and 4 of 8 (2 cells per sub-step), and gated magma is still visited. Viscosity 0 moves 8 cells per sub-step.
+- `magma_never_enters_water_or_porous`: magma never moves into a cell that held anything but magma or air before the sweep. Magma over or beside full and partial water, porous loam and hardpan, and a test liquid stays put and puts nothing into porous cells.
+- `magma_count_invariant`: 256 random 8-chunk worlds with magma, random temperatures, water, moist air and porous cells, over 2 sub-steps.
+  - The invariant checker passes each sub-step.
+  - After every sweep: `count(magma) = before − magma_set`, with melt_in and edit at 0, every magma cell active, and the multiset of all temperatures unchanged.
+  - The multiset of magma temperatures is unchanged while no magma has set.
+- The water test fixture appends a `magma` row (SAD-P2 §5: Liquid, viscosity 3, conductivity 64, heat_capacity 32, not diggable) and a `test_brine` liquid. `random_world_with(.., magma)` extends the random world, and the existing `random_world` is unchanged.
+Decisions:
+- A swap books nothing. `eco_set` books magma→air as `magma_set` and air→magma as `magma_melt_in`. A swap neither sets nor melts magma, so the pass takes both terms back. The count balances, and `magma_set` keeps meaning "cells turned to basalt/obsidian". Rule 2 / §7.0.1 allow only `eco_set` for material changes, so there is no separate swap primitive in `rmc_world`.
+- Literal sweep semantics. Magma that moves to a later cell is visited again in the same sweep. On flat ground, magma that steps +x or +z steps straight back, because the cell it left is now its first air neighbour. So magma spreads sideways only toward −x/−z, or where it can then fall. This follows §7.3 B6 as written.
+- `materials.ron` still has no magma row. F133 ("Materials: magma, obsidian, basalt colors") or F132 (chambers) ships it, which per the F127 decision needs alpha 255. Until then the role is unresolved in shipped tables and B6 is inert there.
+- The flat-array oracle (`reference::flat_sweep_water`) still does not model magma, and its random worlds have none. Covering magma in the multi-chunk oracle is left to F124.
+- The tests are written to stay valid once contact boiling (F131) sets magma in place: they assert melt_in = edit = 0 and count = before − magma_set, not count = before.
+Next: F132 (worldgen magma chambers), the first unpassed feature whose blockers all pass. F140, F150 and F160 are also ready.
+Blockers: none.
