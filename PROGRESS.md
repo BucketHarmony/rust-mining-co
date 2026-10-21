@@ -2543,3 +2543,30 @@ Decisions:
 - A stale stash entry `F123 wip` (`stash@{0}` now; already applied, its changes are in 03ab8ba) is left in the list, because `git stash drop` is denied. It is not lost work.
 Next: F124, F131, F151, F154 and F160 are ready (their blockers all pass). E2 still lacks F124, F128 and F129, so no playtester run yet.
 Blockers: none.
+
+## 2026-10-21 06:57 — F124 Whole-tick invariants on random worlds and sweep oracle on multi-chunk worlds — passed
+Done:
+- `rmc_eco::season_tick_observed(…, observe)` calls `observe(substep, PassId, &World, &SeasonLedger)` after every pass of every sub-step, in §3 order. The passes are temperature, transitions, condensation, `Flow(i)` per flow sweep, evaporation, rain, `Gas(g)` per gas row, and weathering. `season_tick` delegates to it with a no-op. A pass that does not run (no role) is not reported.
+- `ChunkStorage::count(id)` decodes the packed words in order, and returns 0 at once when `id` is not in the palette. `Totals::measure` uses it for the magma count; the per-cell `get` scan had been about 5 of the measure's 6.7 ms per 32-chunk world.
+- The pass code did not change: both new tests passed on the existing passes. Checking a broken oracle (`seep_shift + 1`) fails at the first sweep.
+Tests added:
+- `tick::tests::invariants_hold_after_each_pass_20_worlds`: 20 random worlds over 4 × 2 × 4 = 32 chunks (72 × 8 × 72 cells, bounds cutting every chunk face, negative coordinates). They run in parallel with rayon, one season each, season row = seed.
+  - World contents: bedrock floor; soils and stones; porous limestone and crushed sulfide over and under capacity; ice, water pockets and magma; pits with ponds; moss on the surface; stray water and moist air; overhangs. Every gas sits on some air cells and three seeded substances on some cells. Temperatures run from frost through boiling hot spots to stone-melting hot spots, and magma from 800 to 1310 °C.
+  - The `InvariantChecker` runs after every pass. The test also checks that holders are in their sweeps' active sets and that gas sits only on air: on worlds 0 and 1 after every pass, on the rest after transitions, rain and weathering.
+  - The observed pass sequence must equal the §3 order exactly.
+  - Summed over the 20 worlds, these terms must be > 0: `rain_in`, `evap_to_steam`, `condense_from_steam`, `boil_to_steam`, `magma_set`, `magma_melt_in`, `weather_in`, and the transitions list. About 9.4 s.
+- `water::tests::oracle_equivalence_multi_chunk_world`: 3 seeds of a 32-chunk terrain (80 × 16 × 80 cells).
+  - The terrain is a bowl of stone, test loam/hardpan, limestone and crushed sulfide around the origin. A reservoir in chunk (0, 0, −1) holds all the water: moist air, overhangs and wet porous ground are in that chunk only.
+  - `flat_sweep_water` equals `run_sweep` after each of 24 sweeps, and the water total is conserved.
+  - The x, y and z neighbor chunks start dry and end wet.
+  - Active-set visits are < ¼ of the cells × sweeps. About 1.4 s.
+- `chunk::tests::count_matches_per_cell_scan_at_every_width` (rmc_world): `count` equals a `get` scan at 1, 2, 4, 8 and 16 bits, and for uniform and absent ids.
+Decisions:
+- What "32-chunk world" means: bounds that touch 4 × 2 × 4 chunks, with full 32-cell inner chunks and partial edge chunks, 8 or 16 cells high.
+  - Full 128 × 64 × 128 worlds would take minutes per tick in the dev profile, and tests must stay under 10 s. A first 16-high version of the tick test took 25 s.
+- Both tests use the shipped tables with test rows appended to the material table, as the water tests' `Fix` does. The tick test appends magma (the SAD-P2 §5 row) and passable moss, so that the magma swaps, the magma→basalt and stone→magma transitions, and rain into an anchor all run; shipped `materials.ron` has no magma or plant rows yet.
+- `weathered_cells` is not in the coverage list: no shipped material has `weathers_to`. The vent and emission terms (`emit_in`, `vent_out`, `steam_vent_out`) are not in it either, because F151 has not landed. Add them to the list when it does.
+- The reviewer suggested checking active sets after every pass on every world. That adds about 1.5 s per world, so it runs on the first two worlds only (`SETS_EVERY_PASS`).
+- `season_tick_observed` is `pub` (and re-exported) so that the F174 soak can check the invariants per pass too.
+Next: F128, F131, F141, F151, F154 and F160 are ready. E2 now lacks only F128 (E2E season_swale_fills) and F129 (pit_becomes_pond).
+Blockers: none.
