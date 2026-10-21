@@ -120,6 +120,37 @@ impl ChunkStorage {
         }
     }
 
+    /// Number of cells holding `id`. Decodes the packed words in order
+    /// instead of one `get` per cell; 0 at once when `id` is not in the
+    /// palette.
+    pub fn count(&self, id: MaterialId) -> usize {
+        match self {
+            ChunkStorage::Uniform(m) if *m == id => CHUNK_VOLUME,
+            ChunkStorage::Uniform(_) => 0,
+            ChunkStorage::Paletted {
+                palette,
+                bits,
+                data,
+            } => {
+                let hit: Vec<bool> = palette.iter().map(|&m| m == id).collect();
+                if !hit.contains(&true) {
+                    return 0;
+                }
+                let bits = usize::from(*bits);
+                let mask = (1u64 << bits) - 1;
+                data.iter()
+                    .map(|&word| {
+                        (0..64 / bits)
+                            .filter(|k| {
+                                hit.get(((word >> (k * bits)) & mask) as usize) == Some(&true)
+                            })
+                            .count()
+                    })
+                    .sum()
+            }
+        }
+    }
+
     /// Writes `id` at `local` and returns the previous material. Grows the
     /// palette and promotes the bit width as needed; a `Uniform` chunk
     /// promotes on its first differing write.
@@ -413,6 +444,30 @@ mod tests {
                 prop_assert_eq!(s.get(LocalPos::from_index(i as u16)), *want, "at index {}", i);
             }
         }
+    }
+
+    #[test]
+    fn count_matches_per_cell_scan_at_every_width() {
+        let mut s = ChunkStorage::Uniform(MaterialId(3));
+        assert_eq!(s.count(MaterialId(3)), CHUNK_VOLUME);
+        assert_eq!(s.count(MaterialId(4)), 0);
+        // Grow through 1, 2, 4, 8 and 16 bits; at each width the count
+        // equals a scan with `get`.
+        let mut next = 10u16;
+        for &width in &PALETTE_BITS {
+            while !matches!(&s, ChunkStorage::Paletted { bits, .. } if *bits >= width) {
+                for k in 0..7u32 {
+                    let i = (u32::from(next) * 4099 + k * 977) % CHUNK_VOLUME as u32;
+                    s.set(LocalPos::from_index(i as u16), MaterialId(next));
+                }
+                next += 1;
+            }
+            for id in [3, 10, next - 1, next, u16::MAX].map(MaterialId) {
+                let scan = all_locals().filter(|&l| s.get(l) == id).count();
+                assert_eq!(s.count(id), scan, "{id:?} at {width} bits");
+            }
+        }
+        assert_eq!(s.count(MaterialId(next)), 0, "absent from the palette");
     }
 
     #[test]

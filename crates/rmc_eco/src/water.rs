@@ -2085,6 +2085,139 @@ mod tests {
         }
     }
 
+    /// Seeds of the multi-chunk oracle test.
+    const MULTI_CHUNK_SEEDS: u64 = 3;
+    /// Rounds of `flow_iters` sweeps in the multi-chunk oracle test.
+    const MULTI_CHUNK_ROUNDS: u8 = 3;
+
+    /// A terrain over 4 × 2 × 4 = 32 chunks, 80 × 16 × 80 cells around the
+    /// origin, with every water source in chunk (0, 0, −1):
+    /// - a stone floor, then a bowl whose lowest point is at the origin,
+    ///   built of random stone, test loam and hardpan and the shipped
+    ///   porous limestone and crushed sulfide;
+    /// - a reservoir of random fill in x 1..=12, z −12..=−1, y 0..=6,
+    ///   over the empty part of the bowl in the chunk below;
+    /// - in the same chunk, moist air at the top, scattered stone
+    ///   overhangs, and porous ground with any moisture (over capacity
+    ///   too).
+    ///
+    /// Water reaches the chunks across the x, y and z faces of the source
+    /// chunk only by flowing. Water holders are active.
+    fn terrain_world(f: &Fix, seed: u64) -> (World, WaterPass) {
+        let m = f.t.materials();
+        let stone = m.id("stone").unwrap();
+        let ground = [
+            stone,
+            f.loam,
+            f.hardpan,
+            m.id("limestone").unwrap(),
+            m.id("crushed_sulfide").unwrap(),
+        ];
+        let source = ChunkPos::new(0, 0, -1);
+        let bounds = CellAabb::new(CellPos::new(-40, -6, -40), CellPos::new(39, 9, 39));
+        assert_eq!(bounds.chunks().count(), 32);
+        let mut w = World::new(Arc::clone(m), bounds);
+        w.set_eco_rules(f.t.displacement_rules());
+        let mut s = seed;
+        for pos in bounds.chunks() {
+            let mut c = Chunk::uniform(f.air);
+            for i in 0..CHUNK_VOLUME as u16 {
+                let l = LocalPos::from_index(i);
+                let at = CellPos::from_chunk_local(pos, l);
+                if !bounds.contains(at) {
+                    continue;
+                }
+                let (x, y, z) = (at.0.x, at.0.y, at.0.z);
+                let r = next(&mut s);
+                let surface = -4 + ((x.abs() + z.abs()) / 6).min(6) + (r % 2) as i32;
+                let reservoir = (1..=12).contains(&x) && (-12..=-1).contains(&z);
+                let v = ((r >> 8) % 256) as u8;
+                let (mat, moisture) = if y == bounds.min.0.y {
+                    (stone, 0)
+                } else if y <= surface {
+                    let mat = ground[((r >> 16) % ground.len() as u64) as usize];
+                    let porous = mat != stone && mat != f.hardpan;
+                    (mat, if pos == source && porous { v } else { 0 })
+                } else if reservoir && (0..=6).contains(&y) {
+                    (f.water, v.max(1))
+                } else if pos == source && y == 7 && (r >> 24).is_multiple_of(5) {
+                    (stone, 0)
+                } else if pos == source && y >= 8 && (r >> 24).is_multiple_of(3) {
+                    (f.air, v)
+                } else {
+                    (f.air, 0)
+                };
+                c.storage.set(l, mat);
+                c.layers.set_u8(LayerId::Moisture, l, moisture);
+            }
+            w.insert_chunk(pos, c).unwrap();
+        }
+        let pass = WaterPass::new(&f.t);
+        activate_holders(&mut w, &pass);
+        (w, pass)
+    }
+
+    /// Total moisture of the chunk at `pos`.
+    fn chunk_moisture(w: &World, pos: ChunkPos) -> i32 {
+        global_order(w.bounds())
+            .filter(|c| c.split().0 == pos)
+            .map(|c| w.layer(c, LayerId::Moisture))
+            .sum()
+    }
+
+    /// The active-set sweep equals the flat reference after every sweep on
+    /// a 32-chunk terrain, where a reservoir spills over a bowl across the
+    /// x, y and z faces of its chunk, falls into the chunk below, soaks
+    /// the porous ground and seeps on.
+    #[test]
+    fn oracle_equivalence_multi_chunk_world() {
+        let f = Fix::new();
+        let ids = water_ref(&f);
+        let neighbors = [
+            ("x", ChunkPos::new(-1, 0, -1)),
+            ("y", ChunkPos::new(0, -1, -1)),
+            ("z", ChunkPos::new(0, 0, 0)),
+        ];
+        for seed in 0..MULTI_CHUNK_SEEDS {
+            let (mut w, mut pass) = terrain_world(&f, seed);
+            for (axis, pos) in neighbors {
+                assert_eq!(
+                    chunk_moisture(&w, pos),
+                    0,
+                    "seed {seed}: {axis} neighbor starts dry"
+                );
+            }
+            let before = InvariantChecker::new(&w);
+            let mut flat = FlatWorld::from_world(&w, &[LayerId::Moisture]);
+            let mut ledger = SeasonLedger::default();
+            let mut visits = 0;
+            for round in 0..MULTI_CHUNK_ROUNDS {
+                for i in 0..pass.flow_iters() {
+                    pass.set_iter(i);
+                    visits += run_sweep(&mut w, &mut pass, &mut ledger).visits;
+                    flat_sweep_water(&mut flat, &ids);
+                    let diff = flat.first_difference(&w);
+                    assert!(
+                        diff.is_none(),
+                        "seed {seed}, round {round}, sweep {i}: {diff:?}"
+                    );
+                }
+            }
+            assert_eq!(before.check(&w, &ledger), Ok(()), "seed {seed}: conserved");
+            // The active sets visit far fewer cells than the reference's
+            // every-cell sweeps.
+            let cells = global_order(w.bounds()).count() as u64;
+            let sweeps = u64::from(MULTI_CHUNK_ROUNDS) * u64::from(pass.flow_iters());
+            assert!(visits < cells * sweeps / 4, "seed {seed}: {visits} visits");
+            for (axis, pos) in neighbors {
+                assert!(
+                    chunk_moisture(&w, pos) > 0,
+                    "seed {seed}: no water crossed the {axis} face"
+                );
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(cases()))]
 

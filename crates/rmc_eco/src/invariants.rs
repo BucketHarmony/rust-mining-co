@@ -18,8 +18,6 @@
 
 use std::fmt;
 
-use rmc_world::chunk::ChunkStorage;
-use rmc_world::coords::{CHUNK_VOLUME, LocalPos};
 use rmc_world::layers::{LayerData, LayerId, N_GASES, N_SUBSTANCES};
 use rmc_world::world::World;
 use serde::{Deserialize, Serialize};
@@ -58,13 +56,7 @@ impl Totals {
                 }
             }
             if let Some(magma) = rules.magma {
-                t.magma += match &chunk.storage {
-                    ChunkStorage::Uniform(id) if *id == magma => CHUNK_VOLUME as i64,
-                    ChunkStorage::Uniform(_) => 0,
-                    storage => (0..CHUNK_VOLUME as u16)
-                        .filter(|&i| storage.get(LocalPos::from_index(i)) == magma)
-                        .count() as i64,
-                };
+                t.magma += chunk.storage.count(magma) as i64;
             }
         }
         if let Some(steam) = rules.steam {
@@ -223,7 +215,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use rmc_world::coords::{CellAabb, CellPos};
+    use rmc_world::coords::{CHUNK_VOLUME, CellAabb, CellPos, LocalPos};
     use rmc_world::materials::{MaterialId, MaterialTable};
     use rmc_world::world::World;
 
