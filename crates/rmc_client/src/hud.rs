@@ -35,16 +35,27 @@
 //! - Break feedback: when an `Applied` delta turns a solid cell into a
 //!   non-solid one, and that cell was the targeted cell or one this client
 //!   has damaged, the cell gets a break effect of [`BREAK_EFFECT_S`]: a
-//!   flash outline that grows and fades, and chips in the cell's material
-//!   color flying out (gizmos, when the app has them). The material is read
-//!   from the replica before the delta applies. `Full` deltas (big edits,
-//!   never a pickaxe swing) and snapshots show no effect.
+//!   flash outline that closes into the hole and fades, and [`BREAK_CHIPS`]
+//!   chips flying out ([`BreakChip`]: small solid cubes in the cell's
+//!   material color, lit and depth-tested like the terrain, despawned when
+//!   the effect ends). The material is read from the replica before the
+//!   delta applies. `Full` deltas (big edits, never a pickaxe swing) and
+//!   snapshots show no effect.
+//! - Damage on the cell (owner extension, F096): while the targeted cell
+//!   shows damage, a [`CrackOverlay`] cube just outside its faces darkens
+//!   them by the damage fraction; it is gone when the damage is.
+//! - Depth: the outline and the flash are [`HudGizmos`] lines, whose config
+//!   has no depth bias ([`HUD_GIZMO_DEPTH_BIAS`]), so nearer geometry hides
+//!   them, and the flash never reaches out of the cell toward the camera
+//!   ([`flash_scale`]). Chips and the overlay are meshes, so they need an
+//!   app with mesh and material assets; the lines need Bevy's gizmos.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use bevy::gizmos::GizmoPlugin;
 use bevy::input::mouse::AccumulatedMouseScroll;
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -58,7 +69,7 @@ use crate::editor::EditorState;
 use crate::flycam::FlyCam;
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
-use crate::render::GameCamera;
+use crate::render::{GameCamera, chunk_material};
 use crate::replica::{Replica, apply_host_messages};
 
 /// Selects the next held material (as does the mouse wheel turned down).
@@ -104,9 +115,17 @@ pub const SWING_PULSE_COLOR: Color = Color::srgb(1.0, 0.82, 0.35);
 /// cell.
 pub const OUTLINE_PULSE_GROWTH: f32 = 0.12;
 
-/// The break flash outline's extra size at the end of the effect, relative
-/// to the cell.
-pub const BREAK_FLASH_GROWTH: f32 = 0.5;
+/// How much the break flash outline shrinks over the effect, relative to
+/// the cell: it starts at the outline's size and closes into the hole. It
+/// used to grow, and at close range its near edges then crossed the open
+/// air right in front of the eye as lines over the whole view (pt-725).
+pub const BREAK_FLASH_SHRINK: f32 = 0.5;
+
+/// The break flash outline's size relative to the cell at `fade` (of
+/// [`BreakEffect::fade`]): [`OUTLINE_SCALE`] at the break, never larger.
+pub fn flash_scale(fade: f32) -> f32 {
+    OUTLINE_SCALE - BREAK_FLASH_SHRINK * (1.0 - fade.clamp(0.0, 1.0))
+}
 
 /// Number of chips a breaking cell throws.
 pub const BREAK_CHIPS: usize = 8;
@@ -119,6 +138,77 @@ pub const CHIP_SPEED_M_S: f32 = 2.0;
 
 /// The downward acceleration on chips, in meters per second squared.
 pub const CHIP_GRAVITY_M_S2: f32 = 9.8;
+
+/// Chips shrink to nothing over the last part of the effect: from this
+/// fade (of [`BreakEffect::fade`]) down to 0.
+pub const CHIP_SHRINK_FADE: f32 = 0.25;
+
+/// The depth bias of the [`HudGizmos`] lines. 0 is no bias toward the
+/// camera: they are depth-tested like the terrain, so nearer geometry hides
+/// them (a negative bias pulls them in front, -1 over everything).
+pub const HUD_GIZMO_DEPTH_BIAS: f32 = 0.0;
+
+/// The crack overlay's size relative to the cell: just outside its faces,
+/// so it covers them without fighting them for depth.
+pub const CRACK_OVERLAY_SCALE: f32 = 1.004;
+
+/// How much the crack overlay darkens a cell about to break (damage
+/// fraction 1.0): its faces keep `1 - CRACK_DARKEN` of their (linear)
+/// light.
+pub const CRACK_DARKEN: f32 = 0.7;
+
+/// The gizmo group of the targeted cell's outline and the break flash.
+/// Its config ([`HUD_GIZMO_DEPTH_BIAS`]) keeps them depth-tested.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct HudGizmos;
+
+/// One chip thrown by a breaking cell: a small solid cube of the cell's
+/// material ([`CHIP_SIZE_M`]), lit and depth-tested like the terrain. It
+/// lives for [`BREAK_EFFECT_S`] after the break.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct BreakChip {
+    /// The cell that broke.
+    pub cell: CellPos,
+    /// Which of the [`BREAK_CHIPS`] chips it is: sets its direction.
+    pub index: usize,
+    /// When the cell broke, in `Time` elapsed.
+    pub born: Duration,
+}
+
+/// The darkening on the targeted cell's faces while it is damaged: a cube
+/// just outside the cell ([`CRACK_OVERLAY_SCALE`]) whose multiply-blended
+/// color ([`crack_color`]) darkens what is behind it.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct CrackOverlay {
+    /// The damaged cell.
+    pub cell: CellPos,
+    /// The HUD's damage fraction on it, in `0.0..=1.0`.
+    pub strength: f32,
+}
+
+/// The crack overlay's color for `strength`: white (no change) at 0,
+/// darkening by [`CRACK_DARKEN`] at 1.
+pub fn crack_color(strength: f32) -> Color {
+    let keep = 1.0 - CRACK_DARKEN * strength.clamp(0.0, 1.0);
+    Color::linear_rgb(keep, keep, keep)
+}
+
+/// Chip `index`'s transform `age_s` seconds after the cell centered at
+/// `center` broke: thrown evenly around the vertical axis, alternately
+/// steep and shallow, at [`CHIP_SPEED_M_S`], falling under
+/// [`CHIP_GRAVITY_M_S2`] and spinning. Full size ([`CHIP_SIZE_M`]) until
+/// the fade reaches [`CHIP_SHRINK_FADE`], then shrinking to nothing.
+pub fn chip_transform(center: Vec3, index: usize, age_s: f32) -> Transform {
+    let angle = std::f32::consts::TAU * index as f32 / BREAK_CHIPS as f32;
+    let rise = if index.is_multiple_of(2) { 1.0 } else { 0.4 };
+    let velocity = Vec3::new(angle.cos(), rise, angle.sin()).normalize() * CHIP_SPEED_M_S;
+    let pos = center + velocity * age_s + Vec3::NEG_Y * (CHIP_GRAVITY_M_S2 * age_s * age_s / 2.0);
+    let fade = (1.0 - age_s / BREAK_EFFECT_S).max(0.0);
+    let size = CHIP_SIZE_M * (fade / CHIP_SHRINK_FADE).min(1.0);
+    Transform::from_translation(pos)
+        .with_rotation(Quat::from_rotation_y(angle + age_s * CHIP_SPEED_M_S))
+        .with_scale(Vec3::splat(size))
+}
 
 /// Damage dealt to the targeted cell so far, out of its hardness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,10 +412,26 @@ impl Plugin for HudPlugin {
                     .chain()
                     .in_set(HudSystems::Show)
                     .after(PickaxeSystems::Target),
+            )
+            // Chips and the crack overlay need mesh and material assets,
+            // which a logic-only app does not have; they do nothing there.
+            .init_resource::<HudMeshes>()
+            .add_systems(
+                Update,
+                (spawn_chips, move_chips, show_crack)
+                    .chain()
+                    .after(HudSystems::Show),
             );
         // A logic-only app has no gizmos.
         if app.is_plugin_added::<GizmoPlugin>() {
-            app.add_systems(Update, (draw_outline, draw_break).after(HudSystems::Show));
+            app.insert_gizmo_config(
+                HudGizmos,
+                GizmoConfig {
+                    depth_bias: HUD_GIZMO_DEPTH_BIAS,
+                    ..default()
+                },
+            )
+            .add_systems(Update, (draw_outline, draw_break).after(HudSystems::Show));
         }
     }
 }
@@ -726,8 +832,169 @@ fn pulse_color(base: Color, pulse: f32) -> Color {
     base.mix(&SWING_PULSE_COLOR, pulse)
 }
 
+/// The shared chip and overlay cube mesh (unit edge), and one chip
+/// material per broken material, made on first use.
+#[derive(Resource, Debug, Default)]
+struct HudMeshes {
+    cube: Option<Handle<Mesh>>,
+    chips: BTreeMap<MaterialId, Handle<StandardMaterial>>,
+}
+
+impl HudMeshes {
+    fn cube(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        self.cube
+            .get_or_insert_with(|| meshes.add(Cuboid::from_length(1.0)))
+            .clone()
+    }
+
+    /// The chip material for `id`: its color, shaded like the terrain.
+    fn chip(
+        &mut self,
+        id: MaterialId,
+        table: Option<&MaterialTable>,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Handle<StandardMaterial> {
+        self.chips
+            .entry(id)
+            .or_insert_with(|| {
+                let [r, g, b, _] = table.and_then(|m| m.get(id)).map_or([255; 4], |d| d.color);
+                materials.add(StandardMaterial {
+                    base_color: Color::srgba_u8(r, g, b, u8::MAX),
+                    ..chunk_material()
+                })
+            })
+            .clone()
+    }
+}
+
+/// The material table: the replica's, or the client's before a replica.
+fn material_table<'a>(
+    replica: Option<&'a Replica>,
+    client_materials: Option<&'a ClientMaterials>,
+) -> Option<&'a MaterialTable> {
+    replica
+        .map(|r| r.world().materials().as_ref())
+        .or(client_materials.map(|m| m.0.as_ref()))
+}
+
+/// Spawns [`BREAK_CHIPS`] [`BreakChip`]s when a cell breaks.
+#[allow(clippy::too_many_arguments)]
+fn spawn_chips(
+    mut commands: Commands,
+    feedback: Res<Feedback>,
+    replica: Option<Res<Replica>>,
+    client_materials: Option<Res<ClientMaterials>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    materials: Option<ResMut<Assets<StandardMaterial>>>,
+    mut handles: ResMut<HudMeshes>,
+    mut spawned_for: Local<Option<Duration>>,
+) {
+    let (Some(mut meshes), Some(mut materials)) = (meshes, materials) else {
+        return;
+    };
+    let Some((cell, material, at)) = feedback.broke else {
+        return;
+    };
+    if *spawned_for == Some(at) {
+        return;
+    }
+    *spawned_for = Some(at);
+    let table = material_table(replica.as_deref(), client_materials.as_deref());
+    let mesh = handles.cube(&mut meshes);
+    let chip_material = handles.chip(material, table, &mut materials);
+    for index in 0..BREAK_CHIPS {
+        commands.spawn((
+            BreakChip {
+                cell,
+                index,
+                born: at,
+            },
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(chip_material.clone()),
+            chip_transform(cell.center_m(), index, 0.0),
+            NotShadowCaster,
+        ));
+    }
+}
+
+/// Moves the chips along [`chip_transform`]; despawns them when the effect
+/// ends.
+fn move_chips(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut chips: Query<(Entity, &BreakChip, &mut Transform)>,
+) {
+    let now = time.elapsed();
+    for (entity, chip, mut transform) in &mut chips {
+        let age_s = now.saturating_sub(chip.born).as_secs_f32();
+        if age_s >= BREAK_EFFECT_S {
+            commands.entity(entity).despawn();
+        } else {
+            *transform = chip_transform(chip.cell.center_m(), chip.index, age_s);
+        }
+    }
+}
+
+/// Keeps one [`CrackOverlay`] on the targeted cell while [`HudState`] shows
+/// damage on it, with the damage fraction as its strength; despawns it
+/// when there is none.
+fn show_crack(
+    mut commands: Commands,
+    hud: Res<HudState>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    materials: Option<ResMut<Assets<StandardMaterial>>>,
+    mut handles: ResMut<HudMeshes>,
+    mut overlays: Query<(
+        Entity,
+        &mut CrackOverlay,
+        &mut Transform,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
+) {
+    let (Some(mut meshes), Some(mut materials)) = (meshes, materials) else {
+        return;
+    };
+    let shown = hud
+        .target
+        .zip(hud.damage)
+        .map(|(cell, damage)| (cell, damage.fraction()));
+    let Some((cell, strength)) = shown else {
+        for (entity, ..) in &overlays {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let transform = Transform::from_translation(cell.center_m())
+        .with_scale(Vec3::splat(CELL_SIZE_M * CRACK_OVERLAY_SCALE));
+    if let Some((_, mut overlay, mut at, material)) = overlays.iter_mut().next() {
+        let next = CrackOverlay { cell, strength };
+        if *overlay != next {
+            *overlay = next;
+            *at = transform;
+            if let Some(mut m) = materials.get_mut(&material.0) {
+                m.base_color = crack_color(strength);
+            }
+        }
+        return;
+    }
+    let material = materials.add(StandardMaterial {
+        base_color: crack_color(strength),
+        alpha_mode: AlphaMode::Multiply,
+        unlit: true,
+        fog_enabled: false,
+        ..default()
+    });
+    commands.spawn((
+        CrackOverlay { cell, strength },
+        Mesh3d(handles.cube(&mut meshes)),
+        MeshMaterial3d(material),
+        transform,
+        NotShadowCaster,
+    ));
+}
+
 /// Outlines the targeted cell; a swing makes it grow and light up.
-fn draw_outline(hud: Res<HudState>, mut gizmos: Gizmos) {
+fn draw_outline(hud: Res<HudState>, mut gizmos: Gizmos<HudGizmos>) {
     if let Some(cell) = hud.target {
         let scale = OUTLINE_SCALE + OUTLINE_PULSE_GROWTH * hud.swing_pulse;
         gizmos.cube(
@@ -738,46 +1005,17 @@ fn draw_outline(hud: Res<HudState>, mut gizmos: Gizmos) {
     }
 }
 
-/// The break effect: a flash outline growing out of the cell, and
-/// [`BREAK_CHIPS`] chips of the cell's material thrown up and out from its
-/// center, all fading out.
-fn draw_break(
-    hud: Res<HudState>,
-    replica: Option<Res<Replica>>,
-    client_materials: Option<Res<ClientMaterials>>,
-    mut gizmos: Gizmos,
-) {
+/// The break flash: an outline closing into the broken cell and fading.
+/// The chips are meshes ([`BreakChip`]).
+fn draw_break(hud: Res<HudState>, mut gizmos: Gizmos<HudGizmos>) {
     let Some(effect) = hud.last_break else {
         return;
     };
-    let materials = replica
-        .as_deref()
-        .map(|r| r.world().materials().as_ref())
-        .or(client_materials.as_deref().map(|m| m.0.as_ref()));
-    let [r, g, b, _] = materials
-        .and_then(|m| m.get(effect.material))
-        .map_or([255; 4], |d| d.color);
-    let chip_color = Color::srgba_u8(r, g, b, u8::MAX).with_alpha(effect.fade);
-    let age = BREAK_EFFECT_S * (1.0 - effect.fade);
-    let center = effect.cell.center_m();
-    let flash = CELL_SIZE_M * (OUTLINE_SCALE + BREAK_FLASH_GROWTH * (1.0 - effect.fade));
+    let flash = CELL_SIZE_M * flash_scale(effect.fade);
     gizmos.cube(
-        Transform::from_translation(center).with_scale(Vec3::splat(flash)),
+        Transform::from_translation(effect.cell.center_m()).with_scale(Vec3::splat(flash)),
         Color::WHITE.with_alpha(effect.fade),
     );
-    for i in 0..BREAK_CHIPS {
-        // Evenly around the vertical axis, alternately steep and shallow.
-        let angle = std::f32::consts::TAU * i as f32 / BREAK_CHIPS as f32;
-        let rise = if i % 2 == 0 { 1.0 } else { 0.4 };
-        let velocity = Vec3::new(angle.cos(), rise, angle.sin()).normalize() * CHIP_SPEED_M_S;
-        let pos = center + velocity * age + Vec3::NEG_Y * (CHIP_GRAVITY_M_S2 * age * age / 2.0);
-        gizmos.cube(
-            Transform::from_translation(pos)
-                .with_rotation(Quat::from_rotation_y(angle + age * CHIP_SPEED_M_S))
-                .with_scale(Vec3::splat(CHIP_SIZE_M)),
-            chip_color,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -859,25 +1097,41 @@ mod tests {
 
     impl Rig {
         fn new(world: World) -> Self {
+            Self::build(world, false)
+        }
+
+        /// As [`Rig::new`], with what a rendering app gives the HUD: mesh
+        /// and material assets, and Bevy's gizmos.
+        fn rendering(world: World) -> Self {
+            Self::build(world, true)
+        }
+
+        fn build(world: World, rendering: bool) -> Self {
             let mut app = App::new();
-            app.add_plugins(MinimalPlugins)
-                .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
-                    1.0 / 60.0,
-                )))
-                .init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<ButtonInput<MouseButton>>()
-                .init_resource::<AccumulatedMouseMotion>()
-                .init_resource::<FlyCam>()
-                .insert_resource(ClientMaterials(materials()))
-                .insert_resource(Replica::from_world(world))
-                .insert_resource(Pickaxe(profile()))
-                .add_plugins((
-                    NetPlugin,
-                    ReplicaPlugin,
-                    ControllerPlugin,
-                    PickaxePlugin,
-                    HudPlugin,
-                ));
+            app.add_plugins(MinimalPlugins);
+            if rendering {
+                app.add_plugins((AssetPlugin::default(), GizmoPlugin))
+                    .init_asset::<Mesh>()
+                    .init_asset::<StandardMaterial>()
+                    .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>();
+            }
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                1.0 / 60.0,
+            )))
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<FlyCam>()
+            .insert_resource(ClientMaterials(materials()))
+            .insert_resource(Replica::from_world(world))
+            .insert_resource(Pickaxe(profile()))
+            .add_plugins((
+                NetPlugin,
+                ReplicaPlugin,
+                ControllerPlugin,
+                PickaxePlugin,
+                HudPlugin,
+            ));
             let player = app.world_mut().spawn(Player::at(FEET)).id();
             let mut rig = Self { app, player };
             rig.frames(1);
@@ -1285,5 +1539,245 @@ mod tests {
             gen_params_hash: 0,
         }]);
         assert_eq!(rig.hud().selected, None);
+    }
+
+    /// Line vertices in all gizmo assets: what the gizmos drew last frame.
+    fn gizmo_vertices(rig: &Rig) -> usize {
+        rig.app
+            .world()
+            .resource::<Assets<GizmoAsset>>()
+            .iter()
+            .map(|(_, g)| g.buffer().list_positions.len() + g.buffer().strip_positions.len())
+            .sum()
+    }
+
+    /// The chips: their component, mesh, material and transform.
+    fn chips(rig: &mut Rig) -> Vec<(BreakChip, Handle<Mesh>, Handle<StandardMaterial>, Transform)> {
+        let world = rig.app.world_mut();
+        let mut chips: Vec<_> = world
+            .query::<(
+                &BreakChip,
+                &Mesh3d,
+                &MeshMaterial3d<StandardMaterial>,
+                &Transform,
+            )>()
+            .iter(world)
+            .map(|(c, m, mat, t)| (*c, m.0.clone(), mat.0.clone(), *t))
+            .collect();
+        chips.sort_by_key(|c| c.0.index);
+        chips
+    }
+
+    /// The crack overlays: their component, material and transform.
+    fn cracks(rig: &mut Rig) -> Vec<(CrackOverlay, Handle<StandardMaterial>, Transform)> {
+        let world = rig.app.world_mut();
+        world
+            .query::<(&CrackOverlay, &MeshMaterial3d<StandardMaterial>, &Transform)>()
+            .iter(world)
+            .map(|(c, mat, t)| (*c, mat.0.clone(), *t))
+            .collect()
+    }
+
+    #[test]
+    fn break_chips_are_depth_tested_meshes() {
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::rendering(world("granite", "stone"));
+        let m = rig.replica_world().materials().clone();
+        let stone = m.get(m.id("stone").unwrap()).unwrap().clone();
+
+        // Before the break only the outline is drawn: one cube's lines.
+        rig.frames(1);
+        let one_cube = gizmo_vertices(&rig);
+        assert!(one_cube > 0, "the outline is drawn");
+        assert!(chips(&mut rig).is_empty());
+
+        let swings = u32::from(stone.hardness.div_ceil(profile().damage));
+        let answers = host_answers(&mut host, &mut Inventory::new(), WALL_CELL, swings);
+        rig.swing(swings);
+        rig.deliver(answers);
+        let effect = rig.hud().last_break.expect("the wall cell broke");
+        assert_eq!(effect.cell, WALL_CELL);
+
+        // BREAK_CHIPS chip entities: a shared cube mesh, an opaque (depth
+        // writing and depth tested) material of the cell's color.
+        let found = chips(&mut rig);
+        assert_eq!(found.len(), BREAK_CHIPS);
+        let meshes = rig.app.world().resource::<Assets<Mesh>>();
+        let materials = rig.app.world().resource::<Assets<StandardMaterial>>();
+        let [r, g, b, _] = stone.color;
+        for (i, (chip, mesh, material, transform)) in found.iter().enumerate() {
+            assert_eq!(chip.index, i);
+            assert_eq!(chip.cell, WALL_CELL);
+            assert_eq!(mesh, &found[0].1, "one mesh for all chips");
+            assert!(meshes.get(mesh).is_some(), "the mesh exists");
+            let material = materials.get(material).expect("the material exists");
+            assert_eq!(material.base_color, Color::srgba_u8(r, g, b, u8::MAX));
+            assert_eq!(material.alpha_mode, AlphaMode::Opaque);
+            assert!(!material.unlit, "chips are lit like the terrain");
+            assert_eq!(
+                transform.scale,
+                Vec3::splat(CHIP_SIZE_M),
+                "full size at first"
+            );
+        }
+
+        // The chips draw no gizmos: only the flash (one cube) is drawn now,
+        // since nothing is left in reach to outline.
+        assert_eq!(rig.hud().target, None);
+        assert_eq!(gizmo_vertices(&rig), one_cube, "the flash only");
+
+        // They fly on the old motion: up and out from the center, falling.
+        rig.frames(6);
+        let fade = rig.hud().last_break.expect("still breaking").fade;
+        let age_s = BREAK_EFFECT_S * (1.0 - fade);
+        for (chip, _, _, transform) in chips(&mut rig) {
+            let expected = chip_transform(WALL_CELL.center_m(), chip.index, age_s);
+            assert!(
+                transform.translation.distance(expected.translation) < 1e-4,
+                "chip {} at {} (expected {})",
+                chip.index,
+                transform.translation,
+                expected.translation
+            );
+            assert!(transform.translation.distance(WALL_CELL.center_m()) > CHIP_SIZE_M);
+        }
+
+        // Despawned when the effect ends.
+        rig.frames((BREAK_EFFECT_S * 60.0).ceil() as u32);
+        assert_eq!(rig.hud().last_break, None);
+        assert!(chips(&mut rig).is_empty(), "despawned with the effect");
+
+        // A logic-only app spawns no chips.
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::new(world("granite", "stone"));
+        let answers = host_answers(&mut host, &mut Inventory::new(), WALL_CELL, swings);
+        rig.swing(swings);
+        rig.deliver(answers);
+        assert!(rig.hud().last_break.is_some());
+        assert!(chips(&mut rig).is_empty());
+    }
+
+    #[test]
+    fn target_outline_is_depth_tested() {
+        let mut rig = Rig::rendering(world("granite", "stone"));
+        rig.frames(1);
+        assert_eq!(rig.hud().target, Some(WALL_CELL));
+
+        // The HUD group draws with no bias toward the camera: its lines are
+        // depth-tested against the terrain like any geometry.
+        let store = rig.app.world().resource::<GizmoConfigStore>();
+        let (config, _) = store.config::<HudGizmos>();
+        assert!(config.enabled);
+        assert_eq!(HUD_GIZMO_DEPTH_BIAS, 0.0);
+        assert_eq!(config.depth_bias, HUD_GIZMO_DEPTH_BIAS);
+
+        // The flash never reaches out of the cell toward the camera: it
+        // starts at the outline's size and closes into the hole.
+        assert_eq!(flash_scale(1.0), OUTLINE_SCALE);
+        let mut last = OUTLINE_SCALE;
+        for step in 0..=10u8 {
+            let scale = flash_scale(1.0 - f32::from(step) / 10.0);
+            assert!(scale <= last && scale <= OUTLINE_SCALE && scale > 0.0);
+            last = scale;
+        }
+        assert!(last < 1.0, "inside the cell by the end");
+
+        // The outline is drawn in that group: turned off, nothing is drawn.
+        assert!(gizmo_vertices(&rig) > 0);
+        rig.app
+            .world_mut()
+            .resource_mut::<GizmoConfigStore>()
+            .config_mut::<HudGizmos>()
+            .0
+            .enabled = false;
+        // A few frames free the gizmo asset of the last frame drawn.
+        rig.frames(3);
+        assert_eq!(gizmo_vertices(&rig), 0, "the outline is a HudGizmos line");
+
+        // So is the break flash.
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::rendering(world("granite", "stone"));
+        let stone = rig.replica_world().materials().id("stone").unwrap();
+        let hardness = rig.replica_world().materials().get(stone).unwrap().hardness;
+        let swings = u32::from(hardness.div_ceil(profile().damage));
+        let answers = host_answers(&mut host, &mut Inventory::new(), WALL_CELL, swings);
+        rig.swing(swings);
+        rig.app
+            .world_mut()
+            .resource_mut::<GizmoConfigStore>()
+            .config_mut::<HudGizmos>()
+            .0
+            .enabled = false;
+        rig.frames(3);
+        assert_eq!(gizmo_vertices(&rig), 0);
+        rig.deliver(answers);
+        assert!(rig.hud().last_break.is_some());
+        assert_eq!(gizmo_vertices(&rig), 0, "the flash is a HudGizmos line");
+    }
+
+    #[test]
+    fn damaged_cell_gets_crack_tint() {
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::rendering(world("granite", "stone"));
+        let stone = rig.replica_world().materials().id("stone").unwrap();
+        let hardness = rig.replica_world().materials().get(stone).unwrap().hardness;
+        let dmg = profile().damage;
+        assert!(hardness > 2 * dmg, "stone takes more than two swings");
+
+        // No damage, no overlay.
+        assert!(cracks(&mut rig).is_empty());
+
+        // Each swing deepens the overlay on the targeted cell: its strength
+        // is the HUD's damage fraction, and its color follows it.
+        let mut last = 0.0;
+        for n in 1..=2 {
+            rig.swing(1);
+            let fraction = rig.hud().damage.expect("damaged").fraction();
+            assert_eq!(fraction, f32::from(n * dmg) / f32::from(hardness));
+            let found = cracks(&mut rig);
+            assert_eq!(found.len(), 1, "one overlay");
+            let (crack, material, transform) = &found[0];
+            assert_eq!(crack.cell, WALL_CELL);
+            assert_eq!(crack.strength, fraction);
+            assert!(crack.strength > last);
+            last = crack.strength;
+            assert_eq!(transform.translation, WALL_CELL.center_m());
+            assert_eq!(
+                transform.scale,
+                Vec3::splat(CELL_SIZE_M * CRACK_OVERLAY_SCALE),
+                "just outside the cell's faces"
+            );
+            let materials = rig.app.world().resource::<Assets<StandardMaterial>>();
+            let material = materials.get(material).expect("the material exists");
+            assert_eq!(material.base_color, crack_color(fraction));
+            assert_eq!(material.alpha_mode, AlphaMode::Multiply, "darkens");
+            assert!(material.unlit);
+            assert!(!material.fog_enabled);
+        }
+        assert!(crack_color(1.0) != crack_color(0.0));
+        assert_eq!(crack_color(0.0), Color::WHITE, "no damage, no change");
+
+        // Looking away clears the target and the overlay; looking back shows
+        // it again.
+        rig.player_mut().pitch = 1.2;
+        rig.frames(1);
+        assert!(cracks(&mut rig).is_empty(), "nothing targeted");
+        rig.player_mut().pitch = 0.0;
+        rig.frames(1);
+        assert_eq!(cracks(&mut rig).len(), 1);
+
+        // The break clears the damage and removes the overlay.
+        let swings = u32::from(hardness.div_ceil(dmg));
+        let answers = host_answers(&mut host, &mut Inventory::new(), WALL_CELL, swings);
+        rig.swing(swings - 2);
+        rig.deliver(answers);
+        assert_eq!(rig.hud().damage, None);
+        assert!(cracks(&mut rig).is_empty(), "removed with the damage");
+
+        // A logic-only app shows none.
+        let mut rig = Rig::new(world("granite", "stone"));
+        rig.swing(1);
+        assert!(rig.hud().damage.is_some());
+        assert!(cracks(&mut rig).is_empty());
     }
 }

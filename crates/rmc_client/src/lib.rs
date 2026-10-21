@@ -37,9 +37,10 @@ pub use gizmo::{
     EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
 };
 pub use hud::{
-    BreakEffect, ClientInventory, DamageEstimate, DamageProgress, HudItem, HudPlugin, HudRoot,
-    HudState, HudSystems, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK, SelectedMaterial,
-    step_selection,
+    BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, ClientInventory,
+    CrackOverlay, DamageEstimate, DamageProgress, HUD_GIZMO_DEPTH_BIAS, HudGizmos, HudItem,
+    HudPlugin, HudRoot, HudState, HudSystems, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK,
+    SelectedMaterial, crack_color, flash_scale, step_selection,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
