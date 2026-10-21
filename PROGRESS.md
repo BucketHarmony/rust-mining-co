@@ -2763,3 +2763,34 @@ Decisions:
 - Rule 21: screenshot `docs/screens/magma_meets_water-20.png`. It looks down through the pool at the shaft. Neither the obsidian nor magma's glow is visible through the water. The playtester judges it.
 Next: E2b is complete. Its playtester run is not in step 11's list (M6, M7, M8, E3b, E5). E2's playtester run is still outstanding. Ready: F141, F151, F152, F154, F160.
 Blockers: none.
+
+## 2026-10-21 17:45 — F141 Chemistry transport replaying the MoveLog by mobility and pH — passed
+Done:
+- New `rmc_eco::chemistry`:
+  - `Move { from, to, amount, fill_from }` and `MoveLog`.
+  - `ph(lime, acid, ph_shift)` = `clamp(7 + (lime − acid) / 2^ph_shift, 0, 14)`, truncating toward zero. F142 can reuse it.
+  - `Transport`, which replays a log. Per entry and per substance row: `mob = mobility_acid` if `pH(A) < acid_ph`, else `mobility`; `m = ((x_A · mob · amount) / 256) / fill_A` in `u32`; it moves `min(m, x_A, 255 − x_B)` and the remainder stays.
+- `WaterPass` now logs every B2–B4 move from `give()` (amount > 0, with the donor's fill before the move) and every B7 contact boil as a self entry `(wet, wet, fill, fill)`. It has `log()` and `clear_log()`.
+- `season_tick`: after weathering, each sub-step runs transport over the water pass's log, then clears the log. It is reported as `PassId::Transport` (§3: weathering → chemistry).
+- `reference::flat_transport` is the flat-array oracle.
+Tests added:
+- `chemistry::tests::transport_replays_movelog_invariant_proptest` (8-chunk random worlds with the shipped porous solids, acid and lime). It checks:
+  - replaying the log's amounts on the starting moisture reproduces the moisture after the flow sweeps, and each `fill_from` matches;
+  - the invariants are exact after transport, with an empty ledger;
+  - the result equals the flat oracle.
+- `transport_scaling_by_256_then_fill`: hand-computed shares, truncation, the receiver's room cap, entries replayed in order (and reversed), and the self entry.
+- `immobile_substance_stays`: a 0/0 mobility substance stays in every cell through a sub-step of flow, while a 255 one spreads.
+- `mobility_acid_used_below_acid_ph`: the `acid_ph` boundary, truncation toward zero (acid 47 still gives pH 5), pH read once per entry (the probe row comes after acid, which leaves first), and the clamp.
+- Extra tests:
+  - `contact_boil_logged_as_self_entry`;
+  - `season_tick_carries_substances_with_water`, which checks the invariants after every pass of a whole tick and that the substance leaves the column.
+- `tick::tests::invariants_hold_after_each_pass_20_worlds`: its expected pass list gains `(i, PassId::Transport)` after Weathering. This adds a pass to the check and weakens nothing.
+Decisions:
+- pH(A) is read once per entry, from A's state before the entry moves anything. The SAD's "for each substance x: mob = ..." could be read per substance; reading it once keeps the result independent of substance row order.
+- B7 is logged as a self entry `(wet, wet, fill, fill)`. The boiled fill leaves as steam and the substances stay on the cell (§7.0), so transport moves nothing for it.
+- Transport books no ledger term. Its moves stay inside each substance's total, like water flow moves (rule 16 precedent in `water.rs`). The invariant proptest is the proof.
+- The `SWEEP_TRANSPORT` active set stays unused. The replay visits the log, not cells. Later chemistry features should not expect that set to be populated.
+- Transport adds no `active_cells_per_sweep` entry. `TransportReport { entries, moved }` is logged at debug level.
+- Reviewer: PASS, no blocking gaps. On its notes I added the tick-level test and recorded the `SWEEP_TRANSPORT` decision.
+Next: F142 (pH derivation and reactions runner) is now unblocked. Also ready: F151, F152, F154, F160. E2's playtester run is still outstanding.
+Blockers: none.
