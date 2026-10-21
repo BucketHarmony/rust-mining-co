@@ -2046,3 +2046,36 @@ Decisions:
 - Two older stashes, "F094 test-fix" and "F094 WIP", are superseded by this commit and by 0b604cc. They are left for the owner to drop, because dropping a stash cannot be undone.
 Next: F095.
 Blockers: none.
+
+## 2026-10-21 04:30 — F095 Horizon without a box edge: the world shell and fog blend into the sky; the fly camera never sees a blank grey — passed
+Done:
+- The shell wall above the ground is no longer drawn.
+  - `MeshInput::from_world` now calls `open_shell_above_surface` (mesher.rs). A cell becomes air in the mesh input when all of these hold:
+    - it is in the bounds' outermost x/z ring;
+    - it is `Solid` and not diggable (`is_shell`);
+    - its interior column is not `Solid` from that height to the top of the bounds. The interior column is one step in from the ring, or the diagonal one for a corner (`shell_interior`).
+  - Underground, beside a cave or tunnel, and under an overhang, the shell is still drawn. The floor and the shell's top at ground level are drawn too, so the edge has no gap.
+  - The replica keeps the cells, so collision and raycasts still stop at the edge.
+- Replica (`mark_shell_below`, `mark_shell_below_chunk`): when a cell one step in from the ring changes, the chunks below it are marked too, but only if there is shell below that cell's chunk. So are those of a snapshot or `Full` delta. Every chunk column whose mesh border holds that ring column is marked: its own, and the neighbour column at a chunk seam. Without this, lower edge chunks would keep a stale wall or hole.
+- Fog (render.rs): `FOG_THINNING_PER_M` = 1.5 and `distance_fog_at(height)`. A `PostUpdate` system `fog_follows_height` pushes both ends of the linear fog out by 1.5 m per meter that the camera is above the replica bounds' top. With no replica, the fog stays at ground level.
+- Fly camera (flycam.rs): `FLY_BOUNDS_MARGIN_M` = 48 and `clamp_to_bounds`. With a replica, the camera is clamped to the bounds plus the margin every frame while fly mode is on. With no replica it is not clamped, as before.
+Tests added:
+- `render::tests::{shell_above_surface_is_not_drawn_as_a_wall, fog_thins_with_camera_height}` and `flycam::tests::fly_camera_clamped_to_bounds_plus_margin`.
+- E2E `horizon_no_box_edge`. It shoots north, northeast (a diagonal), east, south and west from the spawn, then flies to the ceiling over the -X/-Z corner. It asserts the clamp height, the fog for the camera height, and that no frame is blank (at least 16 colors). Screenshots: `docs/screens/horizon_no_box_edge-*.png`.
+- Also `replica::tests::shell_column_change_marks_chunks_below`.
+- Each new unit test was mutation-checked and fails without its code. The existing E2Es `horizon_readable` and `fly_camera` still pass.
+- Reviewer: GAPS, all minor, all addressed:
+  - Neighbour chunk columns at a seam were not re-marked. Fixed, with a test case.
+  - The clamp ran only while the camera moved. It now runs every frame.
+  - The wall-thickness limit and the SAD deviation are recorded below.
+Decisions:
+- Chosen approach: hide the shell above the surface in the mesh input. It is client-only and changes no world content, hash, save or worldgen test. The world edge reads as the terrain's edge against the sky (horizon color below the horizon line), and the player still stops at the invisible wall.
+  - Rejected: lowering the shell walls in worldgen, because it changes generated worlds and the player could walk off the edge.
+  - Rejected: raising the sky's pale band, because a 55%-fogged wall still reads as a grey band, and small worlds show it unfogged.
+- This extends SAD §11.2: besides cells outside the bounds, the mesher also reads the shell above the surface as air. docs/SAD.md is not edited; this note is the record.
+- The shell is "Solid and not diggable" (table fields, rule 5), not a material id.
+- Limit: the rule assumes a one-cell wall (`wall_cells: 1` in assets/worldgen.ron). With a thicker wall the interior neighbour is itself shell, so the wall stays drawn. The client does not know `wall_cells`.
+- Fog thinning is measured from the bounds' top, not the terrain. A player on the ground is always below the top, so normal play keeps the F088 fog unchanged. The existing `walk_and_jump`/`dig_tunnel` screenshots were not re-shot; they will show sky where the black slab was.
+- Rule 21: there are no pixel thresholds. The "flat fill" check is a distinct-color count.
+Next: F096.
+Blockers: none.
