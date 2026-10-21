@@ -3010,3 +3010,34 @@ Decisions:
   - At full strength the pool reads mauve-pink over the grass rather than rust orange: the water's blue is still a quarter of the mix. I did not tune it. If the playtester wants orange, raising fe's `strength` or warming its `color` in `eco.ron` is a data-only change.
 Next: F147 (E2E tailings_acidify_downslope) is now unblocked. Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 18:30 — F147 E2E: tailings_acidify_downslope — passed
+Done:
+- E2E `tailings_acidify_downslope` (`tests/e2e/tests/tailings_acidify_downslope.rs`), on the `Swale(5)` fixture.
+  - A soil plug in the swale and a 2-high soil ridge down the slope split the site into a polluted half and a control half along z. 2-high rims run along each half's outer z edge and across the top of the slope.
+  - A 2-level pile of `crushed_sulfide` (dx 2..=7, dz 3..=12) sits on the two slope steps just uphill of the polluted swale. It is placed damp, at its `field_capacity`.
+  - Each swale's bottom row holds a pool at fill 64. A sump under the low end takes the overflow, as in `season_swale_fills`.
+  - Four seasons at 10 °C with rain `[0, 0, 24, 24]`. The dry seasons must oxidize (`react_delta[acid] > 0`). The wet seasons must wash acid and copper out of the pile.
+  - End state:
+    - The polluted swale's water has pH < 4, and some of its water cells are individually below pH 4.
+    - The polluted swale holds more `cu` than the control.
+    - The control stays at pH ≥ 4 with no acid cells.
+  - Last run: polluted swale 96 water cells, acid 2431, lime 0, pH 1, 48 cells below pH 4, cu 399. Control: acid 0, cu 0, pH 7.
+- `rmc_testkit`: `TestApp::ph(cell) -> u8` (SAD-P2 §11), the host's derived pH read through `EcoTables::ph_rule()`.
+- Screenshot: `docs/screens/tailings_acidify_downslope-24.png`.
+Tests added:
+- E2E `tailings_acidify_downslope`.
+- `rmc_testkit::eco::tests::ph_reads_the_host_acid_and_lime`: neutral water reads 7. Acid and lime edits read 3, 4 and 8. Lime 255 clamps to 14. The result agrees with `PhRule::at`.
+Decisions:
+- "Swale pH" is the derived pH (§7.6) of the swale's mean water cell: mean acid and mean lime over its water cells, every water cell counted alike. The per-cell pH is also asserted (some cells < 4 in the polluted swale, none in the control).
+- The control swale is the other half of the same fixture swale, split by a plug and a ridge. The fixture builds only one swale, and both halves get the same rain and slope.
+- The seasons are overridden (as other scenarios do). With the shipped rain, rain lands as water on every exposed face each sub-step, so the pile has no air face and `oxidize` never fires: at rain 128 every season, `react_delta` stayed 0. Hence two dry seasons first, then light rain (24).
+  - Heavier flushes did worse: the swale's mean acid was 11 at rain 48 and 7 at rain 64, against 15 at 24. They fill the swale with clean water and carry the acid over the berm.
+  - The pile is placed damp so it weathers in the dry seasons. Weathering needs moisture or a water face.
+- Rims were needed. The terrain generated around the site is lower than the slope's top, and without them about half the pile's acid left the site over its uphill and side edges.
+Next:
+- F148 (E2E `limestone_channel_clears`) is now unblocked. It can reuse this layout with a limestone-lined channel between the pile and the swale.
+- For the owner or playtester: in normal seasons, tailings barely acidify anything, because rain sheets keep `oxidize`'s Exposed condition false while it rains. Possible game-design follow-ups are an `Exposed` that counts thin water, or oxidation in damp cells under shallow water. These are not changed here (rules 17 and 18).
+- The screenshot shows the pile and both swales under the rain sheet left by the last wet season. The F146 tint in the polluted swale is hard to see under it. The playtester should judge this at the E3 milestone.
+- Also ready: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
+Blockers: none.
