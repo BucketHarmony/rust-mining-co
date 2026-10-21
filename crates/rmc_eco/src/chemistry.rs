@@ -36,10 +36,20 @@
 //! that finds no room (above 255) as `saturation_loss`. `WeatherBoost(n)`
 //! adds `n` to the cell's regolith, saturating.
 //!
-//! The `Coat` and `EmitGas` sides are not applied yet. Their rows still
-//! fire and consume (ochre's iron and salt_crust's salt leave as
-//! `react_delta`). Coating the floor and crusts belong to F144, the
-//! chokedamp emission to F155.
+//! `Coat(Floor, crust, x, amount)` queues a delta of `amount` of `x` into
+//! the floor, the cell directly below ([`Queued`], applied after every
+//! chunk's output, so deltas to one target add up whichever chunk computed
+//! them). It carries what the row consumed out of the water: the deposit
+//! is booked as `react_delta` too, so a row consuming as much as it coats
+//! changes the world total by nothing. Only a cell that is not a solid (a
+//! water cell, or one that dried to air) has a floor; on a solid, or with
+//! no resident cell below, a coating row does not fire. When the floor is
+//! air, `porous` or `stone`, and not already a `crust`, and its `x`
+//! reaches `eco.crust_threshold`, it becomes the crust material
+//! ([`World::eco_set`], so the §7.0 rules run).
+//!
+//! The `EmitGas` side is not applied yet: decompose fires and consumes,
+//! and its chokedamp belongs to F155.
 //!
 //! [`reference::flat_transport`]: crate::reference::flat_transport
 
@@ -50,8 +60,8 @@ use rmc_world::layers::LayerId;
 use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
 
-use crate::runner::{ChunkView, JacobiOut, JacobiPass};
-use crate::tables::{Condition, EcoTables, PH_MAX, SideEffect};
+use crate::runner::{ChunkView, JacobiOut, JacobiPass, Queued};
+use crate::tables::{CoatTarget, Condition, EcoTables, PH_MAX, SideEffect};
 
 /// One water move of the flow sweeps (SAD-P2 §7.3): `amount` units went
 /// from `from` to `to`, out of the `fill_from` the donor held just before.
@@ -203,6 +213,13 @@ const FACES: [[i32; 3]; 6] = [
 ];
 /// The cell above.
 const ABOVE: [i32; 3] = [0, 1, 0];
+/// The cell below: a `Coat(Floor, ..)` target.
+const BELOW: [i32; 3] = [0, -1, 0];
+
+/// Tags of the materials a coat can turn into a crust (SAD-P2 §7.6), with
+/// air, unless the material is already a crust.
+const COATABLE_TAGS: [&str; 2] = ["porous", "stone"];
+const CRUST: &str = "crust";
 
 fn offset(cell: CellPos, [x, y, z]: [i32; 3]) -> CellPos {
     CellPos::new(cell.0.x + x, cell.0.y + y, cell.0.z + z)
@@ -231,6 +248,18 @@ struct Rule {
     conds: Vec<Cond>,
     /// `WeatherBoost(n)`: regolith added on the cell (saturating).
     weather_boost: i32,
+    /// `Coat(Floor, ..)`.
+    coat: Option<Coat>,
+}
+
+/// A `Coat(Floor, crust, x, amount)` side resolved against the tables.
+#[derive(Clone, Copy, Debug)]
+struct Coat {
+    x: u8,
+    amount: i32,
+    /// `None` when the material table lacks the crust: the deposit still
+    /// lands, nothing converts.
+    crust: Option<MaterialId>,
 }
 
 /// The reactions pass (SAD-P2 §7.6), a Jacobi pass. Built once per season
@@ -247,6 +276,13 @@ pub struct ReactionsPass {
     water: Option<MaterialId>,
     /// Per material id: whether it is `Phase::Air`.
     air: Vec<bool>,
+    /// Per material id: whether it is `Phase::Solid` (a solid cell has no
+    /// floor to coat).
+    solid: Vec<bool>,
+    /// Per material id: whether a coat turns it into a crust.
+    coatable: Vec<bool>,
+    /// `eco.crust_threshold`.
+    crust_threshold: i32,
     /// `eco.evap_low_fill`.
     evap_low_fill: i32,
     /// The cells the evaporation step evaporated from this sub-step.
@@ -292,11 +328,20 @@ impl ReactionsPass {
                     Some(SideEffect::WeatherBoost(n)) => i32::from(*n),
                     _ => 0,
                 };
+                let coat = match &r.side {
+                    Some(SideEffect::Coat(CoatTarget::Floor, crust, x, amount)) => Some(Coat {
+                        x: sub(x),
+                        amount: i32::from(*amount),
+                        crust: materials.id(crust),
+                    }),
+                    _ => None,
+                };
                 Rule {
                     consume: consume.into_iter().collect(),
                     net: net.into_iter().collect(),
                     conds,
                     weather_boost,
+                    coat,
                 }
             })
             .collect();
@@ -307,6 +352,15 @@ impl ReactionsPass {
             ph_shift: tables.params().ph_shift,
             water: tables.role_material("water"),
             air: materials.iter().map(|d| d.phase == Phase::Air).collect(),
+            solid: materials.iter().map(|d| d.phase == Phase::Solid).collect(),
+            coatable: materials
+                .iter()
+                .map(|d| {
+                    (d.phase == Phase::Air || COATABLE_TAGS.iter().any(|t| d.has_tag(t)))
+                        && !d.has_tag(CRUST)
+                })
+                .collect(),
+            crust_threshold: i32::from(tables.params().crust_threshold),
             evap_low_fill: i32::from(tables.params().evap_low_fill),
             evaporated: BTreeSet::new(),
         }
@@ -358,10 +412,33 @@ impl ReactionsPass {
     }
 }
 
+impl ReactionsPass {
+    /// Per material id lookup; `false` past the table.
+    fn is(flags: &[bool], m: MaterialId) -> bool {
+        flags.get(usize::from(m.0)).copied().unwrap_or(false)
+    }
+
+    /// The floor a coating rule on `cell` (material `m`) deposits into, with
+    /// its material: the resident cell below a cell that is not a solid.
+    fn floor(
+        &self,
+        view: &ChunkView<'_>,
+        cell: CellPos,
+        m: MaterialId,
+    ) -> Option<(CellPos, MaterialId)> {
+        if Self::is(&self.solid, m) {
+            return None;
+        }
+        let below = offset(cell, BELOW);
+        view.material(below).map(|f| (below, f))
+    }
+}
+
 impl JacobiPass for ReactionsPass {
     /// Per cell, the first rule (table order) whose consumed amounts are
-    /// on the cell and whose conditions hold fires once. Reads the cell,
-    /// its face neighbors and the evaporated set; writes only the cell.
+    /// on the cell, whose conditions hold and, for a coating rule, which
+    /// has a floor, fires once. Reads the cell, its face neighbors and the
+    /// evaporated set; writes the cell and queues the coat of its floor.
     fn compute(&self, view: &ChunkView<'_>) -> JacobiOut {
         let mut out = JacobiOut::default();
         let layers = &view.chunk().layers;
@@ -387,6 +464,7 @@ impl JacobiPass for ReactionsPass {
             let Some(rule) = live.iter().find(|r| {
                 r.consume.iter().all(|&(x, n)| amount(x, local) >= n)
                     && r.conds.iter().all(|c| self.holds(view, cell, local, m, c))
+                    && (r.coat.is_none() || self.floor(view, cell, m).is_some())
             }) else {
                 continue;
             };
@@ -402,6 +480,22 @@ impl JacobiPass for ReactionsPass {
             if rule.weather_boost > 0 {
                 // The runner clamps regolith at 255: a saturating add.
                 out.layers.push((i, LayerId::Regolith, rule.weather_boost));
+            }
+            if let Some(coat) = rule.coat
+                && let Some((target, floor)) = self.floor(view, cell, m)
+            {
+                // The runner charges what the floor has no room for to
+                // `saturation_loss`.
+                out.queued.push(Queued {
+                    target,
+                    layer: LayerId::Substance(coat.x),
+                    amount: coat.amount,
+                    then_set: coat
+                        .crust
+                        .filter(|_| Self::is(&self.coatable, floor))
+                        .map(|crust| (crust, self.crust_threshold)),
+                });
+                out.ledger.react_delta[usize::from(coat.x)] += i64::from(coat.amount);
             }
         }
         out
@@ -995,6 +1089,9 @@ mod tests {
         let mut mat = filler(t);
         if row.conditions.contains(&Condition::Evaporating) {
             mat = water;
+        } else if matches!(row.side, Some(SideEffect::Coat(..))) {
+            // A coating row needs a floor: a cell that is not solid.
+            mat = MaterialId::AIR;
         }
         for (k, cond) in row.conditions.iter().enumerate() {
             if let Condition::Tag(tag) = cond {
@@ -1139,8 +1236,9 @@ mod tests {
     /// Each shipped reaction, alone in the table, fires on a cell that
     /// meets all its conditions and holds every consumed amount: the
     /// consumed amounts leave, the produced ones arrive, a WeatherBoost
-    /// adds regolith, the ledger books the net change as `react_delta`,
-    /// and nothing else changes. Failing any one condition, or one unit
+    /// adds regolith, a Coat adds its amount to the cell below, the ledger
+    /// books the net change (coat included) as `react_delta`, and nothing
+    /// else changes. Failing any one condition, or one unit
     /// short of any consumed amount, it does not fire and changes nothing.
     #[test]
     fn each_reaction_fires_only_on_condition() {
@@ -1161,11 +1259,23 @@ mod tests {
                 let r = (w.layer(c, LayerId::Regolith) + i32::from(n)).min(FULL);
                 want.eco_put_layer(c, LayerId::Regolith, r);
             }
+            // A coat lands on the floor, the cell below.
+            let mut coated = None;
+            if let Some(SideEffect::Coat(_, _, key, n)) = &row.side {
+                let (x, floor) = (t.substance_index(key).unwrap(), offset(c, BELOW));
+                let n = i32::from(*n);
+                assert!(w.layer(floor, layer(x)) + n < i32::from(t.params().crust_threshold));
+                want.eco_put_layer(floor, layer(x), w.layer(floor, layer(x)) + n);
+                coated = Some((x, n));
+            }
             let ledger = react(&mut w, &pass);
             assert_eq!(w.hash(), want.hash(), "{}: fired as the row says", row.id);
             let mut booked = SeasonLedger::default();
             for (&x, &d) in &net {
                 booked.react_delta[usize::from(x)] = i64::from(d);
+            }
+            if let Some((x, n)) = coated {
+                booked.react_delta[usize::from(x)] += i64::from(n);
             }
             assert_eq!(ledger, booked, "{}: ledger", row.id);
 
@@ -1756,6 +1866,407 @@ mod tests {
             acidic > 2 * neutral && acidic > 0,
             "acid water carried {acidic} copper, neutral water {neutral}"
         );
+    }
+
+    // ---- Coating and crusts (F144) ----
+
+    /// The shipped coating row whose crust is `crust`: (substance, amount
+    /// coated per firing).
+    fn coat_of(t: &EcoTables, crust: &str) -> (u8, i32) {
+        t.reactions()
+            .iter()
+            .find_map(|r| match &r.side {
+                Some(SideEffect::Coat(CoatTarget::Floor, c, x, n)) if c == crust => {
+                    Some((t.substance_index(x).unwrap(), i32::from(*n)))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("a shipped row coats {crust}"))
+    }
+
+    /// [`small_world`] with stone up to `floor_y` and, above it, a pool:
+    /// one water layer per `(y, fill)`, every cell holding `substances`.
+    /// Every cell starts at temperature `temp`.
+    fn pool_world(
+        t: &EcoTables,
+        floor_y: i32,
+        pool: &[(i32, i32)],
+        substances: &[(u8, i32)],
+        temp: i32,
+    ) -> World {
+        let stone = t.materials().id("stone").unwrap();
+        let water = t.role_material("water").unwrap();
+        let mut w = small_world(t);
+        let mut ledger = SeasonLedger::default();
+        for cell in global_order(w.bounds()) {
+            w.eco_put_layer(cell, LayerId::Temperature, temp);
+            if (1..=floor_y).contains(&cell.0.y) {
+                w.eco_set(cell, stone, &mut ledger);
+            }
+            if let Some(&(_, fill)) = pool.iter().find(|&&(y, _)| y == cell.0.y) {
+                w.eco_set(cell, water, &mut ledger);
+                w.eco_put_layer(cell, LayerId::Moisture, fill);
+                for &(x, n) in substances {
+                    w.eco_put_layer(cell, layer(x), n);
+                }
+            }
+        }
+        w
+    }
+
+    /// The cells of `w` at height `y`.
+    fn plane(w: &World, y: i32) -> Vec<CellPos> {
+        global_order(w.bounds()).filter(|c| c.0.y == y).collect()
+    }
+
+    /// `ochre`: iron in neutral water precipitates onto the floor of the
+    /// pool. Each sub-step a water cell holding iron coats the cell below
+    /// with it; the pool's upper layer coats the lower one, the lower one
+    /// the stone floor. The floor turns to ochre_crust in the sub-step its
+    /// iron reaches `crust_threshold`. The submerged floor itself is solid
+    /// and passes nothing further down. Acid water (pH ≤ 5) keeps its iron.
+    #[test]
+    fn ochre_crust_forms_on_submerged_floor() {
+        use crate::tick::PassId;
+        let t = dry_spring();
+        let m = t.materials();
+        let (stone, ochre) = (m.id("stone").unwrap(), m.id("ochre_crust").unwrap());
+        let water = t.role_material("water").unwrap();
+        let (fe, amount) = coat_of(&t, "ochre_crust");
+        let acid = t.role_substance("acid").unwrap();
+        let threshold = i32::from(t.params().crust_threshold);
+        let substeps = i32::from(t.seasons().substeps);
+        let fires = (threshold + amount - 1) / amount;
+        assert!(fires <= substeps, "a season coats a floor");
+        let (floor_y, iron) = (2, 120);
+        assert!(iron >= substeps * amount, "the pool never runs out");
+        let pool = |pool_acid: i32| {
+            pool_world(
+                &t,
+                floor_y,
+                &[(3, FULL), (4, FULL)],
+                &[(fe, iron), (acid, pool_acid)],
+                0,
+            )
+        };
+
+        let mut w = pool(0);
+        let floor = plane(&w, floor_y);
+        let before = total(&w, fe);
+        // Per floor cell, the sub-step after whose reactions it was crust.
+        let mut crusted: BTreeMap<CellPos, u8> = BTreeMap::new();
+        let got = season(&mut w, &t, &mut |i, pass, w| {
+            if pass == PassId::Reactions {
+                for &c in &floor {
+                    if w.get_cell(c) == Some(ochre) {
+                        crusted.entry(c).or_insert(i);
+                    }
+                }
+            }
+        });
+        let when = u8::try_from(fires - 1).unwrap();
+        for &c in &floor {
+            assert_eq!(w.get_cell(c), Some(ochre), "{c:?} is crust");
+            assert_eq!(crusted.get(&c), Some(&when), "{c:?} turned at fire {fires}");
+            // The lower pool layer coated it every sub-step.
+            assert_eq!(w.layer(c, layer(fe)), (substeps * amount).min(FULL));
+        }
+        for c in plane(&w, floor_y - 1) {
+            assert_eq!(w.get_cell(c), Some(stone), "{c:?} under the floor");
+            assert_eq!(
+                w.layer(c, layer(fe)),
+                0,
+                "nothing passes the floor at {c:?}"
+            );
+        }
+        for c in plane(&w, 3).into_iter().chain(plane(&w, 4)) {
+            assert_eq!(w.get_cell(c), Some(water));
+        }
+        // The upper layer gave its iron to the lower one, which passed as
+        // much on: the lower layer is where it started.
+        for c in plane(&w, 3) {
+            assert_eq!(w.layer(c, layer(fe)), iron);
+        }
+        for c in plane(&w, 4) {
+            assert_eq!(w.layer(c, layer(fe)), iron - substeps * amount);
+        }
+        assert_eq!(total(&w, fe), before, "iron only moved");
+        assert_eq!(got.react_delta[usize::from(fe)], 0, "consumed as coated");
+        assert_eq!(got.saturation_loss[usize::from(fe)], 0);
+
+        // Acid water: pH 0, no ochre, no crust.
+        let mut sour = pool(FULL);
+        assert!(Transport::new(&t).ph(&sour, plane(&sour, 3)[0]) <= 5);
+        season(&mut sour, &t, &mut |_, _, _| {});
+        for &c in &floor {
+            assert_eq!(sour.get_cell(c), Some(stone));
+            assert_eq!(sour.layer(c, layer(fe)), 0);
+        }
+    }
+
+    /// `salt_crust`: a shallow salty pool dries out. Each sub-step in which
+    /// a pool cell evaporates below `evap_low_fill` (down to dry, when the
+    /// cell turns to air) it coats the floor with salt; the floor turns to
+    /// salt_crust once its salt reaches `crust_threshold`. A deep pool that
+    /// evaporates as fast never gets low, so it leaves no crust.
+    #[test]
+    fn salt_crust_on_floor_under_drying_pool() {
+        let p = shipped().params();
+        let (salt, amount) = coat_of(shipped(), "salt_crust");
+        let threshold = i32::from(p.crust_threshold);
+        let low = i32::from(p.evap_low_fill);
+        let need = (threshold + amount - 1) / amount;
+        // The warmest bucket that still takes `need` sub-steps to dry a
+        // cell at `evap_low_fill`.
+        let (bucket, rate) = p
+            .evap_table
+            .iter()
+            .map(|&e| i32::from(e))
+            .enumerate()
+            .rfind(|&(_, e)| e > 0 && e * need <= low)
+            .expect("a slow enough evaporation bucket");
+        let temp = i32::try_from(bucket).unwrap() * i32::from(p.evap_bucket);
+        assert!(temp < i32::from(p.condense_temp));
+        let t = tables().with_season_override(SeasonOverride {
+            rain: Some(0),
+            air_temp: Some(i16::try_from(temp).unwrap()),
+        });
+        let substeps = i32::from(t.seasons().substeps);
+        let dries_in = (low + rate - 1) / rate;
+        assert!(need <= dries_in && dries_in <= substeps);
+        let floor_y = 2;
+        let brine = 100;
+        assert!(brine >= dries_in * amount);
+        let salt_crust = t.materials().id("salt_crust").unwrap();
+        let stone = t.materials().id("stone").unwrap();
+        let water = t.role_material("water").unwrap();
+
+        let mut w = pool_world(&t, floor_y, &[(3, low)], &[(salt, brine)], temp);
+        let before = total(&w, salt);
+        let got = season(&mut w, &t, &mut |_, _, _| {});
+        // Below `evap_low_fill` from the first evaporation on, dry after
+        // `dries_in`: one coat per evaporating sub-step.
+        let coated = dries_in * amount;
+        for c in plane(&w, floor_y) {
+            assert_eq!(w.get_cell(c), Some(salt_crust), "{c:?} is crust");
+            assert_eq!(w.layer(c, layer(salt)), coated.min(FULL));
+        }
+        for c in plane(&w, 3) {
+            assert_eq!(w.get_cell(c), Some(MaterialId::AIR), "{c:?} dried");
+            assert_eq!(w.layer(c, layer(salt)), brine - coated);
+        }
+        assert_eq!(total(&w, salt), before, "salt only moved");
+        assert_eq!(got.react_delta[usize::from(salt)], 0);
+        assert!(got.evap_to_steam > 0);
+
+        // A deep pool stays above `evap_low_fill` all season: no crust.
+        let mut deep = pool_world(&t, floor_y, &[(3, FULL)], &[(salt, brine)], temp);
+        season(&mut deep, &t, &mut |_, _, _| {});
+        for c in plane(&deep, floor_y) {
+            assert_eq!(deep.get_cell(c), Some(stone));
+            assert_eq!(deep.layer(c, layer(salt)), 0);
+        }
+        for c in plane(&deep, 3) {
+            assert_eq!(deep.get_cell(c), Some(water));
+            assert_eq!(deep.layer(c, layer(salt)), brine);
+        }
+    }
+
+    /// Queues one delta per chunk into the same cell, plus the target
+    /// chunk's own delta there, for the additivity check.
+    struct QueueEach {
+        target: CellPos,
+        layer: LayerId,
+        own: i32,
+        by_chunk: Vec<(ChunkPos, i32)>,
+        then_set: Option<(MaterialId, i32)>,
+    }
+
+    impl JacobiPass for QueueEach {
+        fn compute(&self, view: &ChunkView<'_>) -> JacobiOut {
+            let mut out = JacobiOut::default();
+            let mut booked = 0;
+            if self.target.split().0 == view.pos() {
+                let i = self.target.local().index();
+                out.layers.push((i, self.layer, self.own));
+                booked += self.own;
+            }
+            for &(pos, amount) in &self.by_chunk {
+                if pos == view.pos() {
+                    out.queued.push(Queued {
+                        target: self.target,
+                        layer: self.layer,
+                        amount,
+                        then_set: self.then_set,
+                    });
+                    booked += amount;
+                }
+            }
+            if let LayerId::Substance(x) = self.layer {
+                out.ledger.react_delta[usize::from(x)] += i64::from(booked);
+            }
+            out
+        }
+    }
+
+    /// A coat whose floor lies in the chunk below is queued by the upper
+    /// chunk and lands after both chunks' outputs: on top of the floor
+    /// cell's own reaction in the same pass, and of what it already held.
+    /// Two chunks' deltas to one cell add up, the sum is clamped with the
+    /// excess booked as `saturation_loss`, and the crust test reads the
+    /// sum. Across the border the result equals the same layout inside one
+    /// chunk, serial equals parallel, and the invariants hold.
+    #[test]
+    fn coat_across_chunk_border_queued_additive() {
+        let t0 = shipped();
+        let fe = t0.substance_index("fe").unwrap();
+        let amount = 8u8;
+        let t = tables_reacting(&[
+            reaction(
+                "coat",
+                &[("fe", amount)],
+                vec![Condition::Submerged],
+                &[],
+                Some(SideEffect::Coat(
+                    CoatTarget::Floor,
+                    "ochre_crust".into(),
+                    "fe".into(),
+                    amount,
+                )),
+            ),
+            reaction(
+                "rust",
+                &[("fe", 3)],
+                vec![Condition::Tag("stone".into())],
+                &[],
+                None,
+            ),
+        ]);
+        let m = t.materials();
+        let (stone, ochre) = (m.id("stone").unwrap(), m.id("ochre_crust").unwrap());
+        let water = t.role_material("water").unwrap();
+        let threshold = i32::from(t.params().crust_threshold);
+        let pass = ReactionsPass::new(&t);
+        // Two chunks stacked: y 0..=31 and 32..=63.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(7, 63, 7));
+        let (low, high) = (ChunkPos::new(0, 0, 0), ChunkPos::new(0, 1, 0));
+        // A water cell over a stone floor; the floor holds two short of the
+        // threshold after its own rust: it turns only with the coat added.
+        let floor_fe = threshold - i32::from(amount) + 3;
+        let build = |water_at: CellPos| {
+            let mut w = World::new(Arc::clone(t.materials()), bounds);
+            w.set_eco_rules(t.displacement_rules());
+            for pos in [low, high] {
+                w.insert_chunk(pos, Chunk::uniform(MaterialId::AIR))
+                    .unwrap();
+            }
+            let floor = offset(water_at, BELOW);
+            let mut ledger = SeasonLedger::default();
+            w.eco_set(water_at, water, &mut ledger);
+            w.eco_put_layer(water_at, LayerId::Moisture, FULL);
+            w.eco_put_layer(water_at, layer(fe), 40);
+            w.eco_set(floor, stone, &mut ledger);
+            w.eco_put_layer(floor, layer(fe), floor_fe);
+            (w, floor)
+        };
+        let run = |w: &mut World, exec: Exec| {
+            let checker = InvariantChecker::new(w);
+            let mut ledger = SeasonLedger::default();
+            let report = run_jacobi(w, &pass, exec, &mut ledger);
+            checker.check(w, &ledger).unwrap();
+            (report, ledger)
+        };
+
+        // Across the border: the water at the bottom of the upper chunk.
+        let src = CellPos::new(3, 32, 3);
+        let (mut w, floor) = build(src);
+        assert_eq!((src.split().0, floor.split().0), (high, low));
+        let (report, ledger) = run(&mut w, Exec::Serial);
+        assert_eq!(w.layer(src, layer(fe)), 40 - i32::from(amount));
+        assert_eq!(
+            w.layer(floor, layer(fe)),
+            floor_fe - 3 + i32::from(amount),
+            "the coat adds to the floor's own change"
+        );
+        assert_eq!(
+            w.get_cell(floor),
+            Some(ochre),
+            "the sum reached the threshold"
+        );
+        assert_eq!(ledger.react_delta[usize::from(fe)], -3);
+        assert_eq!(report.changed, vec![low, high]);
+        // Parallel gives the same world and ledger.
+        let (mut par, _) = build(src);
+        let (_, par_ledger) = run(&mut par, Exec::Parallel);
+        assert_eq!((par.hash(), par_ledger), (w.hash(), ledger.clone()));
+        // A second pass coats the crust once more; it rusts no longer (not
+        // stone) and stays ochre.
+        run(&mut w, Exec::Serial);
+        assert_eq!(
+            w.layer(floor, layer(fe)),
+            floor_fe - 3 + 2 * i32::from(amount)
+        );
+        assert_eq!(w.get_cell(floor), Some(ochre));
+
+        // The same layout inside the lower chunk ends the same.
+        let inside = CellPos::new(3, 20, 3);
+        let (mut one, one_floor) = build(inside);
+        assert_eq!((inside.split().0, one_floor.split().0), (low, low));
+        let (_, one_ledger) = run(&mut one, Exec::Serial);
+        assert_eq!(one_ledger, ledger);
+        for (a, b) in [(src, inside), (floor, one_floor)] {
+            assert_eq!(one.get_cell(b), par.get_cell(a));
+            assert_eq!(one.layer(b, layer(fe)), par.layer(a, layer(fe)));
+        }
+
+        // Only the queue reaches the lower chunk: no rust there (iron below
+        // what it consumes), so the lower chunk's revision moves only by
+        // the queued coat, and the report lists it.
+        let (mut w, floor) = build(src);
+        w.eco_put_layer(floor, layer(fe), 0);
+        let (report, _) = run(&mut w, Exec::Serial);
+        assert_eq!(w.layer(floor, layer(fe)), i32::from(amount));
+        assert_eq!(w.get_cell(floor), Some(stone));
+        assert_eq!(report.changed, vec![high, low]);
+
+        // Two chunks' queued deltas to one cell, with the cell's own delta:
+        // all three add before the clamp and the crust test.
+        let target = CellPos::new(3, 31, 3);
+        let mut w = World::new(Arc::clone(t.materials()), bounds);
+        w.set_eco_rules(t.displacement_rules());
+        for pos in [low, high] {
+            w.insert_chunk(pos, Chunk::uniform(stone)).unwrap();
+        }
+        w.eco_put_layer(target, layer(fe), 50);
+        let each = |then: i32| QueueEach {
+            target,
+            layer: layer(fe),
+            own: -3,
+            by_chunk: vec![(low, 5), (high, 7)],
+            then_set: Some((ochre, then)),
+        };
+        // 50 − 3 + 5 + 7 = 59: no two of the three reach it.
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        run_jacobi(&mut w, &each(59), Exec::Parallel, &mut ledger);
+        assert_eq!(w.layer(target, layer(fe)), 59);
+        assert_eq!(w.get_cell(target), Some(ochre), "converted on the sum");
+        checker.check(&w, &ledger).unwrap();
+        // Near full: the sum is clamped at 255 and the excess is lost; a
+        // threshold above the range never converts.
+        let mut w2 = w.clone();
+        w2.eco_set(target, stone, &mut SeasonLedger::default());
+        w2.eco_put_layer(target, layer(fe), 250);
+        let checker = InvariantChecker::new(&w2);
+        let mut ledger = SeasonLedger::default();
+        run_jacobi(&mut w2, &each(FULL + 1), Exec::Serial, &mut ledger);
+        assert_eq!(w2.layer(target, layer(fe)), FULL);
+        assert_eq!(
+            ledger.saturation_loss[usize::from(fe)],
+            i64::from(250 - 3 + 12 - FULL)
+        );
+        assert_eq!(w2.get_cell(target), Some(stone));
+        checker.check(&w2, &ledger).unwrap();
     }
 
     proptest! {

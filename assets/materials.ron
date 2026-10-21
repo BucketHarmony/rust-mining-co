@@ -100,4 +100,15 @@
     // black with a violet cast, harder than basalt.
     (id: 22, key: "obsidian", phase: Solid, tags: [],
      hardness: 70, diggable: true, yield_count: 1, color: (30, 20, 40, 255), emissive: 0.0),
+
+    // Crusts (SAD-P2 §5, §7.6): what the ochre and salt_crust reactions
+    // coat onto a floor once its iron or salt reaches eco.crust_threshold.
+    // Soft and diggable; digging one yields nothing and leaves the coated
+    // substance on the cell (§7.0), where water can carry it again.
+    (id: 23, key: "ochre_crust", phase: Solid, tags: ["crust", "porous"],
+     hardness: 10, diggable: true, yield_count: 0, color: (186, 112, 42, 255), emissive: 0.0,
+     composition: [("fe", 60)]),
+    (id: 24, key: "salt_crust", phase: Solid, tags: ["crust"],
+     hardness: 5, diggable: true, yield_count: 0, color: (238, 234, 222, 255), emissive: 0.0,
+     composition: [("salt", 80)]),
 ]

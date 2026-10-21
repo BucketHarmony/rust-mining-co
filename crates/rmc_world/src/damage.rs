@@ -996,4 +996,80 @@ mod tests {
         assert_eq!(r.yields, expected);
         assert!(!r.yields.iter().any(|&(m, _)| m == ore));
     }
+
+    /// Crusts (SAD-P2 §7.6) are diggable solids. Breaking one with the
+    /// pickaxe takes ⌈hardness / dmg⌉ hits, leaves air, and leaves every
+    /// substance the crust held on the cell (§7.0, Solid → Air): nothing
+    /// is charged to `edit_out` and the crust yields nothing, so the coated
+    /// substance is back in the world for water to carry.
+    #[test]
+    fn digging_crust_leaves_substance_on_cell() {
+        use crate::layers::N_SUBSTANCES;
+
+        let table = phase1();
+        let crusts: Vec<MaterialDef> = table
+            .iter()
+            .filter(|d| d.has_tag("crust"))
+            .cloned()
+            .collect();
+        let keys: Vec<&str> = crusts.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(keys, ["ochre_crust", "salt_crust"], "the shipped crusts");
+        let at = cell(31, 7, 12);
+        for def in &crusts {
+            assert!(def.is_solid() && def.diggable, "{} is diggable", def.key);
+            assert!(def.hardness > 0, "{} takes a hit", def.key);
+            assert!(!def.composition.is_empty(), "{} has a composition", def.key);
+
+            // Coated amounts on every substance layer, and some water.
+            let mut w = eco_world(table.clone(), "stone", Some(SOFT));
+            set(&mut w, 1, at, def.id);
+            let held: Vec<(LayerId, i32)> = (0..N_SUBSTANCES as u8)
+                .map(|x| (LayerId::Substance(x), 64 + 9 * i32::from(x)))
+                .chain(std::iter::once((LayerId::Moisture, 20)))
+                .collect();
+            for (seq, &(layer, value)) in (2..).zip(&held) {
+                apply(
+                    &mut w,
+                    &cmd(seq, EditOp::SetLayer { layer, value }, Shape::Cell(at)),
+                );
+            }
+
+            // Hits before the last leave the crust standing.
+            let dmg = 3;
+            let hits = hits_to_break(&mut w, at, dmg);
+            assert_eq!(hits, ceil_div(def.hardness, dmg), "{}", def.key);
+            assert_eq!(w.get_cell(at), Some(MaterialId::AIR));
+            for &(layer, value) in &held {
+                assert_eq!(w.layer(at, layer), value, "{}: {layer:?} stays", def.key);
+            }
+
+            // The breaking hit: no yield, no ledger term, one material
+            // delta, and the layers stay where they were.
+            let mut w = eco_world(table.clone(), "stone", Some(SOFT));
+            set(&mut w, 1, at, def.id);
+            for (seq, &(layer, value)) in (2..).zip(&held) {
+                let op = EditOp::SetLayer { layer, value };
+                apply(&mut w, &cmd(seq, op, Shape::Cell(at)));
+            }
+            let r = hit(&mut w, 100, at, u16::MAX);
+            assert_eq!(w.get_cell(at), Some(MaterialId::AIR));
+            assert!(r.yields.is_empty(), "{} yields nothing", def.key);
+            assert_eq!(
+                *r.ledger,
+                crate::ledger::SeasonLedger::default(),
+                "{}: nothing leaves the world",
+                def.key
+            );
+            assert!(
+                r.deltas
+                    .iter()
+                    .all(|d| !matches!(d, ChunkDelta::Layers { .. })),
+                "{}: no layer changed",
+                def.key
+            );
+            for &(layer, value) in &held {
+                assert_eq!(w.layer(at, layer), value, "{}: {layer:?}", def.key);
+            }
+        }
+    }
 }

@@ -30,6 +30,7 @@ use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::World;
 
 use crate::ledger::merge;
+use crate::reference::order_key;
 
 /// How a Jacobi pass computes its chunks. Both give identical results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub enum Exec {
 /// Applied in this order: material changes through
 /// [`World::eco_set`] (which runs the displacement rules), then layer
 /// deltas, then plant states, then freeze-thaw bits, then the ledger terms.
+/// The [`Queued`] changes of every chunk are applied after all chunks'
+/// outputs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct JacobiOut {
     /// New materials. A cell that already holds the material is skipped.
@@ -62,6 +65,9 @@ pub struct JacobiOut {
     pub freeze_thaw: Vec<u16>,
     /// Ledger terms of the computed changes.
     pub ledger: SeasonLedger,
+    /// Changes queued for cells that may lie outside the chunk (SAD-P2
+    /// §7.6 `Coat`).
+    pub queued: Vec<Queued>,
 }
 
 impl JacobiOut {
@@ -72,7 +78,27 @@ impl JacobiOut {
             && self.plants.is_empty()
             && self.freeze_thaw.is_empty()
             && self.ledger == SeasonLedger::default()
+            && self.queued.is_empty()
     }
+}
+
+/// A layer delta a chunk queues for any resident cell, its own or one in
+/// another chunk's (SAD-P2 §7.6: `Coat` effects are queued as deltas).
+///
+/// After every chunk's output is applied, the queued deltas of all chunks
+/// are summed per target cell and layer, so deltas to the same target are
+/// additive, and applied in the global cell order like layer deltas
+/// (clamped, the excess charged to `*saturation_loss`). Then, in the same
+/// order, each target whose layer holds at least the `then_set` threshold
+/// changes material through [`World::eco_set`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Queued {
+    pub target: CellPos,
+    pub layer: LayerId,
+    pub amount: i32,
+    /// `(material, threshold)`: the target becomes `material` when its
+    /// `layer` holds at least `threshold` after the queued deltas.
+    pub then_set: Option<(MaterialId, i32)>,
 }
 
 /// A Jacobi pass: a pure function of the previous state.
@@ -228,13 +254,56 @@ pub fn run_jacobi_on(
         }
     };
     let mut report = JacobiReport::default();
-    for (pos, out) in sorted.into_iter().zip(outs) {
-        if !out.is_empty() && apply_out(world, pos, &out, ledger) {
+    for (&pos, out) in sorted.iter().zip(&outs) {
+        if !out.is_empty() && apply_out(world, pos, out, ledger) {
+            report.changed.push(pos);
+        }
+    }
+    let queued: Vec<Queued> = outs.iter().flat_map(|o| o.queued.iter().copied()).collect();
+    for pos in apply_queued(world, &queued, ledger) {
+        if !report.changed.contains(&pos) {
             report.changed.push(pos);
         }
     }
     tracing::debug!(chunks = report.changed.len(), "jacobi pass applied");
     report
+}
+
+/// The sort key of a queued delta: target in the global cell order, then
+/// layer.
+type QueueKey = ((i32, i32, i32, i32, i32), LayerId);
+
+/// Applies the queued deltas of a run (see [`Queued`]). Returns the chunks
+/// of the targets that changed, in the order they first changed.
+fn apply_queued(world: &mut World, queued: &[Queued], ledger: &mut SeasonLedger) -> Vec<ChunkPos> {
+    let mut sums: BTreeMap<QueueKey, (CellPos, i32)> = BTreeMap::new();
+    let mut converts: BTreeMap<QueueKey, (CellPos, MaterialId, i32)> = BTreeMap::new();
+    for q in queued {
+        let key = (order_key(q.target), q.layer);
+        sums.entry(key).or_insert((q.target, 0)).1 += q.amount;
+        if let Some((m, threshold)) = q.then_set {
+            converts.insert(key, (q.target, m, threshold));
+        }
+    }
+    let mut changed: Vec<ChunkPos> = Vec::new();
+    let mut note = |c: CellPos| {
+        let (pos, _) = c.split();
+        if !changed.contains(&pos) {
+            changed.push(pos);
+        }
+    };
+    for (&(_, id), &(c, d)) in &sums {
+        if put_delta(world, c, id, d, ledger) {
+            note(c);
+        }
+    }
+    for (&(_, id), &(c, m, threshold)) in &converts {
+        if world.layer(c, id) >= threshold && world.get_cell(c).is_some_and(|from| from != m) {
+            world.eco_set(c, m, ledger);
+            note(c);
+        }
+    }
+    changed
 }
 
 /// Applies one chunk's output: materials, layer deltas, plants, freeze-thaw
@@ -254,38 +323,8 @@ fn apply_out(world: &mut World, pos: ChunkPos, out: &JacobiOut, ledger: &mut Sea
             changed = true;
         }
     }
-    let steam = world.eco_rules().steam;
     for &(i, id, d) in &out.layers {
-        let c = cell(i);
-        if d == 0 || world.get_cell(c).is_none() {
-            continue;
-        }
-        let want = world.layer(c, id) + d;
-        let (lo, hi) = layer_range(id);
-        let conserved = matches!(
-            id,
-            LayerId::Moisture | LayerId::Substance(_) | LayerId::Gas(_)
-        );
-        assert!(
-            !conserved || want >= lo,
-            "Jacobi pass removed {} of {id:?} at {c:?}, which holds {}",
-            -d,
-            want - d
-        );
-        let got = want.clamp(lo, hi);
-        let lost = i64::from(want - got);
-        match id {
-            LayerId::Moisture => ledger.water_saturation_loss += lost,
-            LayerId::Substance(x) => ledger.saturation_loss[usize::from(x)] += lost,
-            LayerId::Gas(g) => {
-                ledger.gas_saturation_loss[usize::from(g)] += lost;
-                if steam == Some(g) {
-                    ledger.water_saturation_loss += lost;
-                }
-            }
-            _ => {}
-        }
-        changed |= world.eco_put_layer(c, id, got);
+        changed |= put_delta(world, cell(i), id, d, ledger);
     }
     for &(i, plant) in &out.plants {
         changed |= world.eco_put_plant(cell(i), plant);
@@ -295,6 +334,50 @@ fn apply_out(world: &mut World, pos: ChunkPos, out: &JacobiOut, ledger: &mut Sea
     }
     merge(ledger, &out.ledger);
     changed
+}
+
+/// Adds `d` to layer `id` at `c`, clamped to the layer's range; for
+/// moisture, substances and gases the clamped part is charged to the
+/// matching `*saturation_loss` term. Returns whether the value changed. A
+/// cell outside the bounds or not resident is skipped.
+///
+/// Panics if `d` would take a moisture, substance or gas layer below 0.
+fn put_delta(
+    world: &mut World,
+    c: CellPos,
+    id: LayerId,
+    d: i32,
+    ledger: &mut SeasonLedger,
+) -> bool {
+    if d == 0 || world.get_cell(c).is_none() {
+        return false;
+    }
+    let want = world.layer(c, id) + d;
+    let (lo, hi) = layer_range(id);
+    let conserved = matches!(
+        id,
+        LayerId::Moisture | LayerId::Substance(_) | LayerId::Gas(_)
+    );
+    assert!(
+        !conserved || want >= lo,
+        "Jacobi pass removed {} of {id:?} at {c:?}, which holds {}",
+        -d,
+        want - d
+    );
+    let got = want.clamp(lo, hi);
+    let lost = i64::from(want - got);
+    match id {
+        LayerId::Moisture => ledger.water_saturation_loss += lost,
+        LayerId::Substance(x) => ledger.saturation_loss[usize::from(x)] += lost,
+        LayerId::Gas(g) => {
+            ledger.gas_saturation_loss[usize::from(g)] += lost;
+            if world.eco_rules().steam == Some(g) {
+                ledger.water_saturation_loss += lost;
+            }
+        }
+        _ => {}
+    }
+    world.eco_put_layer(c, id, got)
 }
 
 /// The values a layer's type holds.
