@@ -2201,3 +2201,29 @@ Decisions:
 - The bit is set through a `JacobiOut` field applied by the runner, not written by the pass. The pass stays a pure function of the previous state, and chunks write only their own cells.
 Next: F111 (weathering pass), now unblocked (F110 and F122 pass).
 Blockers: none.
+
+## 2026-10-21 12:00 — F111 Weathering pass: regolith growth when exposed and moist, freeze-thaw doubling — passed
+Done:
+- New `rmc_eco::weathering::WeatheringPass`, the SAD-P2 §7.5 Jacobi pass (regolith growth only; release and conversion are F112).
+  - Built once from the material table: per material id, `weathering_rate` for solids, 0 for the rest.
+  - A solid cell with rate > 0 weathers when it has an air or liquid face neighbor and has `moisture > 0` or a water (role) face neighbor.
+  - `Δ = min(rate · (1 + freeze_thaw), 255 − regolith)` is added to `regolith` as a layer delta. The bit is the cell's own.
+  - A chunk whose palette has no weathering material is skipped without a cell scan.
+- `season_tick` runs the pass after the water sweeps in every sub-step, through `Activity` (`JacobiKind::Weathering`). Gases are not implemented yet; weathering takes its §3 place after them when F150 lands.
+- Exported as `rmc_eco::WeatheringPass`.
+Tests added:
+- `weathering::tests::regolith_only_when_exposed_and_moist`:
+  - Grows: moist porous cell under air, dry cell under water, dry buried cell beside a water pocket, both directions across the chunk face, regolith 253 capped at 255.
+  - Does not grow: a dry cell under air, a moist buried cell, a cell beside ice (solid, not water), wet granite (rate 0), moist cells on the world's edge and floor (out of bounds is no neighbor), regolith already at 255.
+  - Serial and parallel runs give the same world, and moisture is unchanged.
+  - A summer `season_tick` on a weatherstone pit holding a pond: the floor and walls gain exactly `3 · substeps`, the dry rim gains 0.
+- `weathering::tests::freeze_thaw_doubles_rate`: cells with the bit gain twice the rate per pass; a bit set mid-season doubles later passes only; the cap holds; a bit on the air above a cell does not count; a buried cell with a bit stays at 0.
+- `weathering::tests::unexposed_control_unchanged`: a moist buried weatherchalk block across the chunk face, all bits set, plus dry weatherstone in the open. Three passes change nothing, book nothing, leave the hash equal. A summer season leaves every regolith at 0. With one top-face cell opened to an air pocket, only the cell below it weathers.
+Decisions:
+- No shipped material has `weathering_rate > 0` before F140 (limestone, crushed_sulfide). The tests add two test-only materials, `weatherstone` (rate 3, not porous) and `weatherchalk` (rate 5, porous), on top of the shipped table. assets/materials.ron is unchanged.
+- "Air or liquid face neighbor" is read literally as `Phase::Air` or `Phase::Liquid`. A passable plant solid above a cell does not expose it. Ice is a solid, so it neither exposes nor wets.
+- `ledger.weathered_cells` is not booked by growth. It is left for the conversion at 255 (F112), the event a cell "weathered".
+- Test updates in the feature commit, as F125 did: `tick::tests::whole_tick_deterministic_100` and `rmc_host season::tests::advance_season_roundtrip` asserted `2 * substeps` Jacobi entries. They now assert `3 * substeps` (temperature, transitions, weathering). The count follows the passes the tick runs and is no weaker.
+- Activity skipping is safe with the freeze-thaw bits, which are not hashed and do not bump revisions: a chunk goes quiet only when no cell can grow (no eligible cell, or all at 255), and a bit cannot change that.
+Next: F112 (gradual composition release, conversion at 255) or F113 (regolith halves pickaxe hardness): both are now unblocked; F112 comes first in features.json.
+Blockers: none.
