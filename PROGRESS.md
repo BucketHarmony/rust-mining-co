@@ -2179,3 +2179,4 @@ Decisions:
 Next: F126 (worldgen water table) or F127 / F130 / F150 / F160: the next unpassed features with no blockers, in file order. F110 (freeze-thaw bit) is unblocked now.
   - Open from F107's review: an end-to-end host check that a real season's material change (now possible via freezing) reaches clients as a `ChunkSnapshot`.
 Blockers: none.
+- Correction to the F125 block's Next: the next feature is F110 (freeze-thaw season bitset), the first unpassed entry in features.json whose blockers all pass.
