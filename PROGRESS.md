@@ -3386,3 +3386,27 @@ Next:
 - F165 (plants) still needs F142 and F122.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 03:40 — F162 E2E: layer_overlay_renders — passed
+Done:
+- New scenario `tests/e2e/tests/layer_overlay_renders.rs`. It runs on the pool fixture in a 64×128×64 world:
+  - Takes a material render first. The source is `ColorSource::Material`, the pool's water is liquid-meshed, and a screenshot is saved.
+  - With keys only, it opens the editor (F1) and taps `NextOverlay` (F7) until the picker reaches moisture. `MeshColorSource` follows the picker. It then closes the editor so the panel does not cover the frame, and the overlay stays.
+  - After the recolor, at least one job has run per resident chunk and `recoloring` is cleared.
+  - Every pool chunk is meshed from the replica with the overlay source. Its liquid and opaque vertex colors differ from the material colors, and the water keeps its geometry.
+  - The overlay frame differs from the material frame, and there is no render failure.
+- Screenshots: `docs/screens/layer_overlay_renders-material-14.png` (grass around the pool) and `layer_overlay_renders-27.png` (dry tan ground, blue pool).
+Tests added: `e2e:layer_overlay_renders` (57 s). TDD check: with `follow_overlay` stubbed to pick no layer, it failed with "the meshes follow the picker", left `Material`, right `Layer(Moisture, ..)`. After the stub was reverted it passes. The workspace gate is green.
+Decisions:
+- Rule 21 substitution: the SAD-P2 §12 check "mean blue over the pool region higher" is a pixel threshold, so it is asserted semantically:
+  - every pool water cell's replica moisture is above every ground cell's in the ring around the pool;
+  - the moisture colormap's blue rises with the value (`high[2] > low[2]`);
+  - the full pool maps to the colormap's wet end, and the ground maps to a less blue color.
+  The capture check is only "the frames differ". The playtester judges the screenshots.
+- The uploaded meshes live in the render world, so the scenario compares the colors the pipeline meshes from the replica, the same way `water_tint_shows` does. The unit test `editor::tests::overlay_pick_triggers_remesh` covers that these are the uploaded meshes.
+- Milestone E4 (F160–F162) is now complete. E4 is not on the playtester list.
+Next:
+- F165 (plants): F160, F142 and F122 pass, so it is unblocked.
+- F169 (editor eco panel) is also unblocked.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
