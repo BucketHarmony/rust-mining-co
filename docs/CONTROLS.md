@@ -87,13 +87,20 @@ settings.
 
 - Brush size is a radius in cells, from 1 to 15. A Sphere has that radius. A
   Box is a cube 2 × size + 1 cells on a side. A Cell ignores the size.
-- The brush material cycles through every solid material in id order. Until
-  you pick one, the brush uses the first material tagged `placeable`.
+- The brush material cycles through every solid and liquid material in id
+  order, so it can place water, ice, magma, crushed sulfide and copper dust.
+  Until you pick one, the brush uses the first material tagged `placeable`.
+  A brushed water cell is full; a brushed magma cell starts hot.
 - The layer overlay colors terrain by one ecology layer instead of its
   material: temperature, moisture, regolith, light, growth, then each
   substance and each gas, then back to the normal look. Light and gas color
   a face by the open cell in front of it. The overlay stays on when the
-  editor closes.
+  editor closes. The panel's Overlay picker selects a layer directly.
+- The panel's Season section shows the last season's report: chunks
+  changed, rain and vented water, the net change of each substance and gas,
+  plants born and died, transitions, and what the edits before it moved.
+- The panel's Cell section reads the cell under the crosshair, including a
+  plant's species, growth (255 is mature), age, stress and held substances.
 
 ## Brush
 

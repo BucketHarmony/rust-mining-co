@@ -398,7 +398,7 @@ fn save_on_exit(mut exit: MessageReader<AppExit>, host: Option<ResMut<GameHost>>
 
 /// What the client reads of the eco tables (SAD-P2 §10): substance and gas
 /// keys, the pH rule, the toxicity profiles, the water tint, the gas
-/// tint and the flammable gases.
+/// tint, the flammable gases and the plant species keys.
 pub fn client_eco(eco: &EcoTables) -> ClientEco {
     ClientEco {
         substances: eco.substance_layers().clone(),
@@ -409,6 +409,7 @@ pub fn client_eco(eco: &EcoTables) -> ClientEco {
         tint: eco.substance_tints(),
         gas_tint: eco.gas_tints(),
         flammable: eco.flammable_gases(),
+        plants: eco.plants().iter().map(|p| p.key.clone()).collect(),
     }
 }
 

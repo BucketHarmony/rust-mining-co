@@ -28,8 +28,15 @@
 //!
 //! While the editor is open, [`EditorReadout`] holds what the replica has at
 //! the cell that ray hits (SAD-P2 §10 targeted-cell readout: temperature,
-//! moisture, regolith, light, pH, substances, gases, and which toxicity
-//! profiles it exceeds); the panel shows its lines.
+//! moisture, regolith, light, pH, substances, gases, which toxicity
+//! profiles it exceeds, and a plant's species, stage and held substances);
+//! the panel shows its lines.
+//!
+//! The eco panel (SAD-P2 §10) is the rest of the editor's Phase 2 kit:
+//! the brush also places water and magma ([`brush_materials`]), the panel's
+//! overlay picker sets [`EditorState::overlay`] from [`overlay_choices`],
+//! and [`SeasonSummary`] follows the host's `SeasonStarted` and
+//! `SeasonDone` for the panel's season report summary.
 
 use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -42,7 +49,9 @@ use rmc_world::world::World;
 use rmc_world::{Hit, raycast};
 
 use crate::controller::{Aabb, ControllerSystems, EYE_HEIGHT_M, Player, blocks};
-use crate::eco::{ClientEco, EditorReadout, cell_readout, readout_lines};
+use crate::eco::{
+    ClientEco, EditorReadout, SeasonDone, SeasonSummary, cell_readout, readout_lines, unnamed,
+};
 use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::gizmo::EditorGizmoPlugin;
 use crate::interp::InterpolatedEye;
@@ -112,6 +121,30 @@ pub fn next_overlay(current: Option<LayerId>) -> Option<LayerId> {
             .iter()
             .position(|&l| l == id)
             .and_then(|i| OVERLAY_LAYERS.get(i + 1).copied()),
+    }
+}
+
+/// The overlay picker's choices: none, then every [`OVERLAY_LAYERS`]
+/// entry, each with its [`overlay_name`].
+pub fn overlay_choices(eco: Option<&ClientEco>) -> Vec<(Option<LayerId>, String)> {
+    std::iter::once(None)
+        .chain(OVERLAY_LAYERS.iter().copied().map(Some))
+        .map(|overlay| (overlay, overlay_name(overlay, eco)))
+        .collect()
+}
+
+/// What the overlay picker calls `overlay`: `none`, a scalar layer's name,
+/// a substance's key, or a gas's key with ` (gas)`. Keys come from the
+/// tables, else the layer index stands in (`#3`), so every choice has its
+/// own name.
+pub fn overlay_name(overlay: Option<LayerId>, eco: Option<&ClientEco>) -> String {
+    let Some(id) = overlay else {
+        return "none".to_string();
+    };
+    let name = eco.map_or_else(|| unnamed(id), |e| e.layer_name(id));
+    match id {
+        LayerId::Gas(_) => format!("{name} (gas)"),
+        _ => name,
     }
 }
 
@@ -312,9 +345,14 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F9, EditorAction::Load),
 ];
 
-/// The materials the brush can pick: every `Solid` material, in id order.
+/// The materials the brush can pick: every `Solid` or `Liquid` material, in
+/// id order. The liquids are water and magma (SAD-P2 §10); the host's §7.0
+/// displacement fills a brushed water cell and heats a brushed magma cell.
 pub fn brush_materials(table: &MaterialTable) -> impl Iterator<Item = MaterialId> + '_ {
-    table.iter().filter(|d| d.is_solid()).map(|d| d.id)
+    table
+        .iter()
+        .filter(|d| d.is_solid_or_liquid())
+        .map(|d| d.id)
 }
 
 /// The brush material before one is picked: the first material tagged
@@ -501,6 +539,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<CommandSeq>()
             .init_resource::<EditorStats>()
             .init_resource::<EditorReadout>()
+            .init_resource::<SeasonSummary>()
             .init_resource::<HostTickTime>()
             .init_resource::<MeshColorSource>()
             .add_plugins(EditorGizmoPlugin)
@@ -510,6 +549,7 @@ impl Plugin for EditorPlugin {
                     follow_welcome_seed.before(editor_keys),
                     editor_keys,
                     request_season.after(editor_keys),
+                    follow_seasons,
                     follow_overlay.after(editor_keys),
                     sample_stats,
                     sample_readout
@@ -553,6 +593,29 @@ fn editor_keys(
         }
         state.apply(action, materials.as_deref().map(|m| &*m.0));
         debug!(?action, "editor key");
+    }
+}
+
+/// Keeps [`SeasonSummary`] on the host's `SeasonStarted` and `SeasonDone`,
+/// whether or not the editor is open.
+fn follow_seasons(mut inbox: MessageReader<FromHost>, mut summary: ResMut<SeasonSummary>) {
+    for FromHost(msg) in inbox.read() {
+        match msg {
+            ServerMsg::SeasonStarted { season } => summary.running = Some(*season),
+            ServerMsg::SeasonDone {
+                season,
+                report,
+                changed_chunks,
+            } => {
+                summary.running = None;
+                summary.last = Some(SeasonDone {
+                    season: *season,
+                    changed_chunks: *changed_chunks,
+                    report: (**report).clone(),
+                });
+            }
+            _ => {}
+        }
     }
 }
 
@@ -718,6 +781,7 @@ fn drop_player_after_flying(
 mod tests {
     use super::*;
     use crate::controller::ControllerPlugin;
+    use crate::eco::season_lines;
     use crate::flycam::{FLY_TOGGLE_KEY, FlyCamPlugin};
     use crate::mesher::{ChunkMesher, GreedyMesher, MeshInput};
     use crate::meshpipe::{ChunkMesh, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats};
@@ -727,9 +791,12 @@ mod tests {
     use bevy::input::mouse::AccumulatedMouseMotion;
     use bevy::time::TimeUpdateStrategy;
     use bevy_egui::egui;
+    use rmc_protocol::SeasonReport;
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::{CellAabb, ChunkPos, LocalPos};
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS, PlayerId};
+    use rmc_world::layers::PlantState;
+    use rmc_world::ledger::SeasonLedger;
     use rmc_world::shape::Shape;
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -1096,6 +1163,8 @@ mod tests {
         let table = materials();
         let stats = app.world().resource::<EditorStats>().clone();
         let readout = app.world().resource::<EditorReadout>().lines.clone();
+        let eco = app.world().get_resource::<ClientEco>().cloned();
+        let season = season_lines(app.world().resource::<SeasonSummary>(), eco.as_ref());
         let mut state = state(app);
         let mut fly = false;
         let mut shown = false;
@@ -1106,6 +1175,8 @@ mod tests {
                     stats: &stats,
                     materials: Some(&table),
                     readout: &readout,
+                    eco: eco.as_ref(),
+                    season: &season,
                 };
                 shown = editor_panel(ui.ctx(), &mut state, &mut fly, view, |_| {});
             });
@@ -2083,5 +2154,287 @@ mod tests {
         assert!(f.replica().dirty().is_empty());
         f.drain();
         assert_eq!(f.stats().jobs_started, jobs);
+    }
+
+    // ---- The eco panel ----
+
+    /// Eco tables shaped like the shipped ones, with two plant species.
+    fn panel_eco() -> ClientEco {
+        use rmc_world::layers::SubstanceLayers;
+        ClientEco {
+            substances: SubstanceLayers::new(["cu", "acid"]).unwrap(),
+            gases: vec!["steam".into(), "firedamp".into()],
+            ph: Default::default(),
+            player_tox: Default::default(),
+            plant_tox: Default::default(),
+            tint: Vec::new(),
+            gas_tint: Vec::new(),
+            flammable: Vec::new(),
+            plants: vec!["moss".into(), "fireweed".into()],
+        }
+    }
+
+    /// A season that rained, vented, weathered copper, ate acid, grew and
+    /// killed plants and thawed ice, after a brush of water and a harvest.
+    fn sample_report(table: &MaterialTable) -> SeasonReport {
+        let (ice, water) = (table.id("ice").unwrap(), table.id("water").unwrap());
+        let mut ledger = SeasonLedger {
+            rain_in: 120,
+            steam_vent_out: 30,
+            plants_born: 4,
+            plants_died: 1,
+            weathered_cells: 9,
+            transitions: vec![(ice, water, 5), (water, ice, 2)],
+            ..Default::default()
+        };
+        ledger.weather_in[0] = 6;
+        ledger.uptake_sink[0] = 2;
+        ledger.react_delta[1] = -3;
+        ledger.emit_in[1] = 12;
+        ledger.vent_out[1] = 5;
+        let mut between_seasons = SeasonLedger {
+            water_edit_in: 255,
+            ..Default::default()
+        };
+        between_seasons.harvest_out[0] = 40;
+        SeasonReport {
+            ledger,
+            between_seasons,
+            substep_ms: vec![10, 12, 8],
+            active_cells_per_sweep: Vec::new(),
+            active_chunks_per_jacobi: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn eco_panel_lists_layers_and_report() {
+        let table = materials();
+        let eco = panel_eco();
+        let mut app = editor_app();
+        app.insert_resource(eco.clone());
+        let ctx = egui::Context::default();
+        tap(&mut app, TOGGLE_EDITOR_KEY);
+        let has = |texts: &[String], want: &str| texts.iter().any(|t| t == want);
+
+        // The overlay picker: none, then every overlay layer in key order,
+        // named from the tables.
+        let choices = overlay_choices(Some(&eco));
+        assert_eq!(choices.len(), 1 + OVERLAY_LAYERS.len());
+        assert_eq!(choices[0], (None, "none".to_string()));
+        for (choice, &id) in choices[1..].iter().zip(&OVERLAY_LAYERS) {
+            assert_eq!(choice.0, Some(id));
+            assert_eq!(choice.1, overlay_name(Some(id), Some(&eco)));
+        }
+        for (id, name) in [
+            (LayerId::Temperature, "Temperature"),
+            (LayerId::Moisture, "Moisture"),
+            (LayerId::Growth, "Growth"),
+            (LayerId::Substance(0), "cu"),
+            (LayerId::Substance(1), "acid"),
+            (LayerId::Substance(2), "#2"),
+            (LayerId::Gas(1), "firedamp (gas)"),
+            (LayerId::Gas(2), "#2 (gas)"),
+        ] {
+            assert_eq!(overlay_name(Some(id), Some(&eco)), name);
+        }
+        assert_eq!(overlay_name(Some(LayerId::Substance(0)), None), "#0");
+        let names: BTreeSet<&str> = choices.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names.len(), choices.len(), "every choice has its own name");
+
+        // The panel shows the picker with the current overlay; F7 and a
+        // pick change it.
+        let (shown, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(shown);
+        for want in ["Overlay", "none", "Season", ADVANCE_SEASON_LABEL] {
+            assert!(has(&texts, want), "panel lacks {want:?}: {texts:?}");
+        }
+        tap(&mut app, key_of(EditorAction::NextOverlay));
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(has(&texts, "Temperature"), "picker follows F7: {texts:?}");
+        app.world_mut().resource_mut::<EditorState>().overlay = Some(LayerId::Substance(0));
+        frame(&mut app);
+        assert_eq!(
+            app.world().resource::<MeshColorSource>().0,
+            ColorSource::layer(LayerId::Substance(0)),
+            "a pick sets the mesh color source"
+        );
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        assert!(has(&texts, "cu"), "picker shows the pick: {texts:?}");
+
+        // The season report summary follows SeasonStarted and SeasonDone.
+        let summary = |app: &App| app.world().resource::<SeasonSummary>().clone();
+        assert_eq!(summary(&app), SeasonSummary::default());
+        assert_eq!(season_lines(&summary(&app), Some(&eco)), ["No season yet"]);
+        app.world_mut()
+            .write_message(FromHost(ServerMsg::SeasonStarted { season: 3 }));
+        frame(&mut app);
+        assert_eq!(summary(&app).running, Some(3));
+        assert_eq!(
+            season_lines(&summary(&app), Some(&eco)),
+            ["Season 3 running", "No season yet"]
+        );
+        let report = sample_report(&table);
+        app.world_mut()
+            .write_message(FromHost(ServerMsg::SeasonDone {
+                season: 3,
+                report: Box::new(report.clone()),
+                changed_chunks: 7,
+            }));
+        frame(&mut app);
+        assert_eq!(
+            summary(&app),
+            SeasonSummary {
+                running: None,
+                last: Some(SeasonDone {
+                    season: 3,
+                    changed_chunks: 7,
+                    report,
+                }),
+            }
+        );
+        let lines = season_lines(&summary(&app), Some(&eco));
+        assert_eq!(
+            lines,
+            [
+                "Season 3: 7 chunks changed in 30 ms",
+                "Water: rain 120, vented 30, lost 0",
+                "Substances: cu +4, acid -3",
+                "Gases: firedamp +7",
+                "Plants: 4 born, 1 died",
+                "Transitions: 7  Weathered: 9  Ignitions: 0",
+                "Edits before it: water +255, substances cu -40, gases none",
+            ]
+        );
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        for line in &lines {
+            assert!(has(&texts, line), "panel lacks {line:?}: {texts:?}");
+        }
+        // Without the tables, layers go by index.
+        assert_eq!(
+            season_lines(&summary(&app), None)[2],
+            "Substances: #0 +4, #1 -3"
+        );
+        // The next season's start shows above the last report.
+        app.world_mut()
+            .write_message(FromHost(ServerMsg::SeasonStarted { season: 4 }));
+        frame(&mut app);
+        let next = season_lines(&summary(&app), Some(&eco));
+        assert_eq!(next[0], "Season 4 running");
+        assert_eq!(next[1..], lines[..]);
+
+        // The brush places water, ice, magma, crushed sulfide and copper
+        // dust; air never.
+        let brushable: Vec<MaterialId> = brush_materials(&table).collect();
+        for key in ["water", "ice", "magma", "crushed_sulfide", "copper_dust"] {
+            let id = table.id(key).unwrap();
+            assert!(brushable.contains(&id), "the brush lacks {key}");
+        }
+        assert!(!brushable.contains(&MaterialId::AIR));
+        let water = table.id("water").unwrap();
+        let magma = table.id("magma").unwrap();
+        let mut brush = EditorState {
+            material: Some(water),
+            ..EditorState::default()
+        };
+        let hit = Hit {
+            cell: cell(4, 2, 4),
+            face_normal: IVec3::Y,
+            distance: 1.0,
+        };
+        assert_eq!(
+            brush_command(&brush, &table, hit),
+            Some((EditOp::Set(water), Shape::Cell(cell(4, 3, 4))))
+        );
+        assert!(brush_summary(&brush, Some(&table)).ends_with("water"));
+        // The material keys walk through the liquids too.
+        brush.apply(EditorAction::NextMaterial, Some(&table));
+        assert_eq!(
+            brush.material,
+            brushable.iter().copied().find(|&id| id > water)
+        );
+        brush.material = Some(magma);
+        brush.apply(EditorAction::PrevMaterial, Some(&table));
+        assert_eq!(
+            brush.material,
+            brushable.iter().copied().rev().find(|&id| id < magma)
+        );
+
+        // The targeted-cell readout names the plant, its stage and what it
+        // holds.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 31, 31));
+        let mut world = World::new(table.clone(), bounds);
+        let fireweed = table.id("fireweed").unwrap();
+        let mut chunk = Chunk::uniform(MaterialId::AIR);
+        let (young, old) = (cell(2, 5, 2), cell(6, 5, 2));
+        let mut held = [0; N_SUBSTANCES];
+        held[0] = 40;
+        for (c, growth, plant) in [
+            (
+                young,
+                120,
+                PlantState {
+                    species: 1,
+                    stress: 1,
+                    age_seasons: 0,
+                    held: [0; N_SUBSTANCES],
+                },
+            ),
+            (
+                old,
+                u8::MAX,
+                PlantState {
+                    species: 1,
+                    stress: 0,
+                    age_seasons: 2,
+                    held,
+                },
+            ),
+        ] {
+            let (_, local) = c.split();
+            chunk.storage.set(local, fireweed);
+            chunk.layers.set_u8(LayerId::Growth, local, growth);
+            chunk.plants.insert(local.index(), plant);
+        }
+        world.insert_chunk(ChunkPos::new(0, 0, 0), chunk).unwrap();
+        let lines_at = |c: CellPos, eco: Option<&ClientEco>| {
+            let r = cell_readout(&world, c, eco).unwrap();
+            readout_lines(&r, Some(&table), eco)
+        };
+        let young_lines = lines_at(young, Some(&eco));
+        assert_eq!(
+            young_lines[young_lines.len() - 2..],
+            [
+                "Plant: fireweed · growth 120 · age 0 · stress 1",
+                "Held: none"
+            ]
+        );
+        let old_lines = lines_at(old, Some(&eco));
+        assert_eq!(
+            old_lines[old_lines.len() - 2..],
+            [
+                "Plant: fireweed · growth 255 (mature) · age 2 · stress 0",
+                "Held: cu 40"
+            ]
+        );
+        let bare = lines_at(old, None);
+        assert_eq!(
+            bare[bare.len() - 2..],
+            [
+                "Plant: #1 · growth 255 (mature) · age 2 · stress 0",
+                "Held: #0 40"
+            ]
+        );
+        let air = lines_at(cell(10, 5, 2), Some(&eco));
+        assert!(
+            !air.iter()
+                .any(|l| l.starts_with("Plant") || l.starts_with("Held")),
+            "no plant, no plant lines: {air:?}"
+        );
+        // The panel's Cell section shows them.
+        app.world_mut().resource_mut::<EditorReadout>().lines = old_lines.clone();
+        let (_, texts, _) = draw_panel(&mut app, &ctx);
+        for line in &old_lines {
+            assert!(has(&texts, line), "panel lacks {line:?}: {texts:?}");
+        }
     }
 }

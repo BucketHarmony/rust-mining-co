@@ -2,9 +2,12 @@
 //!
 //! [`editor_panel`] draws the panel into an egui context while
 //! [`EditorState::open`] is set: the brush (op, shape, size, material), the
-//! fly camera, the gizmo toggles, the [`EditorStats`], the targeted-cell
-//! readout ([`EditorReadout`](crate::eco::EditorReadout)), the worldgen seed with
-//! Regenerate, Advance season, Save / Load, and a `bevy-inspector-egui` world inspector. It
+//! fly camera, the layer overlay picker, the gizmo toggles, the
+//! [`EditorStats`], the targeted-cell readout
+//! ([`EditorReadout`](crate::eco::EditorReadout)), the worldgen seed with
+//! Regenerate, Advance season with the last season's report summary
+//! ([`season_lines`]), Save / Load, and a `bevy-inspector-egui` world
+//! inspector. It
 //! edits the same [`EditorState`] the editor keys do; its buttons apply the
 //! same [`EditorAction`]s. F1 opens and closes it.
 //!
@@ -24,10 +27,10 @@ use rmc_protocol::ServerMsg;
 use rmc_world::edit::EditStatus;
 use rmc_world::materials::MaterialTable;
 
-use crate::eco::EditorReadout;
+use crate::eco::{ClientEco, EditorReadout, SeasonSummary, season_lines};
 use crate::editor::{
     ADVANCE_SEASON_LABEL, BrushOp, BrushShape, EditorAction, EditorState, MAX_BRUSH_SIZE,
-    brush_materials,
+    brush_materials, overlay_choices, overlay_name,
 };
 use crate::flycam::FlyCam;
 use crate::meshpipe::MeshStats;
@@ -79,6 +82,10 @@ pub struct PanelView<'a> {
     /// The targeted-cell readout's lines ([`EditorReadout`]); the Cell
     /// section is hidden when empty.
     pub readout: &'a [String],
+    /// The eco tables, for the overlay picker's layer names.
+    pub eco: Option<&'a ClientEco>,
+    /// The season report summary's lines ([`season_lines`]).
+    pub season: &'a [String],
 }
 
 /// One line describing the brush: op, shape, size and material.
@@ -194,6 +201,16 @@ fn panel_body(
     ui.checkbox(fly, "Fly camera (noclip)");
 
     ui.separator();
+    ui.strong("Overlay");
+    egui::ComboBox::from_label("layer")
+        .selected_text(overlay_name(state.overlay, view.eco))
+        .show_ui(ui, |ui| {
+            for (overlay, name) in overlay_choices(view.eco) {
+                ui.selectable_value(&mut state.overlay, overlay, name);
+            }
+        });
+
+    ui.separator();
     ui.strong("Gizmos");
     ui.checkbox(&mut state.gizmos.chunk_bounds, "Chunk bounds");
     ui.checkbox(&mut state.gizmos.target_cell, "Targeted cell");
@@ -238,6 +255,9 @@ fn panel_body(
     ui.strong("Season");
     if ui.button(ADVANCE_SEASON_LABEL).clicked() {
         actions.push(EditorAction::AdvanceSeason);
+    }
+    for line in view.season {
+        ui.label(line);
     }
 
     ui.separator();
@@ -344,6 +364,11 @@ fn draw_panel(world: &mut World) {
         .get_resource::<EditorReadout>()
         .map(|r| r.lines.clone())
         .unwrap_or_default();
+    let eco = world.get_resource::<ClientEco>().cloned();
+    let season = world
+        .get_resource::<SeasonSummary>()
+        .map(|s| season_lines(s, eco.as_ref()))
+        .unwrap_or_default();
     let fly_was = world.get_resource::<FlyCam>().map(|f| f.enabled);
     let mut fly = fly_was.unwrap_or(false);
     world.resource_scope(|world, mut state: Mut<EditorState>| {
@@ -351,6 +376,8 @@ fn draw_panel(world: &mut World) {
             stats: &stats,
             materials: materials.as_deref(),
             readout: &readout,
+            eco: eco.as_ref(),
+            season: &season,
         };
         editor_panel(&ctx, &mut state, &mut fly, view, |ui| {
             bevy_inspector_egui::bevy_inspector::ui_for_world(world, ui);

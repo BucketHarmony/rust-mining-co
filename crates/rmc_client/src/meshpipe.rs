@@ -1653,6 +1653,7 @@ mod tests {
             tint: vec![fe_tint],
             gas_tint: Vec::new(),
             flammable: Vec::new(),
+            plants: Vec::new(),
         });
         f.join();
         f.drain();

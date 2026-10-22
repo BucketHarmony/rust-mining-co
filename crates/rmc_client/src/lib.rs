@@ -27,12 +27,15 @@ pub use cursor::{
     CursorGrab, CursorPlugin, CursorSystems, GRAB_BUTTON, GRABBED_MODE, RELEASE_KEY, look_allowed,
     swing_allowed,
 };
-pub use eco::{CellReadout, ClientEco, EditorReadout, cell_readout, readout_lines};
+pub use eco::{
+    CellReadout, ClientEco, EditorReadout, PlantReadout, SeasonDone, SeasonSummary, cell_readout,
+    readout_lines, season_lines,
+};
 pub use editor::{
     ADVANCE_SEASON_LABEL, BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS,
     EditorAction, EditorPlugin, EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE,
     OVERLAY_LAYERS, SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY, brush_command, brush_target,
-    free_feet_near, next_overlay, overlay_source,
+    free_feet_near, next_overlay, overlay_choices, overlay_name, overlay_source,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use gizmo::{
