@@ -3546,3 +3546,34 @@ Next:
 Blockers: none.
 
 Correction to the F168 block: F147 already passes, so F170 is unblocked now that F168 passes.
+
+## 2026-10-22 08:00 — F169 Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout — passed
+Done:
+- Overlay picker (SAD-P2 §10). The panel has a new Overlay section with a combo box. It lists `none`, then every `OVERLAY_LAYERS` entry, and sets `EditorState::overlay`. That is the same field F7 steps through, so `follow_overlay` remeshes as before.
+  - `overlay_choices` / `overlay_name` name the scalar layers by name and substances by their key. Gases get their key plus ` (gas)`. A layer the tables don't name shows its index (`#3`).
+- Season report summary. The new `SeasonSummary` resource follows `SeasonStarted` and `SeasonDone` whether or not the editor is open. `season_lines` writes the Season section under the Advance-season button:
+  - `Season N running`, if a season is in progress;
+  - for the last finished season: chunks changed and total sub-step ms; rain, vented and lost water; net change per substance and per gas (the §7 conservation terms); plants born and died; transitions, weathered cells and ignitions;
+  - the same water, substance and gas nets for `between_seasons`.
+- Brush. `brush_materials` is now every `Solid` or `Liquid` material, so water and magma join ice, crushed_sulfide and copper_dust (all already Solid). The host's §7.0 displacement already fills brushed water and heats brushed magma.
+- Cell readout. `CellReadout.plant` (`PlantReadout`) holds species, growth, age, stress and nonzero held substances. The panel shows `Plant: fireweed · growth 255 (mature) · age 2 · stress 0` and `Held: cu 40`.
+- `ClientEco.plants` holds the species keys from `plants.ron`. The game (`rmc_app::session::client_eco`) and the test kit fill it.
+- `docs/CONTROLS.md` describes the new brush materials, the picker, the season summary and the plant readout.
+Tests added:
+- `editor::tests::eco_panel_lists_layers_and_report`:
+  - Overlay: the choices, their names with and without tables, unique names, the picker following F7 and a pick, and the pick setting `MeshColorSource`.
+  - Seasons: the summary over `SeasonStarted` / `SeasonDone` messages, with exact `season_lines` for a sample report and the lines drawn in the panel.
+  - Brush: the five materials are brushable and air is not; `Set(water)` goes on the face-normal side; next and previous step through the liquids.
+  - Plants: readout lines for a young and a mature fireweed, with and without tables, none for air, and the lines shown in the panel's Cell section.
+- TDD: with the new functions stubbed, the test failed at the overlay choice count (`left: 0, right: 20`).
+- `test-fix:` commit 5c62d64: `keys_change_editor_state` had its own copy of the brush list rule ("every Solid material"). It now walks `brush_materials` and still checks id order, every solid present and no air. The cycle assertions are unchanged.
+Decisions:
+- "Stage" means the cell's `growth` layer, plus age and stress from `PlantState`. The SAD defines no named stages. A plant at 255 is marked mature, because that is when it spreads (§7.8).
+- Steam moves appear in the summary's Water line (rain, vented, lost), not as a gas. The client doesn't know the steam role, and the per-gas arrays don't carry steam's emit/vent (they mirror the water terms).
+- Gas names in the overlay picker get ` (gas)` so a gas and a substance never share a label. The cell readout's gas line is unchanged.
+- The material picker and `,` / `.` share `brush_materials`, so liquids are in both. Paint with a liquid turns a solid into that liquid. The brush is a debug tool, and the host applies its normal §7.0 rules.
+Next:
+- F170 (`grass_greens_swale`, `fireweed_takes_copper`) is unblocked. Read the F168 Next notes first: the shipped worldgen starts with no plants, and grass needs anchor moisture ≥ 16 and `n` ≥ 2.
+- E5 is not complete, so no playtester run.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
