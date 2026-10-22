@@ -3489,3 +3489,25 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 06:00 — F167 Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material — passed
+Done:
+- The uptake, `holds` and harvest rules were already in place: F165 built `GrowthPass` uptake, and the §7.0 displacement already had harvest on dig. This feature adds their tests and the two missing pieces below.
+- Brush planting (`rmc_world::displace`). A brush `Set`, `Paint` or `Place` that makes a cell a species' material now starts a fresh `PlantState` of that species there. The new state is recorded in the edit's effects, so it reaches the replica in the `Layers` delta and bumps `eco_revision`. `EcoRules` gains `plant_materials` (material per species index), filled by `EcoTables::displacement_rules` from `plants.ron`. Season passes do not plant this way: spread still calls `eco_put_plant` itself, and a tall top still gets no state.
+- `TestApp::harvest(cell) -> Inventory` (SAD-P2 §11): one `Damage(u16::MAX)` edit from the local player. It returns what the harvest added to the player's host inventory, and panics if the cell holds no plant.
+Tests added:
+- `plants::tests::uptake_invariant_over_life_death_harvest`: two fireweeds (one anchored in the chunk below) and a grass. One `InvariantChecker` covers 10 growth passes, a death that returns `held` to the anchor, and a dig that harvests the other fireweed. The yields are fireweed 1 and `copper_dust` `max(1, held >> harvest_shift)`, and `harvest_out` equals `held`. The copper total ends at its start minus the harvest.
+- `plants::tests::fireweed_holds_copper_anchor_cu_falls`: anchor cu at 5× `tox_plant`. Each pass the anchor loses the uptake and `held` gains it. Nothing is sunk, there is no stress, and the anchor drains to 0.
+- `plants::tests::fireweed_survives_copper_grass_dies`: on copper above the grass and moss caps, grass and moss die together at exactly `stress_death` passes, leaving litter and taking no cu. Fireweed lives, unstressed, holding `rate × stress_death`. Grass and moss controls on clean soil live.
+- `rmc_testkit eco::tests::harvest_yields_copper_dust_and_ledgers`: a `Patch` with cu 120. Fireweed is planted with the brush on the patch and on clean ground. After one season the patch fireweed holds cu and the clean one holds 0. `harvest` returns fireweed plus `copper_dust` and moves `held` into `between_seasons.harvest_out`; the layers are unchanged. The clean fireweed yields only itself. Replica hash equals host hash, and the next season's report carries the harvest.
+- `edit::tests::brush_plant_material_starts_a_plant` (rmc_world): the new plant travels in the `Layers` delta and bumps `eco_revision`. Re-setting the same material keeps the state. `eco_set` does not plant. Without a species row, the brush plants nothing.
+- `tables::tests::displacement_rules_come_from_roles_and_params` also checks `plant_materials`.
+- TDD: the three rmc_eco tests passed on first run, because the behaviour already existed. A mutation that turned `holds` off made all three fail, along with `needs_met_grows`. The testkit test first failed to compile (no `harvest`), then failed at "the brush plants a fireweed" until brush planting existed.
+Decisions:
+- The SAD gives no way to put a plant into the world except worldgen (F168) and spread. The test kit and the F170 scenario ("fireweed and grass planted") need one, so a brush edit of a plant material plants it. This also lets a player replant a harvested plant with `Place`. The anchor is not checked when planting: growth doesn't read `anchor_tags` (F165), and the brush is a debug tool.
+- The rmc_world edit-test fixture `eco_rules` sets `plant_materials: Vec::new()`. That is a new field added to a struct literal; the fixture's behaviour does not change, so its existing tests do not see brush planting.
+Next:
+- F168 (worldgen surface plants) and F169 (editor eco panel) are unblocked. F170 waits on F168.
+- E5 is not complete, so no playtester run.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
