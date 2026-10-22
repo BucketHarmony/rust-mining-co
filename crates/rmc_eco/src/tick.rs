@@ -19,6 +19,7 @@ use crate::activity::{Activity, JacobiKind};
 use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::{Emission, GasPass};
 use crate::light::LightPass;
+use crate::plants::{GrowthPass, age_plants};
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
@@ -68,6 +69,8 @@ pub enum PassId {
     Reactions,
     /// Light (§7.7), reported whether or not the world was dirty.
     Light,
+    /// Plant growth (§7.8).
+    Growth,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -97,6 +100,8 @@ struct Passes {
     reactions: ReactionsPass,
     /// §7.7, after chemistry.
     light: LightPass,
+    /// §7.8 growth, after light.
+    growth: GrowthPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -153,6 +158,7 @@ pub fn season_tick_observed(
         transport: Transport::new(tables),
         reactions: ReactionsPass::new(tables),
         light: LightPass::new(tables),
+        growth: GrowthPass::new(tables),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
@@ -167,6 +173,8 @@ pub fn season_tick_observed(
             .substep_ms
             .push(u32::try_from(ms).unwrap_or(u32::MAX));
     }
+    // §7.8: a season has passed for every plant.
+    age_plants(world);
     tracing::info!(
         season,
         substeps = report.substep_ms.len(),
@@ -181,8 +189,8 @@ pub fn season_tick_observed(
 /// The gases (§7.4) run one sweep per gas row, then emission.
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
-/// this sub-step. Light (§7.7) runs last, and only when the world is
-/// dirty. Only the flow and gas sweeps add an
+/// this sub-step. Light (§7.7) runs only when the world is dirty. Plant
+/// growth (§7.8) runs last. Only the flow and gas sweeps add an
 /// `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
@@ -270,6 +278,15 @@ fn substep(
         report.light_recomputes += 1;
     }
     after(PassId::Light, world, &report.ledger);
+    jacobi(
+        JacobiKind::PlantGrowth,
+        &passes.growth,
+        world,
+        activity,
+        exec,
+        report,
+    );
+    after(PassId::Growth, world, &report.ledger);
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -409,10 +426,10 @@ mod tests {
                 );
             }
             // One Jacobi entry per Jacobi pass per sub-step (temperature,
-            // transitions, weathering and reactions so far), never more
-            // chunks than the world has.
+            // transitions, weathering, reactions and plant growth), never
+            // more chunks than the world has.
             for r in &ra {
-                assert_eq!(r.active_chunks_per_jacobi.len(), 4 * substeps);
+                assert_eq!(r.active_chunks_per_jacobi.len(), 5 * substeps);
                 assert!(r.active_chunks_per_jacobi.iter().all(|&n| n <= 2));
             }
             // The season row matters: the next row's `air_temp` gives a
@@ -756,6 +773,7 @@ mod tests {
                         (i, PassId::Transport),
                         (i, PassId::Reactions),
                         (i, PassId::Light),
+                        (i, PassId::Growth),
                     ]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");

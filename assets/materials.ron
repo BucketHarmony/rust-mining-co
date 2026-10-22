@@ -2,6 +2,8 @@
 // `id` must equal the entry's position; 0 is air. Keys are stable across versions.
 // Worldgen and tools filter on `tags` and `phase`, never on ids or keys.
 // Changing any field changes the table hash, which Hello and the save header carry.
+// Anchors (SAD-P2 §7.0, §7.8): soil and stone rows are `anchor`, so a dying
+// plant returns its held substances into the cell it grew on.
 // Heat (SAD-P2 §7.1): surface materials (soil, air) conductivity 64 and capacity 8,
 // so 1.6 °C differences move heat; rock 16 and 32, so deep rock stays quiet.
 [
@@ -9,21 +11,21 @@
      hardness: 0, diggable: false, yield_count: 0, color: (0, 0, 0, 0), emissive: 0.0, conductivity: 64, heat_capacity: 8),
 
     (id: 1, key: "topsoil", phase: Solid, tags: ["soil"],
-     hardness: 10, diggable: true, yield_count: 1, color: (86, 125, 54, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
+     hardness: 10, diggable: true, yield_count: 1, color: (86, 125, 54, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8, anchor: true),
     (id: 2, key: "dirt", phase: Solid, tags: ["soil"],
-     hardness: 15, diggable: true, yield_count: 1, color: (121, 85, 58, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
+     hardness: 15, diggable: true, yield_count: 1, color: (121, 85, 58, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8, anchor: true),
     (id: 3, key: "clay", phase: Solid, tags: ["soil"],
-     hardness: 20, diggable: true, yield_count: 1, color: (166, 112, 82, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8),
+     hardness: 20, diggable: true, yield_count: 1, color: (166, 112, 82, 255), emissive: 0.0, conductivity: 64, heat_capacity: 8, anchor: true),
 
     (id: 4, key: "stone", phase: Solid, tags: ["stone"],
-     hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
+     hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32, anchor: true),
     (id: 5, key: "granite", phase: Solid, tags: ["stone"],
-     hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32),
+     hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32, anchor: true),
     // Basalt (SAD-P2 §5) holds calcium (as lime), iron and phosphorus. It
     // does not weather, so the composition stays locked in.
     (id: 6, key: "basalt", phase: Solid, tags: ["stone"],
      hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32,
-     composition: [("lime", 40), ("fe", 40), ("p", 20)]),
+     composition: [("lime", 40), ("fe", 40), ("p", 20)], anchor: true),
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0,
@@ -65,7 +67,7 @@
     (id: 15, key: "limestone", phase: Solid, tags: ["stone", "carbonate", "porous"],
      hardness: 25, diggable: true, yield_count: 1, color: (196, 188, 160, 255), emissive: 0.0,
      conductivity: 16, heat_capacity: 32, permeability: 32, field_capacity: 24,
-     weathering_rate: 2, weathers_to: Some("clay"), composition: [("lime", 120)]),
+     weathering_rate: 2, weathers_to: Some("clay"), composition: [("lime", 120)], anchor: true),
     // Crushed sulfide (SAD-P2 §5): what sulfide_ore yields. Placeable tailings
     // that hold water and weather fast, releasing the ore's composition.
     (id: 16, key: "crushed_sulfide", phase: Solid, tags: ["sulfide", "porous", "placeable"],
@@ -112,4 +114,20 @@
     (id: 24, key: "salt_crust", phase: Solid, tags: ["crust"],
      hardness: 5, diggable: true, yield_count: 0, color: (238, 234, 222, 255), emissive: 0.0,
      composition: [("salt", 80)]),
+
+    // Plants (SAD-P2 §5, §7.8): passable solids. The controller and light
+    // treat them as air; they are meshed and dug like any solid. Rows in
+    // plants.ron name them; the growth pass keeps their PlantState.
+    (id: 25, key: "moss", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (78, 112, 52, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 26, key: "grass", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (104, 164, 62, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 27, key: "fireweed", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (186, 72, 138, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 28, key: "shrub", phase: Solid, tags: ["plant"],
+     hardness: 4, diggable: true, yield_count: 1, color: (66, 98, 44, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
 ]

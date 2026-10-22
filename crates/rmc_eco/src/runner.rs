@@ -101,6 +101,21 @@ pub struct Queued {
     pub then_set: Option<(MaterialId, i32)>,
 }
 
+impl Queued {
+    /// A material change for any resident cell (SAD-P2 §7.8 step 4: a tall
+    /// plant's upper cell may lie in the chunk above), applied with the
+    /// other queued conversions. It is a conversion at threshold 0 on a
+    /// layer it leaves unchanged, so it always fires.
+    pub fn set_material(target: CellPos, material: MaterialId) -> Self {
+        Self {
+            target,
+            layer: LayerId::Growth,
+            amount: 0,
+            then_set: Some((material, 0)),
+        }
+    }
+}
+
 /// A Jacobi pass: a pure function of the previous state.
 pub trait JacobiPass: Sync {
     /// Computes one chunk's changes. Must read only through `view`.

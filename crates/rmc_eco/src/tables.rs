@@ -255,6 +255,12 @@ pub struct EcoParams {
     // §7.8 plants
     pub stress_death: u8,
     pub harvest_shift: u8,
+    /// §7.8 step 4: a `tall` plant whose growth is above this occupies the
+    /// cell above as well. `None` (tables written before F165): tall plants
+    /// stay one cell. Not encoded when `None`, so older tables keep their
+    /// hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tall_growth: Option<u8>,
     // §7.9 activity
     pub quiet_skip: u8,
 }

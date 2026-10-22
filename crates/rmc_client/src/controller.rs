@@ -205,15 +205,24 @@ impl MoveInput {
     }
 }
 
-/// Whether `cell` stops the player: a `Solid` cell, a cell below or beside
-/// the world bounds, or a cell in a chunk the world does not hold. Cells
-/// above the top of the world are open.
+/// Whether `cell` stops the player: a `Solid` cell that is not `passable`
+/// (SAD-P2 §5: plants are walked through), a cell below or beside the world
+/// bounds, or a cell in a chunk the world does not hold. Cells above the
+/// top of the world are open.
 pub fn blocks(world: &World, cell: CellPos) -> bool {
     let bounds = world.bounds();
     if cell.0.y > bounds.max.0.y {
         return false;
     }
-    world.get_cell(cell).is_none() || world.is_solid(cell)
+    world.get_cell(cell).is_none() || collides(world, cell)
+}
+
+/// Whether `cell` holds a `Solid`, non-`passable` material.
+fn collides(world: &World, cell: CellPos) -> bool {
+    world
+        .get_cell(cell)
+        .and_then(|id| world.materials().get(id))
+        .is_some_and(|d| d.is_solid() && !d.passable)
 }
 
 /// One fixed step of `dt` seconds: push-out, jump, gravity, walk input, then
@@ -304,7 +313,8 @@ pub fn push_out(world: &World, player: &mut Player) -> bool {
     true
 }
 
-/// Whether `aabb` shares volume with a `Solid` cell of `world`.
+/// Whether `aabb` shares volume with a `Solid`, non-`passable` cell of
+/// `world`.
 fn overlaps_solid(world: &World, aabb: Aabb) -> bool {
     let lo = (aabb.min / CELL_SIZE_M).floor().as_ivec3();
     let hi = (aabb.max / CELL_SIZE_M).floor().as_ivec3();
@@ -312,7 +322,7 @@ fn overlaps_solid(world: &World, aabb: Aabb) -> bool {
         (lo.z..=hi.z).any(|z| {
             (lo.x..=hi.x).any(|x| {
                 let cell = CellPos::new(x, y, z);
-                aabb.overlaps_cell(cell) && world.is_solid(cell)
+                aabb.overlaps_cell(cell) && collides(world, cell)
             })
         })
     })
@@ -1145,6 +1155,57 @@ mod tests {
             "lands below the ledge: {:?}",
             player.feet
         );
+    }
+
+    #[test]
+    fn walks_through_passable_plant() {
+        // SAD-P2 §5: the controller treats passable solids (plants) as air.
+        let t = materials();
+        let plants: Vec<MaterialId> = t
+            .iter()
+            .filter(|d| d.is_solid() && d.passable)
+            .map(|d| d.id)
+            .collect();
+        assert!(!plants.is_empty(), "the shipped table has passable plants");
+        for &plant in &plants {
+            let name = &t.get(plant).unwrap().key;
+            // A two-cell plant wall (top 3.0 m) where a stone one would stop
+            // the player at x = 10.0 m (see `two_cell_wall_blocks`).
+            let mut world = floor_world();
+            fill(&mut world, (20, 4, 0), (21, 5, 63), plant);
+            assert!(!blocks(&world, CellPos::new(20, 4, 16)), "{name}");
+            assert!(world.is_solid(CellPos::new(20, 4, 16)), "{name} is solid");
+            let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+            player.yaw = -std::f32::consts::FRAC_PI_2; // +X
+            run(&world, &mut player, MoveInput::default(), 5);
+            let rose = walk_up(&world, &mut player, FORWARD, 120);
+            assert!(rose.is_empty(), "{name}: climbed at steps {rose:?}");
+            assert!(
+                player.aabb().min.x > 11.0,
+                "{name}: walked through the plants, {}",
+                player.aabb().min.x
+            );
+            assert!(player.grounded, "{name}");
+            assert!((player.feet.y - 2.0).abs() <= 2.0 * SKIN_M, "{name}");
+
+            // Standing inside a plant is not embedded: no push-out.
+            let mut inside = Player::at(Vec3::new(10.25, 2.0, 16.25));
+            assert!(!push_out(&world, &mut inside), "{name}");
+            assert_eq!(inside.feet, Vec3::new(10.25, 2.0, 16.25));
+
+            // A plant layer over a pit is no floor: the player falls through
+            // it onto the stone below.
+            let mut world = floor_world();
+            fill(&mut world, (0, 3, 0), (63, 3, 63), plant);
+            let mut player = Player::at(Vec3::new(16.0, 3.0, 16.0));
+            run(&world, &mut player, MoveInput::default(), 120);
+            assert!(player.grounded, "{name}");
+            assert!(
+                (player.feet.y - 1.5).abs() <= 2.0 * SKIN_M,
+                "{name}: fell through the plant layer, {}",
+                player.feet.y
+            );
+        }
     }
 
     #[test]

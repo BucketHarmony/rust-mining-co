@@ -42,6 +42,8 @@
         // §7.8 plants: sub-steps of unmet needs before death
         stress_death: 16,
         harvest_shift: 3,
+        // §7.8 step 4: tall species occupy the cell above past this growth
+        tall_growth: Some(192),
         // §7.9 activity: quiet Jacobi passes before a chunk is skipped
         quiet_skip: 2,
     ),

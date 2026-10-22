@@ -8,6 +8,7 @@ pub mod gases;
 pub mod invariants;
 pub mod ledger;
 pub mod light;
+pub mod plants;
 pub mod reference;
 pub mod runner;
 pub mod tables;
@@ -23,6 +24,7 @@ pub use gases::GasPass;
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
 pub use ledger::SeasonLedger;
 pub use light::{LightGrid, LightPass};
+pub use plants::{GrowthPass, age_plants};
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };
