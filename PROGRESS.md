@@ -3644,3 +3644,29 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the moss acid cap change (above); the shipped world still starts with no plants (F168, F170); the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 11:00 — F172 Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world; docs/perf-p2.md — passed
+Done:
+- `rmc_eco::bench_support` holds the bench bodies and their setup as plain functions:
+  - `quiet_tables`, `install`, `settle` (2 quiet seasons, `SETTLE_SEASONS`);
+  - the timed bodies `tick_quiet`, `tick_first`, `water_sweep_world`, `chem_transport_world`;
+  - `add_substances` and `rained_moves` for the transport bench's input.
+- `crates/rmc_eco/benches/{tick_quiet,tick_first,water_sweep_world,chem_transport_world}.rs`, all `harness = false`.
+  - They share `benches/common/mod.rs`, which generates the default 4 × 2 × 4-chunk world (seed 1) from the shipped assets with every Phase 2 worldgen step.
+  - Setup is lazy, inside the first `bench_function` call, so a filtered run (`verify-features` passes `--exact <name>` to every target) skips the world build.
+- `docs/perf-p2.md` records the release results (below) and the §13 targets not yet measured.
+Tests added:
+- `cargo:rmc_eco:benches_run_once` (`crates/rmc_eco/tests/benches_run_once.rs`) runs each body once on a 1 × 2 × 1-chunk generated world, in about 2 s.
+- `benches_declared` in the same file checks that each bench is declared with `harness = false`, calls its `bench_support` function and has a measured row in `docs/perf-p2.md`.
+- TDD: against stubbed bodies the test failed at `substep_ms.len()` (`left: 0, right: 8`), and `benches_declared` failed for lack of `docs/perf-p2.md`.
+Decisions:
+- **`rmc_eco` dev-depends on `rmc_worldgen`, which depends on `rmc_eco`.** Cargo allows this cycle for dev-dependencies. Integration tests and benches link the same `rmc_eco` library that worldgen does. Unit tests inside `rmc_eco` must not use worldgen types with `rmc_eco` types, because there they would be two copies of the crate. The library itself still cannot generate worlds, so the callers hand the world in.
+- A "quiescent world" (§13: rain 0, constant `air_temp`) is the season table with every row set to rain 0 and row 0's `air_temp` (the temperature worldgen lays the surface at), after 2 quiet settling seasons. The timed iterations go on ticking the same world, with the activity carried over as the host keeps it.
+- `water_sweep_world` times one flow sweep (iteration 0) over a freshly installed world. `chem_transport_world` replays one sub-step's flow-sweep moves after season 0 rain, with 64 of every substance in every cell. Worldgen lays no substances, so this is a deliberate worst case. `add_substances` uses `SetLayer` edits, one per chunk and substance, because one edit covers at most 32 768 cells.
+- Each batched routine returns the world, so copying and dropping it stay outside the timed region.
+Results (release, i9-12900KF): `tick_first` 10.9 s (target < 5 s, **missed**); `tick_quiet` 6.48 s (target < 1 s, **missed**); `water_sweep_world` 86.9 ms; `chem_transport_world` 861 ms.
+Next:
+- F173 (performance pass, activity tuning) is unblocked. The quiet tick costs about 60% of the first season's tick, so the work that runs when nothing changes is the place to look. Profile with `cargo bench -p rmc_eco --bench tick_quiet`.
+- `quiet_world_tick_under_dev_budget` is a unit test in `rmc_eco::tick`, so it cannot call worldgen (see the dev-dependency decision). It needs a world built inside `rmc_eco`, or the test path in features.json has to change.
+- E5 is not complete, so no playtester run.
+Blockers: none.
