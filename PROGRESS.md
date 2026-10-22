@@ -3410,3 +3410,54 @@ Next:
 - F169 (editor eco panel) is also unblocked.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 00:03 — F165 Plant species table, plant cells as passable solids, PlantState map, needs check and growth — passed
+Done:
+- `assets/materials.ron`:
+  - new rows moss (25), grass (26), fireweed (27) and shrub (28). They are `phase: Solid`, `tags: ["plant"]`, `passable: true` and diggable, and are the materials plants.ron names;
+  - `anchor: true` on topsoil, dirt, clay, stone, granite, basalt and limestone, so a dying plant's `held` returns into its anchor (§7.0).
+- New `rmc_eco::plants`:
+  - `GrowthPass` is a Jacobi pass (§7.8) over each chunk's `plants` map. It runs the needs check (light and temperature at the plant; moisture and substance_min/max at the anchor), then stress, then death, then growth and uptake, then the tall top.
+  - `age_plants` adds one season to every plant's age, in sorted order.
+- `season_tick` runs growth (`JacobiKind::PlantGrowth`, `PassId::Growth`) after light in every sub-step, and ages plants after the last sub-step.
+- `eco.ron` gains `tall_growth: Some(192)`. `EcoParams.tall_growth` is an `Option` with `skip_serializing_if`, so the fixture table hash is unchanged.
+- `Queued::set_material` is the runner constructor for the tall top.
+- The controller treats passable solids as air (`collides`), for blocking, push-out and grounding.
+Tests added:
+- `plants::tests::needs_met_grows` covers:
+  - growth and uptake for sunk (grass, shrub) and held (fireweed) species, including an anchor in the chunk below;
+  - each need broken alone: stressed, but still growing and taking up;
+  - stress reset, growth saturating at 255, uptake limited by the anchor and by `held`'s u8 room;
+  - the tall top in the chunk above: not placed at exactly `tall_growth`, and not placed over a solid;
+  - Serial equals Parallel.
+- `plants::tests::stress_death_litter_ledgered_source` covers:
+  - deaths from stress and from lifespan, including the tall top;
+  - litter as `litter_in`, with overflow to `saturation_loss`;
+  - `held` returned to an anchor in another chunk;
+  - a survivor one step short of death that still grows.
+- `plants::tests::plants_age_each_season_and_die_at_lifespan`: two full season ticks with invariants checked after every pass.
+- `controller::tests::walks_through_passable_plant`: no blocking, no push-out, and falls through plants, for every shipped passable solid.
+- TDD: the plant tests failed before `GrowthPass` existed, and the controller test failed before `collides`.
+- Updated counts that follow the tick's passes: 4→5 Jacobi entries per sub-step in `tick::tests::whole_tick_deterministic_100` and `rmc_host::season` tests, and `PassId::Growth` in `tick::tests::invariants_hold_after_each_pass_20_worlds`.
+- Separate commit `test-fix: fixtures tolerate shipped plant materials` (8ca699f):
+  - the water.rs and tick.rs `rich_tables` fixtures appended their own `moss`, which is now a DuplicateKey;
+  - the bots.rs `course()` and the `dig_cell_visible` e2e picked "a plain diggable solid", which became the passable moss, so they now skip passable solids and their old picks are restored;
+  - no assertion changed.
+Decisions:
+- §7.8 step 3's "Else" is read literally as the else of the death check: every plant that does not die grows and takes up, stressed or not. The reviewer flagged an earlier draft that stopped stressed plants.
+- Age increases once per season, at the end of `season_tick`. A plant that reaches its lifespan dies in the next season's first growth pass.
+- Holds uptake is capped by `held`'s u8 room so that conservation is exact. What doesn't fit stays in the anchor. The SAD has no cap.
+- Death sets the cell to air through `eco_set`. Its §7.0 displacement removes the plant state, returns `held` (with `min` against room, and `saturation_loss` for the rest) and removes a tall top. Litter is a queued delta on the anchor, booked as `litter_in`; the runner's clamp charges any overflow to `saturation_loss`.
+- The anchor and the tall top may lie in a neighbouring chunk, so they are written as `Queued` changes applied after all chunks, in sorted order. Only one plant sits on an anchor, so the deltas never compete.
+- These plant cells are skipped:
+  - a cell whose material isn't its species' material;
+  - a plant whose anchor is itself a plant (a tall top has no state anyway).
+- `anchor_tags` isn't read by growth. Anchor loss is handled by displacement (`kill_plant_above`). Spread (F166) must use `anchor_tags`.
+- `tall_growth` (192 in the SAD text) is an eco.ron param under rule 19.
+- Only the controller treats passable solids as air. The mesher and raycast still draw and target plants like any solid, so they can be seen and dug.
+Next:
+- F166 (plant spread sweep) builds on `GrowthPass` and `plants_born`.
+- F169 (editor eco panel) is still unblocked.
+- E5 is not complete, so no playtester run.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
