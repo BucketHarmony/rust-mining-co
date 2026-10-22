@@ -20,7 +20,9 @@
 //! later is marked then. Layer changes (`LayerSnapshot`, `ChunkDelta::Layers`)
 //! change meshes only through the fill of liquid-pass cells (SAD-P2 §10), so
 //! they mark a chunk only if it holds a liquid-pass material, together with
-//! its neighbours that hold one too.
+//! its neighbours that hold one too. While the layer overlay is shown
+//! ([`Replica::set_layer_remesh`]), every mesh shows layer values, so a
+//! layer change marks its chunk and every neighbour.
 //!
 //! If a message was lost, the next delta for an affected chunk is more than
 //! one revision ahead of the replica's. The replica then writes a
@@ -74,6 +76,9 @@ pub struct Replica {
     awaiting: BTreeSet<ChunkPos>,
     /// Resident chunks whose mesh is out of date.
     dirty: BTreeSet<ChunkPos>,
+    /// Whether layer changes remesh every chunk they touch (the layer
+    /// overlay is on), not only liquid ones.
+    layer_remesh: bool,
 }
 
 impl Replica {
@@ -83,6 +88,7 @@ impl Replica {
             player,
             awaiting: BTreeSet::new(),
             dirty: BTreeSet::new(),
+            layer_remesh: false,
         }
     }
 
@@ -94,18 +100,32 @@ impl Replica {
             player: PlayerId(1),
             awaiting: BTreeSet::new(),
             dirty: BTreeSet::new(),
+            layer_remesh: false,
         }
     }
 
-    /// Marks every resident chunk dirty, for tests of the mesh pipeline's
-    /// readers.
-    #[cfg(test)]
+    /// Marks every resident chunk dirty: the mesh pipeline does this when
+    /// the mesh color source changes, and tests of its readers.
     pub(crate) fn mark_all_dirty(&mut self) {
         self.dirty = self
             .world
             .iter_chunks_sorted()
             .map(|(pos, _)| pos)
             .collect();
+    }
+
+    /// Whether layer changes remesh every chunk they touch rather than
+    /// only liquid ones; see [`Replica::set_layer_remesh`].
+    pub fn layer_remesh(&self) -> bool {
+        self.layer_remesh
+    }
+
+    /// While on (the layer overlay is shown, SAD-P2 §10), a `LayerSnapshot`
+    /// or `ChunkDelta::Layers` marks its chunk and all 26 neighbours,
+    /// whose mesh border holds its cells. While off, only liquid meshes
+    /// follow layers ([`Replica::mark_liquid`]).
+    pub fn set_layer_remesh(&mut self, on: bool) {
+        self.layer_remesh = on;
     }
 
     /// The replica world. Read-only: only host messages change it.
@@ -149,7 +169,8 @@ impl Replica {
     ///   its layers and plants come with it.
     /// - `LayerSnapshot` replaces a resident chunk's layers and plants,
     ///   unless the replica is waiting for that chunk's full snapshot.
-    ///   Layers change only liquid meshes ([`Replica::mark_liquid`]).
+    ///   Layers change only liquid meshes ([`Replica::mark_liquid`]),
+    ///   unless the overlay is on ([`Replica::set_layer_remesh`]).
     /// - `Applied` applies each delta in order. A delta for a chunk the
     ///   replica is waiting for is ignored. A delta more than one revision
     ///   ahead is a gap: `pos` goes into `requests` and the replica waits for
@@ -218,7 +239,7 @@ impl Replica {
                                 self.mark_with_neighbours(pos);
                                 self.mark_shell_below_chunk(pos);
                             }
-                            ChunkDelta::Layers { .. } => self.mark_liquid(pos),
+                            ChunkDelta::Layers { .. } => self.mark_layers(pos),
                         },
                         Err(DeltaError::RevisionGap { local, got, .. }) if got > local => {
                             debug!(?pos, local, got, "revision gap, requesting chunk");
@@ -244,7 +265,7 @@ impl Replica {
                 self.world
                     .apply_eco_snapshot(*pos, *eco_revision, layers.clone(), plants.clone())
                     .map_err(ReplicaError::LayerSnapshot)?;
-                self.mark_liquid(*pos);
+                self.mark_layers(*pos);
             }
             ServerMsg::Welcome { .. }
             | ServerMsg::Rejected { .. }
@@ -379,6 +400,16 @@ impl Replica {
                     }
                 }
             }
+        }
+    }
+
+    /// After a layer change in `pos`: with [`Replica::layer_remesh`] on,
+    /// `pos` and its neighbours; else [`Replica::mark_liquid`].
+    fn mark_layers(&mut self, pos: ChunkPos) {
+        if self.layer_remesh {
+            self.mark_with_neighbours(pos);
+        } else {
+            self.mark_liquid(pos);
         }
     }
 

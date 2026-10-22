@@ -23,6 +23,13 @@
 //!   order (then the lowest entity); with none, the world origin.
 //! - A new `Welcome` drops every job, queue entry and chunk mesh: the new
 //!   replica marks all its chunks dirty itself.
+//! - The layer overlay (SAD-P2 §10): jobs mesh with the current
+//!   [`MeshColorSource`]. When it changes, every resident chunk is marked
+//!   dirty and remeshed with the initial-load (burst) upload budget until the
+//!   pipeline is idle again ([`MeshStats::recoloring`]). While the source is
+//!   a layer, the replica's layer changes remesh the chunks they touch
+//!   ([`Replica::set_layer_remesh`]); otherwise only liquid meshes follow
+//!   layers.
 //!
 //! Each job runs both passes of the [`Mesher`]: the opaque mesh goes on a
 //! [`ChunkMesh`] entity, and the liquid pass (SAD-P2 §10) on a separate
@@ -49,7 +56,7 @@ use rmc_protocol::ServerMsg;
 use rmc_world::coords::{CHUNK_SIZE, CellPos, ChunkPos};
 
 use crate::eco::ClientEco;
-use crate::mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput};
+use crate::mesher::{ChunkMesher, ColorSource, GreedyMesher, MeshData, MeshInput};
 use crate::net::FromHost;
 use crate::replica::Replica;
 
@@ -84,6 +91,11 @@ impl Default for Mesher {
         Self(Arc::new(GreedyMesher))
     }
 }
+
+/// What colors the chunk meshes (SAD-P2 §10): the materials, or the layer
+/// overlay the editor picked. The jobs mesh with the current source.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshColorSource(pub ColorSource);
 
 /// The uploaded mesh of one chunk. The entity sits at the chunk's minimum
 /// corner, since mesh positions are chunk-local.
@@ -154,6 +166,10 @@ pub struct MeshStats {
     /// Whether the replica has been fully meshed once since the last
     /// `Welcome`: every chunk in its bounds resident and meshed.
     pub initial_load_done: bool,
+    /// Whether a change of [`MeshColorSource`] is being remeshed: from the
+    /// change until the pipeline is idle and nothing is dirty. Uploads use
+    /// the initial-load budget meanwhile.
+    pub recoloring: bool,
 }
 
 /// A job's output: the opaque mesh and the liquid mesh.
@@ -194,6 +210,10 @@ pub struct MeshQueue {
     uploads_last_frame: usize,
     last_mesh_ms: f32,
     initial_load_done: bool,
+    /// The color source the current meshes were queued with.
+    color_source: ColorSource,
+    /// A color source change is being remeshed.
+    recoloring: bool,
 }
 
 impl MeshQueue {
@@ -290,6 +310,7 @@ impl MeshQueue {
             uploads_last_frame: self.uploads_last_frame,
             last_mesh_ms: self.last_mesh_ms,
             initial_load_done: self.initial_load_done,
+            recoloring: self.recoloring,
         }
     }
 }
@@ -305,6 +326,7 @@ pub struct MeshPipelinePlugin;
 impl Plugin for MeshPipelinePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MeshBudget>()
+            .init_resource::<MeshColorSource>()
             .init_resource::<Mesher>()
             .init_resource::<MeshQueue>()
             .init_resource::<MeshStats>()
@@ -312,6 +334,7 @@ impl Plugin for MeshPipelinePlugin {
                 Update,
                 (
                     reset_on_welcome,
+                    follow_color_source,
                     queue_dirty,
                     poll_jobs,
                     start_jobs,
@@ -361,6 +384,29 @@ fn reset_on_welcome(
     *queue = MeshQueue::default();
     for entity in &meshes {
         commands.entity(entity).despawn();
+    }
+}
+
+/// Follows [`MeshColorSource`]: on a change, marks every resident chunk
+/// dirty and starts a recolor (burst upload budget). Keeps the replica's
+/// layer remesh on while the source is a layer.
+fn follow_color_source(
+    source: Res<MeshColorSource>,
+    replica: Option<ResMut<Replica>>,
+    mut queue: ResMut<MeshQueue>,
+) {
+    let Some(mut replica) = replica else {
+        return;
+    };
+    let overlay = source.0 != ColorSource::Material;
+    if replica.layer_remesh() != overlay {
+        replica.set_layer_remesh(overlay);
+    }
+    if queue.color_source != source.0 {
+        queue.color_source = source.0;
+        queue.recoloring = true;
+        replica.mark_all_dirty();
+        info!(source = ?source.0, "mesh color source changed, remeshing");
     }
 }
 
@@ -460,7 +506,9 @@ fn start_jobs(
         queue.queued.remove(&pos);
         // Water's color follows its dissolved substances (SAD-P2 §10).
         let tint = eco.as_ref().map_or(&[][..], |e| &e.tint[..]);
-        let Some(input) = MeshInput::from_world_tinted(replica.world(), pos, tint) else {
+        // The color source as `follow_color_source` last saw it.
+        let source = queue.color_source;
+        let Some(input) = MeshInput::from_world_colored(replica.world(), pos, tint, source) else {
             // No longer resident.
             queue.ready.remove(&pos);
             remove_mesh(&mut commands, queue, pos);
@@ -497,7 +545,7 @@ fn upload_meshes(
     let queue = &mut *queue;
     queue.uploads_last_frame = 0;
     if let Some(replica) = replica {
-        let limit = if queue.initial_load_done {
+        let limit = if queue.initial_load_done && !queue.recoloring {
             budget.uploads_per_frame
         } else {
             budget.initial_uploads_per_frame
@@ -545,6 +593,10 @@ fn upload_meshes(
         {
             queue.initial_load_done = true;
             info!(chunks = queue.meshed.len(), "initial meshing done");
+        }
+        if queue.recoloring && queue.is_idle() && replica.dirty().is_empty() {
+            queue.recoloring = false;
+            debug!(chunks = queue.meshed.len(), "recolor done");
         }
     }
     *stats = queue.stats();

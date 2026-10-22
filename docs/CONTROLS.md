@@ -81,6 +81,7 @@ settings.
 | `F4` | Toggle mesh-queue gizmo |
 | `F5` | Save the world |
 | `F6` | Advance one season |
+| `F7` | Next layer overlay (after the last: none) |
 | `F8` | Regenerate the world from the seed |
 | `F9` | Load the saved world |
 
@@ -88,6 +89,11 @@ settings.
   Box is a cube 2 × size + 1 cells on a side. A Cell ignores the size.
 - The brush material cycles through every solid material in id order. Until
   you pick one, the brush uses the first material tagged `placeable`.
+- The layer overlay colors terrain by one ecology layer instead of its
+  material: temperature, moisture, regolith, light, growth, then each
+  substance and each gas, then back to the normal look. Light and gas color
+  a face by the open cell in front of it. The overlay stays on when the
+  editor closes.
 
 ## Brush
 

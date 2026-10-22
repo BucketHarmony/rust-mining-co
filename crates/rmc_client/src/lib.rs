@@ -31,7 +31,8 @@ pub use eco::{CellReadout, ClientEco, EditorReadout, cell_readout, readout_lines
 pub use editor::{
     ADVANCE_SEASON_LABEL, BRUSH_BUTTON, BRUSH_REACH_M, BrushOp, BrushShape, EDITOR_BINDINGS,
     EditorAction, EditorPlugin, EditorState, EditorSystems, GizmoToggles, MAX_BRUSH_SIZE,
-    SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY, brush_command, brush_target, free_feet_near,
+    OVERLAY_LAYERS, SNAP_RADIUS_CELLS, TOGGLE_EDITOR_KEY, brush_command, brush_target,
+    free_feet_near, next_overlay, overlay_source,
 };
 pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use gizmo::{
@@ -51,10 +52,13 @@ pub use material::{
     CELL_JITTER_AMPLITUDE, CELL_JITTER_INSET_M, ChunkEmissiveMaterial, EmissiveChunkMaterial,
     EmissiveFromAlpha, EmissiveMaterialPlugin, cell_jitter, fragment_cell,
 };
-pub use mesher::{ChunkMesher, GreedyMesher, MeshData, MeshInput, is_liquid_pass, is_opaque};
+pub use mesher::{
+    ChunkMesher, ColorSource, Colormap, GreedyMesher, MeshData, MeshInput, is_liquid_pass,
+    is_opaque,
+};
 pub use meshpipe::{
-    ChunkMesh, ChunkMeshState, LiquidMesh, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats,
-    MeshSystems, Mesher,
+    ChunkMesh, ChunkMeshState, LiquidMesh, MeshBudget, MeshColorSource, MeshPipelinePlugin,
+    MeshQueue, MeshStats, MeshSystems, Mesher,
 };
 pub use net::{
     ClientMaterials, CommandSeq, FromHost, HostConnection, HostLink, NetPlugin, NetSystems, ToHost,

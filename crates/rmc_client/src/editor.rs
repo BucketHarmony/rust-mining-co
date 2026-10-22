@@ -35,6 +35,7 @@ use bevy::prelude::*;
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::{EditCommand, EditOp};
+use rmc_world::layers::{LayerId, N_GASES, N_SUBSTANCES};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::shape::Shape;
 use rmc_world::world::World;
@@ -45,6 +46,8 @@ use crate::eco::{ClientEco, EditorReadout, cell_readout, readout_lines};
 use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::gizmo::EditorGizmoPlugin;
 use crate::interp::InterpolatedEye;
+use crate::mesher::ColorSource;
+use crate::meshpipe::MeshColorSource;
 use crate::net::{ClientMaterials, CommandSeq, FromHost, ToHost};
 use crate::panel::{EditorStats, HostTickTime, sample_stats};
 use crate::render::GameCamera;
@@ -69,6 +72,55 @@ pub const BRUSH_REACH_M: f32 = 32.0;
 
 /// How far, in cells, [`free_feet_near`] looks for a spot the player fits.
 pub const SNAP_RADIUS_CELLS: i32 = 8;
+
+/// The layers the overlay picker offers, in the order
+/// [`EditorAction::NextOverlay`] steps through them: the scalar layers, then
+/// every substance, then every gas.
+pub const OVERLAY_LAYERS: [LayerId; 5 + N_SUBSTANCES + N_GASES] = {
+    let mut layers = [LayerId::Temperature; 5 + N_SUBSTANCES + N_GASES];
+    let scalars = [
+        LayerId::Temperature,
+        LayerId::Moisture,
+        LayerId::Regolith,
+        LayerId::Light,
+        LayerId::Growth,
+    ];
+    let mut i = 0;
+    while i < scalars.len() {
+        layers[i] = scalars[i];
+        i += 1;
+    }
+    let mut k = 0;
+    while k < N_SUBSTANCES {
+        layers[scalars.len() + k] = LayerId::Substance(k as u8);
+        k += 1;
+    }
+    let mut k = 0;
+    while k < N_GASES {
+        layers[scalars.len() + N_SUBSTANCES + k] = LayerId::Gas(k as u8);
+        k += 1;
+    }
+    layers
+};
+
+/// The overlay after `current` in [`OVERLAY_LAYERS`]: none steps to the
+/// first layer, the last layer back to none.
+pub fn next_overlay(current: Option<LayerId>) -> Option<LayerId> {
+    match current {
+        None => OVERLAY_LAYERS.first().copied(),
+        Some(id) => OVERLAY_LAYERS
+            .iter()
+            .position(|&l| l == id)
+            .and_then(|i| OVERLAY_LAYERS.get(i + 1).copied()),
+    }
+}
+
+/// The mesh color source for the overlay `overlay`: its layer through
+/// [`Colormap::for_layer`](crate::mesher::Colormap::for_layer), or the
+/// materials for none.
+pub fn overlay_source(overlay: Option<LayerId>) -> ColorSource {
+    overlay.map_or(ColorSource::Material, ColorSource::layer)
+}
 
 /// What the brush does to the cells it covers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -129,6 +181,11 @@ pub struct EditorState {
     /// Set by the Advance-season action; the editor takes it and sends the
     /// host one `AdvanceSeason` (SAD-P2 §10).
     pub season_requested: bool,
+    /// The layer overlay (SAD-P2 §10): the layer the chunk meshes are
+    /// colored by, or `None` for the material colors. The editor keeps
+    /// [`MeshColorSource`] in step with it, and it stays when the editor
+    /// closes.
+    pub overlay: Option<LayerId>,
 }
 
 impl Default for EditorState {
@@ -145,6 +202,7 @@ impl Default for EditorState {
             seed: 0,
             regenerate_requested: false,
             season_requested: false,
+            overlay: None,
         }
     }
 }
@@ -179,6 +237,7 @@ impl EditorState {
             EditorAction::Load => self.load_requested = true,
             EditorAction::Regenerate => self.regenerate_requested = true,
             EditorAction::AdvanceSeason => self.season_requested = true,
+            EditorAction::NextOverlay => self.overlay = next_overlay(self.overlay),
         }
     }
 }
@@ -200,6 +259,7 @@ pub enum EditorAction {
     Load,
     Regenerate,
     AdvanceSeason,
+    NextOverlay,
 }
 
 impl EditorAction {
@@ -224,6 +284,7 @@ impl EditorAction {
             EditorAction::Load => "Load the saved world",
             EditorAction::Regenerate => "Regenerate the world from the seed",
             EditorAction::AdvanceSeason => "Advance one season",
+            EditorAction::NextOverlay => "Next layer overlay (after the last: none)",
         }
     }
 }
@@ -246,6 +307,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F4, EditorAction::ToggleMeshQueue),
     (KeyCode::F5, EditorAction::Save),
     (KeyCode::F6, EditorAction::AdvanceSeason),
+    (KeyCode::F7, EditorAction::NextOverlay),
     (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
@@ -386,6 +448,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F4 => "F4",
         KeyCode::F5 => "F5",
         KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
         KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
         KeyCode::Digit1 => "1",
@@ -439,6 +502,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<EditorStats>()
             .init_resource::<EditorReadout>()
             .init_resource::<HostTickTime>()
+            .init_resource::<MeshColorSource>()
             .add_plugins(EditorGizmoPlugin)
             .add_systems(
                 Update,
@@ -446,6 +510,7 @@ impl Plugin for EditorPlugin {
                     follow_welcome_seed.before(editor_keys),
                     editor_keys,
                     request_season.after(editor_keys),
+                    follow_overlay.after(editor_keys),
                     sample_stats,
                     sample_readout
                         .after(editor_keys)
@@ -496,6 +561,16 @@ fn request_season(mut state: ResMut<EditorState>, mut out: MessageWriter<ToHost>
     if std::mem::take(&mut state.season_requested) {
         out.write(ToHost(ClientMsg::AdvanceSeason));
         info!("season requested");
+    }
+}
+
+/// Keeps [`MeshColorSource`] on the editor's overlay pick. It is written
+/// only when it differs, so the mesh pipeline sees a change only on a pick.
+fn follow_overlay(state: Res<EditorState>, mut source: ResMut<MeshColorSource>) {
+    let want = overlay_source(state.overlay);
+    if source.0 != want {
+        source.0 = want;
+        info!(overlay = ?state.overlay, "layer overlay picked");
     }
 }
 
@@ -644,13 +719,16 @@ mod tests {
     use super::*;
     use crate::controller::ControllerPlugin;
     use crate::flycam::{FLY_TOGGLE_KEY, FlyCamPlugin};
+    use crate::mesher::{ChunkMesher, GreedyMesher, MeshInput};
+    use crate::meshpipe::{ChunkMesh, MeshBudget, MeshPipelinePlugin, MeshQueue, MeshStats};
     use crate::panel::{PANEL_TITLE, PanelView, brush_summary, editor_panel};
     use crate::pickaxe::{Pickaxe, PickaxePlugin, SWING_BUTTON};
+    use crate::replica::ReplicaPlugin;
     use bevy::input::mouse::AccumulatedMouseMotion;
     use bevy::time::TimeUpdateStrategy;
     use bevy_egui::egui;
     use rmc_world::chunk::Chunk;
-    use rmc_world::coords::CellAabb;
+    use rmc_world::coords::{CellAabb, ChunkPos, LocalPos};
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS, PlayerId};
     use rmc_world::shape::Shape;
     use std::collections::BTreeSet;
@@ -1797,5 +1875,212 @@ mod tests {
                 radius: 3
             }
         );
+    }
+
+    // ---- The layer overlay ----
+
+    /// The editor, the replica and the mesh pipeline over [`rock_world`]
+    /// (no liquid), with mesh storage and an upload budget of 1 per frame
+    /// after the initial load.
+    struct OverlayFixture {
+        app: App,
+        /// The most uploads in one frame during the last [`Self::drain`].
+        max_uploads: usize,
+        /// Whether [`MeshStats::recoloring`] was set on some frame of the
+        /// last drain.
+        saw_recoloring: bool,
+    }
+
+    impl OverlayFixture {
+        fn new() -> Self {
+            let mut replica = Replica::from_world(rock_world());
+            replica.mark_all_dirty();
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                    1.0 / 60.0,
+                )))
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<AccumulatedMouseMotion>()
+                .insert_resource(ClientMaterials(materials()))
+                .insert_resource(Assets::<Mesh>::default())
+                .insert_resource(MeshBudget {
+                    max_in_flight: 8,
+                    uploads_per_frame: 1,
+                    initial_uploads_per_frame: 32,
+                })
+                .insert_resource(replica)
+                .add_plugins((ReplicaPlugin, MeshPipelinePlugin, EditorPlugin));
+            let mut f = Self {
+                app,
+                max_uploads: 0,
+                saw_recoloring: false,
+            };
+            f.drain();
+            assert!(f.stats().initial_load_done);
+            f
+        }
+
+        fn stats(&self) -> MeshStats {
+            self.app.world().resource::<MeshStats>().clone()
+        }
+
+        fn source(&self) -> ColorSource {
+            self.app.world().resource::<MeshColorSource>().0
+        }
+
+        fn replica(&self) -> &Replica {
+            self.app.world().resource::<Replica>()
+        }
+
+        /// Frames until the pipeline is idle and nothing is dirty, letting
+        /// every running job finish between frames so each frame collects
+        /// them all.
+        fn drain(&mut self) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            self.max_uploads = 0;
+            self.saw_recoloring = false;
+            loop {
+                frame(&mut self.app);
+                let s = self.stats();
+                self.max_uploads = self.max_uploads.max(s.uploads_last_frame);
+                self.saw_recoloring |= s.recoloring;
+                let queue = self.app.world().resource::<MeshQueue>();
+                if queue.is_idle() && self.replica().dirty().is_empty() {
+                    assert!(!s.recoloring, "the recolor ends when the queue drains");
+                    return;
+                }
+                while queue.jobs_finished() < queue.in_flight().count() {
+                    assert!(std::time::Instant::now() < deadline, "jobs: {s:?}");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(std::time::Instant::now() < deadline, "no drain: {s:?}");
+            }
+        }
+
+        /// Every chunk's uploaded opaque colors against the mesh of the
+        /// replica's chunk colored by `source`.
+        fn assert_colored_by(&mut self, source: ColorSource) {
+            let mut q = self.app.world_mut().query::<(&ChunkMesh, &Mesh3d)>();
+            let world = self.app.world();
+            let replica = world.resource::<Replica>().world();
+            let meshes: Vec<_> = q.iter(world).collect();
+            assert_eq!(meshes.len(), 4, "the four floor chunks have geometry");
+            for (chunk, handle) in meshes {
+                let asset = world.resource::<Assets<Mesh>>().get(&handle.0).unwrap();
+                let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) =
+                    asset.attribute(Mesh::ATTRIBUTE_COLOR)
+                else {
+                    panic!("colors of {:?}", chunk.pos);
+                };
+                let input = MeshInput::from_world_colored(replica, chunk.pos, &[], source).unwrap();
+                assert_eq!(
+                    *colors,
+                    GreedyMesher.mesh(&input).colors,
+                    "{:?} colored by {source:?}",
+                    chunk.pos
+                );
+            }
+        }
+
+        /// A `LayerSnapshot` of chunk (0, 0, 0) with temperature `t` in the
+        /// top row of its floor, delivered in one frame.
+        fn warm_floor(&mut self, eco_revision: u64, t: i16) {
+            let pos = ChunkPos::new(0, 0, 0);
+            let mut layers = self.replica().world().chunk(pos).unwrap().layers.clone();
+            for z in 0..32 {
+                for x in 0..32 {
+                    layers.set_i16(LayerId::Temperature, LocalPos::new(x, 3, z), t);
+                }
+            }
+            self.app
+                .world_mut()
+                .write_message(FromHost(ServerMsg::LayerSnapshot {
+                    pos,
+                    eco_revision,
+                    layers,
+                    plants: Default::default(),
+                }));
+            frame(&mut self.app);
+        }
+    }
+
+    #[test]
+    fn overlay_pick_triggers_remesh() {
+        let mut f = OverlayFixture::new();
+        let key = key_of(EditorAction::NextOverlay);
+        assert_eq!(key_label(key), "F7");
+        assert_eq!(state(&f.app).overlay, None);
+        assert_eq!(f.source(), ColorSource::Material);
+        f.assert_colored_by(ColorSource::Material);
+        let jobs = f.stats().jobs_started;
+        assert_eq!(jobs, 8);
+
+        // Closed: the key picks nothing and nothing is remeshed.
+        tap(&mut f.app, key);
+        f.drain();
+        assert_eq!(state(&f.app).overlay, None);
+        assert_eq!(f.stats().jobs_started, jobs);
+
+        // Without an overlay, a layer change remeshes no chunk without
+        // liquid.
+        f.warm_floor(1, 400);
+        assert!(
+            f.replica().dirty().is_empty(),
+            "layers alone change no mesh"
+        );
+        f.drain();
+        assert_eq!(f.stats().jobs_started, jobs, "no remesh");
+
+        // Open: the key picks the first overlay layer, and every chunk is
+        // remeshed in its colors under the burst budget.
+        tap(&mut f.app, TOGGLE_EDITOR_KEY);
+        tap(&mut f.app, key);
+        let first = OVERLAY_LAYERS[0];
+        assert_eq!(state(&f.app).overlay, Some(first));
+        let source = ColorSource::layer(first);
+        assert_eq!(f.source(), source, "the pick sets the mesh color source");
+        f.drain();
+        assert_eq!(f.stats().jobs_started, jobs + 8, "every chunk remeshed");
+        assert!(f.saw_recoloring, "the recolor is reported");
+        assert!(
+            f.max_uploads > 1,
+            "burst budget, not 1 per frame: {}",
+            f.max_uploads
+        );
+        f.assert_colored_by(source);
+        let jobs = f.stats().jobs_started;
+
+        // While the overlay is active, a layer change remeshes the chunk and
+        // the neighbours whose border it is, in the new values.
+        f.warm_floor(2, 900);
+        assert!(
+            !f.app.world().resource::<MeshQueue>().is_idle() || !f.replica().dirty().is_empty(),
+            "the overlay follows layers"
+        );
+        f.drain();
+        assert_eq!(f.stats().jobs_started, jobs + 8, "chunk and neighbours");
+        f.assert_colored_by(source);
+        let jobs = f.stats().jobs_started;
+
+        // The key cycles through every overlay layer and back to none.
+        for &layer in &OVERLAY_LAYERS[1..] {
+            tap(&mut f.app, key);
+            assert_eq!(state(&f.app).overlay, Some(layer));
+            assert_eq!(f.source(), ColorSource::layer(layer));
+        }
+        tap(&mut f.app, key);
+        assert_eq!(state(&f.app).overlay, None, "back to the material render");
+        assert_eq!(f.source(), ColorSource::Material);
+        f.drain();
+        assert!(f.stats().jobs_started >= jobs + 8);
+        f.assert_colored_by(ColorSource::Material);
+        let jobs = f.stats().jobs_started;
+
+        // And layer changes stop remeshing.
+        f.warm_floor(3, 100);
+        assert!(f.replica().dirty().is_empty());
+        f.drain();
+        assert_eq!(f.stats().jobs_started, jobs);
     }
 }

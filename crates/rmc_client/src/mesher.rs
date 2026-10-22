@@ -29,6 +29,16 @@
 //! Water's color shifts by its dissolved substances (`eco.tint`): the input
 //! carries the tint rows and, for liquid cells, the amount of each row's
 //! substance, and [`SubstanceTint::share`] says how far each row moves it.
+//!
+//! The layer overlay (SAD-P2 §10): [`MeshInput::color_source`] is
+//! [`ColorSource::Material`] for the normal render, or
+//! [`ColorSource::Layer`] to color both passes by one layer through a
+//! [`Colormap`]. The input then carries the layer's value for every cell,
+//! and a face's color is the colormap's at the value of the cell itself, or,
+//! for layers that live in open cells ([`samples_front`]: light, gases), of
+//! the cell in front of the face. Overlay faces have no emissive, and
+//! liquid faces keep their opacity but drop the dissolved tint. Geometry
+//! and AO are the same for both sources; faces merge only at equal values.
 
 use std::sync::Arc;
 
@@ -96,6 +106,83 @@ pub fn is_opaque(def: &MaterialDef) -> bool {
     def.is_solid_or_liquid() && !is_liquid_pass(def)
 }
 
+/// A linear ramp from [`Colormap::low`] at [`Colormap::min`] to
+/// [`Colormap::high`] at [`Colormap::max`] (sRGB bytes), clamped outside the
+/// range: how the layer overlay shows a layer's values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Colormap {
+    pub min: i16,
+    pub max: i16,
+    pub low: [u8; 3],
+    pub high: [u8; 3],
+}
+
+impl Colormap {
+    /// The overlay's colormap for layer `id`. Temperature runs from -20 °C
+    /// (blue) to 100 °C (red); every `u8` layer over `0..=255`, from dark to
+    /// a hue of its own (moisture: from dry tan to blue).
+    pub fn for_layer(id: LayerId) -> Self {
+        let byte = |low, high| Self {
+            min: 0,
+            max: u8::MAX.into(),
+            low,
+            high,
+        };
+        match id {
+            LayerId::Temperature => Self {
+                min: -200,
+                max: 1000,
+                low: [40, 80, 220],
+                high: [230, 40, 30],
+            },
+            LayerId::Moisture => byte([196, 170, 120], [20, 70, 200]),
+            LayerId::Regolith => byte([60, 60, 60], [170, 110, 50]),
+            LayerId::Light => byte([10, 10, 20], [255, 240, 180]),
+            LayerId::Growth => byte([60, 50, 40], [60, 200, 60]),
+            LayerId::Substance(_) => byte([40, 40, 40], [80, 230, 120]),
+            LayerId::Gas(_) => byte([40, 40, 40], [240, 150, 40]),
+        }
+    }
+
+    /// The sRGB color at `value`.
+    pub fn rgb(&self, value: i16) -> [u8; 3] {
+        let (lo, hi) = (i32::from(self.min), i32::from(self.max));
+        if hi <= lo {
+            return self.low;
+        }
+        let t = i32::from(value).clamp(lo, hi) - lo;
+        std::array::from_fn(|k| {
+            let (a, b) = (i32::from(self.low[k]), i32::from(self.high[k]));
+            // Between a and b, so within u8.
+            (a + (b - a) * t / (hi - lo)) as u8
+        })
+    }
+}
+
+/// What colors a chunk's faces (SAD-P2 §10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ColorSource {
+    /// The material colors: the normal render.
+    #[default]
+    Material,
+    /// The layer overlay: one layer's values through a colormap.
+    Layer(LayerId, Colormap),
+}
+
+impl ColorSource {
+    /// The overlay of layer `id` through [`Colormap::for_layer`].
+    pub fn layer(id: LayerId) -> Self {
+        ColorSource::Layer(id, Colormap::for_layer(id))
+    }
+}
+
+/// Whether the overlay colors a face by the value of layer `id` in the cell
+/// in front of it rather than in the cell itself: light and gases live in
+/// open cells (light is 0 in every opaque cell).
+pub fn samples_front(id: LayerId) -> bool {
+    matches!(id, LayerId::Light | LayerId::Gas(_))
+}
+
 /// One chunk's cells with a one-cell border, indexed by chunk-local
 /// coordinates in `-1..=32` per axis (`x + z*34 + y*34²` after shifting by 1).
 #[derive(Clone, Debug)]
@@ -113,11 +200,16 @@ pub struct MeshInput {
     /// Per [`MeshInput::tint`] row, the amount of its substance in every
     /// [`is_liquid_pass`] cell; 0 for every other cell.
     pub dissolved: Vec<Box<[u8; MESH_INPUT_VOLUME]>>,
+    /// What colors the faces; [`ColorSource::Material`] by default.
+    pub color_source: ColorSource,
+    /// For [`ColorSource::Layer`], the layer's value at every cell (`u8`
+    /// layers widened); `None` for the material source.
+    layer_values: Option<Box<[i16; MESH_INPUT_VOLUME]>>,
 }
 
 /// A [`MESH_INPUT_VOLUME`] array of zeros.
-fn zeroed_volume() -> Box<[u8; MESH_INPUT_VOLUME]> {
-    let v: Box<[u8]> = vec![0; MESH_INPUT_VOLUME].into_boxed_slice();
+fn zeroed_volume<T: Copy + Default>() -> Box<[T; MESH_INPUT_VOLUME]> {
+    let v: Box<[T]> = vec![T::default(); MESH_INPUT_VOLUME].into_boxed_slice();
     v.try_into()
         .unwrap_or_else(|_| unreachable!("the vector has MESH_INPUT_VOLUME cells"))
 }
@@ -137,7 +229,19 @@ impl MeshInput {
             materials,
             tint: Vec::new(),
             dissolved: Vec::new(),
+            color_source: ColorSource::Material,
+            layer_values: None,
         }
+    }
+
+    /// This input colored by `source`, with every layer value 0.
+    pub fn with_color_source(mut self, source: ColorSource) -> Self {
+        self.layer_values = match source {
+            ColorSource::Material => None,
+            ColorSource::Layer(..) => Some(zeroed_volume()),
+        };
+        self.color_source = source;
+        self
     }
 
     /// This input with the tint rows `tint` and no dissolved substances.
@@ -160,9 +264,25 @@ impl MeshInput {
     /// [`MeshInput::from_world`] with the tint rows `tint` (SAD-P2 §10):
     /// liquid-pass cells also bring the amount of each row's substance.
     pub fn from_world_tinted(world: &World, pos: ChunkPos, tint: &[SubstanceTint]) -> Option<Self> {
+        Self::from_world_colored(world, pos, tint, ColorSource::Material)
+    }
+
+    /// [`MeshInput::from_world_tinted`] colored by `source`: for a layer
+    /// source, every resident cell also brings that layer's value.
+    pub fn from_world_colored(
+        world: &World,
+        pos: ChunkPos,
+        tint: &[SubstanceTint],
+        source: ColorSource,
+    ) -> Option<Self> {
         let revision = world.chunk(pos)?.revision;
-        let mut input =
-            Self::empty(pos, revision, world.materials().clone()).with_tint(tint.to_vec());
+        let mut input = Self::empty(pos, revision, world.materials().clone())
+            .with_tint(tint.to_vec())
+            .with_color_source(source);
+        let overlay = match source {
+            ColorSource::Material => None,
+            ColorSource::Layer(id, _) => Some(id),
+        };
         let liquid: Vec<bool> = input.materials.iter().map(is_liquid_pass).collect();
         // The 27 chunks the 34³ box touches, indexed by offset + 1.
         let mut near = [None; 27];
@@ -185,6 +305,13 @@ impl MeshInput {
                         let id = chunk.storage.get(local);
                         let i = Self::index(x, y, z);
                         input.cells[i] = id;
+                        if let (Some(layer), Some(values)) = (overlay, &mut input.layer_values) {
+                            values[i] = if layer.is_i16() {
+                                chunk.layers.get_i16(layer, local)
+                            } else {
+                                chunk.layers.get_u8(layer, local).into()
+                            };
+                        }
                         if liquid.get(usize::from(id.0)).copied().unwrap_or(false) {
                             input.fills[i] = chunk.layers.get_u8(LayerId::Moisture, local);
                             for (row, amounts) in tint.iter().zip(&mut input.dissolved) {
@@ -288,6 +415,31 @@ impl MeshInput {
         }
     }
 
+    /// The overlay layer's value at the cell `(x, y, z)`, each in `-1..=32`;
+    /// 0 for the material source.
+    pub fn layer_value(&self, x: i32, y: i32, z: i32) -> i16 {
+        self.layer_values
+            .as_ref()
+            .map_or(0, |v| v[Self::index(x, y, z)])
+    }
+
+    /// For a layer source, its layer, colormap and values.
+    fn overlay(&self) -> Option<(LayerId, Colormap, &[i16; MESH_INPUT_VOLUME])> {
+        match (self.color_source, &self.layer_values) {
+            (ColorSource::Layer(id, cmap), Some(values)) => Some((id, cmap, values)),
+            _ => None,
+        }
+    }
+
+    /// Writes the overlay layer's value at the cell `(x, y, z)`; for the
+    /// material source, nothing. This only edits the input; the world is
+    /// unchanged.
+    pub fn set_layer_value(&mut self, x: i32, y: i32, z: i32, value: i16) {
+        if let Some(v) = &mut self.layer_values {
+            v[Self::index(x, y, z)] = value;
+        }
+    }
+
     /// Writes the cell `(x, y, z)` as `id` with fill `fill`. This only edits
     /// the input; the world is unchanged.
     pub fn set_liquid(&mut self, x: i32, y: i32, z: i32, id: MaterialId, fill: u8) {
@@ -346,6 +498,8 @@ struct FaceKey {
     material: MaterialId,
     /// AO level per corner, in the order (-u,-v), (+u,-v), (+u,+v), (-u,+v).
     ao: [u8; 4],
+    /// The overlay layer's value the face shows; 0 for the material source.
+    value: i16,
 }
 
 /// Unit vector along axis `a` (0 = x, 1 = y, 2 = z).
@@ -378,6 +532,7 @@ impl ChunkMesher for GreedyMesher {
             .iter()
             .map(|def| vertex_base_color(table, def.id))
             .collect();
+        let overlay = input.overlay();
 
         let mut out = MeshData::default();
         let mut mask: Vec<Option<FaceKey>> = vec![None; (N * N) as usize];
@@ -405,9 +560,14 @@ impl ChunkMesher for GreedyMesher {
                                     let c = is_solid(q + eu * su + ev * sv);
                                     ao_level(a, b, c)
                                 });
+                                let value = overlay.map_or(0, |(id, _, values)| {
+                                    let s = if samples_front(id) { q } else { p };
+                                    values[MeshInput::index(s.x, s.y, s.z)]
+                                });
                                 Some(FaceKey {
                                     material: input.get(p.x, p.y, p.z),
                                     ao,
+                                    value,
                                 })
                             } else {
                                 None
@@ -425,10 +585,13 @@ impl ChunkMesher for GreedyMesher {
                             origin + eu * w + ev * h,
                             origin + ev * h,
                         ];
-                        let base = base_colors
-                            .get(usize::from(key.material.0))
-                            .copied()
-                            .unwrap_or_default();
+                        let base = match overlay {
+                            Some((_, cmap, _)) => overlay_base_color(cmap, key.value, 0.0),
+                            None => base_colors
+                                .get(usize::from(key.material.0))
+                                .copied()
+                                .unwrap_or_default(),
+                        };
                         push_quad(&mut out, corners, n, base, key.ao, positive);
                     });
                 }
@@ -462,6 +625,7 @@ impl ChunkMesher for GreedyMesher {
             .map(|def| liquid_base_color(table, def.id))
             .collect();
         let cell = |p: IVec3| (input.get(p.x, p.y, p.z), input.fill(p.x, p.y, p.z));
+        let overlay = input.overlay();
 
         let mut out = MeshData::default();
         let mut mask: Vec<Option<LiquidKey>> = vec![None; (N * N) as usize];
@@ -487,7 +651,14 @@ impl ChunkMesher for GreedyMesher {
                                             .get(usize::from(m.0))
                                             .copied()
                                             .unwrap_or_default();
-                                        let color = liquid_tint(input, p, base);
+                                        let color = match overlay {
+                                            Some((_, cmap, values)) => overlay_base_color(
+                                                cmap,
+                                                values[MeshInput::index(p.x, p.y, p.z)],
+                                                base[3],
+                                            ),
+                                            None => liquid_tint(input, p, base),
+                                        };
                                         let partial = d != 1 && (lo, hi) != (0, u8::MAX);
                                         LiquidKey {
                                             material: m,
@@ -716,6 +887,14 @@ fn push_quad(
         out.indices.extend(tri.map(|k| first + k));
     }
     out.quad_count += 1;
+}
+
+/// Linear RGB of `cmap`'s color at `value`, with alpha `alpha`: an overlay
+/// face's base color.
+fn overlay_base_color(cmap: Colormap, value: i16, alpha: f32) -> [f32; 4] {
+    let [r, g, b] = cmap.rgb(value);
+    let c = Color::srgb_u8(r, g, b).to_linear();
+    [c.red, c.green, c.blue, alpha]
 }
 
 /// Linear RGB of a material's sRGB color, with the emissive strength as alpha.
@@ -2209,5 +2388,178 @@ mod tests {
         // Terrain without water has an empty second mesh.
         let terrain = plateau_terrain(&table());
         assert!(GreedyMesher.mesh_liquid(&terrain).is_empty(), "no water");
+    }
+
+    /// The linear RGB of `cmap` at `value` with alpha `alpha`, shaded for
+    /// `normal`: the color of an unoccluded overlay corner.
+    fn overlay_color(cmap: Colormap, value: i16, alpha: f32, normal: IVec3) -> [f32; 4] {
+        let [r, g, b] = cmap.rgb(value);
+        let c = Color::srgb_u8(r, g, b).to_linear();
+        let f = face_shade(normal);
+        [c.red * f, c.green * f, c.blue * f, alpha]
+    }
+
+    #[test]
+    fn overlay_colors_from_layer() {
+        let t = table();
+        let stone = id(&t, "stone");
+        let water = id(&t, "water");
+        let lava = t
+            .iter()
+            .find(|d| d.phase == Phase::Liquid && is_opaque(d) && d.emissive > 0.0)
+            .map(|d| d.id)
+            .expect("an emissive opaque liquid");
+
+        // The colormap: its ends at and past its range, monotone between.
+        let cmap = Colormap::for_layer(LayerId::Moisture);
+        assert_eq!(cmap.rgb(cmap.min), cmap.low);
+        assert_eq!(cmap.rgb(cmap.max), cmap.high);
+        assert_eq!(cmap.rgb(i16::MIN), cmap.low, "clamped below");
+        assert_eq!(cmap.rgb(i16::MAX), cmap.high, "clamped above");
+        assert_ne!(cmap.low, cmap.high);
+        for id in [
+            LayerId::Temperature,
+            LayerId::Moisture,
+            LayerId::Regolith,
+            LayerId::Light,
+            LayerId::Growth,
+            LayerId::Substance(0),
+            LayerId::Gas(0),
+        ] {
+            let m = Colormap::for_layer(id);
+            assert!(m.min < m.max, "{id:?} has a range");
+            assert_ne!(m.low, m.high, "{id:?} shows its values");
+        }
+        let temp = Colormap::for_layer(LayerId::Temperature);
+        assert!(temp.min < 0, "temperature reads below freezing too");
+
+        // Two stone cells side by side, plus a lava cell apart.
+        let mut input = origin_input(&t);
+        input.set(4, 4, 4, stone);
+        input.set(5, 4, 4, stone);
+        input.set_liquid(10, 4, 4, lava, 255);
+        assert_eq!(input.color_source, ColorSource::Material, "default");
+        let material = mesh(&input);
+
+        // The material source ignores layer values.
+        let source = ColorSource::Layer(LayerId::Moisture, cmap);
+        let mut overlay = input.clone().with_color_source(source);
+        assert_eq!(overlay.color_source, source);
+        assert_eq!(overlay.layer_value(4, 4, 4), 0, "values start at 0");
+        let mut plain = input.clone();
+        plain.set_layer_value(4, 4, 4, 200);
+        assert_eq!(plain.layer_value(4, 4, 4), 0, "no overlay, no values");
+        assert_eq!(mesh(&plain), material);
+
+        // Equal values: the same geometry as the material render, every
+        // corner the colormap's color for the value, shaded, without
+        // emissive.
+        for (x, v) in [(4, 120), (5, 120), (10, 120)] {
+            overlay.set_layer_value(x, 4, 4, v);
+        }
+        let colored = mesh(&overlay);
+        assert_eq!(colored.positions, material.positions, "same geometry");
+        assert_eq!(colored.indices, material.indices);
+        for q in quads(&colored) {
+            for c in q.colors {
+                assert_eq!(c, overlay_color(cmap, 120, 0.0, q.normal), "{q:?}");
+            }
+        }
+        assert_ne!(colored.colors, material.colors, "the overlay recolors");
+
+        // Different values split the merged faces and color each cell.
+        overlay.set_layer_value(5, 4, 4, 255);
+        let qs = quads(&mesh(&overlay));
+        let tops: Vec<&Quad> = with_normal(&qs, IVec3::Y)
+            .into_iter()
+            .filter(|q| q.min().x < 8.0)
+            .collect();
+        assert_eq!(tops.len(), 2, "split by value");
+        for q in tops {
+            let v = if q.min().x < 5.0 { 120 } else { 255 };
+            assert_eq!(q.size(), (1.0, 1.0));
+            assert!(
+                q.colors
+                    .iter()
+                    .all(|&c| c == overlay_color(cmap, v, 0.0, q.normal))
+            );
+        }
+
+        // Layers that live in open cells (light, gases) color a face by the
+        // cell in front of it; the others by the cell itself.
+        let light = Colormap::for_layer(LayerId::Light);
+        let mut lit = input
+            .clone()
+            .with_color_source(ColorSource::Layer(LayerId::Light, light));
+        lit.set_layer_value(4, 5, 4, 255); // air above the stone
+        lit.set_layer_value(4, 4, 4, 7); // the stone itself (opaque: ignored)
+        let qs = quads(&mesh(&lit));
+        let top = with_normal(&qs, IVec3::Y)
+            .into_iter()
+            .find(|q| q.min().x == 4.0)
+            .expect("top of (4, 4, 4)");
+        assert_eq!(top.colors[0], overlay_color(light, 255, 0.0, IVec3::Y));
+        let west = with_normal(&qs, IVec3::NEG_X)
+            .into_iter()
+            .find(|q| q.plane() == 4.0)
+            .expect("-x face of (4, 4, 4)");
+        assert_eq!(west.colors[0], overlay_color(light, 0, 0.0, IVec3::NEG_X));
+        let mut gas = input
+            .clone()
+            .with_color_source(ColorSource::Layer(LayerId::Gas(1), light));
+        gas.set_layer_value(4, 5, 4, 90);
+        let qs = quads(&mesh(&gas));
+        let top = with_normal(&qs, IVec3::Y)
+            .into_iter()
+            .find(|q| q.min().x == 4.0)
+            .unwrap();
+        assert_eq!(top.colors[0], overlay_color(light, 90, 0.0, IVec3::Y));
+
+        // The liquid pass: the cell's own value, with the liquid's opacity
+        // and no dissolved tint.
+        let opacity = f32::from(t.get(water).unwrap().color[3]) / 255.0;
+        let mut pool = origin_input(&t);
+        pool.set_liquid(4, 4, 4, water, 255);
+        let pool = pool.with_color_source(source);
+        let mut pool = pool;
+        pool.set_layer_value(4, 4, 4, 255);
+        let qs = liquid(&pool);
+        assert_eq!(qs.len(), 6);
+        for q in &qs {
+            for &c in &q.colors {
+                assert_eq!(c, overlay_color(cmap, 255, opacity, q.normal));
+            }
+        }
+
+        // from_world_colored reads the layer for every cell, the border
+        // from the neighbour included, as i16 for temperature.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 31));
+        let mut world = World::new(t.clone(), bounds);
+        let mut a = Chunk::uniform(stone);
+        a.layers
+            .set_u8(LayerId::Moisture, LocalPos::new(3, 4, 5), 77);
+        a.layers
+            .set_i16(LayerId::Temperature, LocalPos::new(3, 4, 5), -150);
+        let mut b = Chunk::uniform(stone);
+        b.layers
+            .set_u8(LayerId::Moisture, LocalPos::new(0, 4, 5), 66);
+        world.insert_chunk(ChunkPos::new(0, 0, 0), a).unwrap();
+        world.insert_chunk(ChunkPos::new(1, 0, 0), b).unwrap();
+        let read = MeshInput::from_world_colored(&world, ChunkPos::new(0, 0, 0), &[], source)
+            .expect("resident");
+        assert_eq!(read.color_source, source);
+        assert_eq!(read.layer_value(3, 4, 5), 77);
+        assert_eq!(read.layer_value(32, 4, 5), 66, "border from the neighbour");
+        assert_eq!(read.layer_value(3, 4, 6), 0);
+        let hot = ColorSource::Layer(LayerId::Temperature, temp);
+        let read = MeshInput::from_world_colored(&world, ChunkPos::new(0, 0, 0), &[], hot).unwrap();
+        assert_eq!(read.layer_value(3, 4, 5), -150);
+        let read = MeshInput::from_world(&world, ChunkPos::new(0, 0, 0)).unwrap();
+        assert_eq!(read.color_source, ColorSource::Material);
+        assert_eq!(
+            read.layer_value(3, 4, 5),
+            0,
+            "the material source reads no layer"
+        );
     }
 }
