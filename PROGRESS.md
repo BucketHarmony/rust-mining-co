@@ -3670,3 +3670,47 @@ Next:
 - `quiet_world_tick_under_dev_budget` is a unit test in `rmc_eco::tick`, so it cannot call worldgen (see the dev-dependency decision). It needs a world built inside `rmc_eco`, or the test path in features.json has to change.
 - E5 is not complete, so no playtester run.
 Blockers: none.
+
+## 2026-10-22 06:25 — F173 Performance pass against §13; activity tuning — passed
+Done:
+- **Chunk map hashing.** The world's chunk map and the surface-column map now use `rmc_world::fasthash::PosMap`, a fixed Fx-style multiply-rotate hasher, in place of SipHash. Every cell read hashes a chunk position. The old maps used `RandomState`, so no output ever depended on map order (output iterates `iter_chunks_sorted`).
+- **Settled water cells, an exact §7.9 activity for the flow sweeps.** A water or porous cell whose flow visit moved nothing is marked settled (`Chunk::water_settled`). `run_sweep` skips cells that are active but settled (`SweepPass::settled`).
+  - `World` wakes the cell and its 6 face neighbors on every material or moisture write: `apply` and `apply_delta` cells, `eco_set`, `eco_put_layer`, `put_layer`, `change_material`.
+  - Whole-chunk paths (full and `Layers` deltas, `insert_chunk`, eco snapshots) clear the settled sets of the chunk and its 6 neighbor chunks.
+  - A visit reads only the cell and its 6 faces, so a skipped visit is exactly one that would have moved nothing. Magma never settles: its visit depends on the iteration count.
+  - The sets are keyed by a hash of the water pass's constants (`SweepPass::begin` clears them when a pass with other constants runs).
+- Water reads material and moisture with one chunk lookup. Chemistry transport reads a donor's substances once and skips donors with none. `eco_put_layer` and `wake_water` take one chunk lookup.
+- `docs/perf-p2.md` gains an "After F173" table and the other §13 rows.
+- Release results (i9-12900KF):
+  - `tick_first`: 3.03 s, was 10.9 s (target < 5 s, met).
+  - `tick_quiet`: 751 ms criterion slope, mean 859 ms (target < 1 s; met once settled, see Decisions).
+  - `water_sweep_world`: 35.7 ms, was 86.9 ms.
+  - `chem_transport_world`: 552 ms, was 861 ms.
+  - Layer memory after 20 shipped seasons: 5.8 MB (target < 48 MB, met).
+  - Steady rain + 50 edits: about 3.6–4.4 s (target < 3 s, **missed**).
+  - Dev quiet tick: 337 ms (budget 60 000 ms).
+- `scripts/e2e.sh season_swale_fills` passes. `docs/screens/season_swale_fills-{20,dry-30}.png` were re-shot; the reviewer reports re-encode differences only.
+Tests added:
+- `tick::tests::quiet_world_tick_under_dev_budget` (the feature's test). It runs on `default_size_world`, a 4 × 2 × 4-chunk layered world built inside `rmc_eco`, because unit tests cannot use worldgen (F172). It sits on quiet tables after `install` and 2 settling seasons.
+  - **It passed before F173 too (5015 ms against the 60 000 ms budget).** No failing run could be shown, so the TDD step was not demonstrable for this test.
+- `water::tests::settled_cells_skipped_without_changing_results`: 32-chunk terrain, every sweep. Settling and clearing before each sweep give the same world hash, move log and ledger, and settling makes fewer visits.
+- `water::tests::settled_cell_wakes_on_neighbor_change`.
+- `water::tests::settled_sets_clear_for_other_constants`.
+- `tick::tests::settling_changes_no_season_result`: a rich world, 2 shipped seasons, with a dig and a water fill between them. With settling on and off (a `#[cfg(test)]` thread-local, `water::SETTLING`), each season ends with the same world hash, ledger, Jacobi activity, light recomputes and sweep active sets, and settling makes fewer visits. Added after review.
+- `edit::tests::edits_and_chunk_inserts_wake_settled_water_cells` (rmc_world).
+- `fasthash::tests::{neighboring_chunks_hash_apart, hash_is_fixed}` (rmc_world).
+Decisions:
+- **Settling is the §7.9 activity for the water sweep.** It is an exactness-preserving skip, not a tolerance: results stay bit-identical (the tests above), the active sets keep their §3 meaning (every holder is active), and settled is a separate per-chunk set. It is not saved or sent; a loaded or received chunk starts unsettled.
+- **The quiet tick target is met only once the world has settled.** The `tick_quiet` bench ticks the same world each iteration. Its samples fell from 1.22 s (the third quiet season after `install`) to 0.73–0.79 s from about the fifth on. Criterion's slope (751 ms) weights the later samples. The doc records both numbers.
+- **CPU throttling from about 04:00 to 06:10.** In that window the machine throttled every process this session started to about 4% of one core, while otherwise idle (load 9–11%, bench threads "Ready", a plain PowerShell loop got 3 s CPU in 80 s). One full `cargo bench -p rmc_eco` and one `tick_quiet` run were stopped, and the gate took about 30 minutes. The recorded benches were re-run on the final code after it ended.
+- **Steady rain + 50 edits (< 3 s) is missed.** Measured with a throwaway release probe (deleted): rain overridden to 128, 2 rainy seasons, 50 single-cell digs in chunk (1, 1, 1), then one timed season, about 3.6–4.4 s.
+  - Flow is about 2 s of it: about 394 k air↔water material changes a season through the general `World::eco_set` displacement path (Effects maps, column updates).
+  - A cheap result-identical fast path for those conversions is the next lever. I did not attempt it, because that path carries displacement rules (boiling, gas push, plant kill).
+- **Jacobi quiet skipping never engages on the generated world.** The generated limestone aquifer never goes quiet. Cells at moisture 21–24 (threshold 20, capacity 24) trade seepage sideways, about 7.8 k moves per flow sweep, so every chunk changes every pass. All 32 chunks are computed by every Jacobi pass. That is the SAD's seepage model working as written. Owner: worldgen could lay aquifer moisture at or below the threshold, or `seep_num` could leave a dead band, if quiet chunks matter.
+- Snapshots + remesh < 1.5 s (host and client) was not measured.
+- Reviewer (fresh context): no correctness bug in settling. It confirmed every write path wakes, the visit reads only 7 cells, `settle_key` covers the constants, there are no rule 19 literals, and no `PosMap` order reaches output. It flagged the missed or unmeasured §13 rows (recorded above) and asked for a season-level on/off test and a `begin` test (added).
+Next:
+- F174 is next in E5.
+- E5 is not complete, so no playtester run.
+- Owner: the steady-rain target (above); the aquifer dead band (above).
+Blockers: none.
