@@ -3511,3 +3511,36 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 07:00 — F168 Worldgen surface plants on passing anchors — passed
+Done:
+- `rmc_worldgen::plants::PlantInit` (SAD-P2 §8) seeds surface plants in `Generator::generate_world`, after the light layer is written.
+  - Per column, the topmost non-air cell is the candidate anchor and the air cell above it the candidate plant cell. A column whose top is the world's top (the bedrock walls) has no site.
+  - Species are tried in row order. The first one that passes all three checks starts there as a fresh plant (material set, default `PlantState`, growth 0):
+    - its seeded roll `cell_hash(seed, LAYER_PLANTS + species, cell) & 255` is below its `worldgen_chance`;
+    - the anchor carries one of its `anchor_tags`;
+    - its §7.8 needs hold against the generated layers: light and temperature at the cell, moisture and substances at the anchor.
+- `Generator::with_plants` turns it on. The app's `generate_world` and the test kit's world generation now use it. `Generator` keeps the seed for it.
+- New `plants.ron` field `worldgen_chance` (chance in 256, serde default 0). The shipped rows set moss 64 and grass 48, so fireweed and shrub are never seeded. It is left out of the canonical encoding when 0, so the golden tables hash (`tables_hash_is_stable`) is unchanged.
+- New `rmc_eco::PlantStarts` exposes the seeded species and the anchor-tags-plus-needs check from the private `Species`. Growth and spread are unchanged.
+Tests added:
+- `plants::tests::initial_plants_only_on_passing_anchors` (rmc_worldgen):
+  - Setup: a 64×128×64 world whose top soil is a porous test loam, under a water table at 96 ± 10, so some surface columns are wet and some are dry. Grass's `n` need is removed so that grass can start too.
+  - For every column, an independent re-implementation of the rule (anchor tags and needs read straight from the world's layers, and the roll) predicts the plant. The prediction must match exactly, and there must be no plant anywhere else.
+  - Moss and grass each have >50 plants. Dry columns pass nothing. Fireweed passes on wet loam but is never seeded.
+  - Worldgen is deterministic.
+  - A light recompute changes nothing, so plants let light through.
+  - Without `with_plants`, the world is identical except for the plant cells.
+  - With grass's anchor tags set to `stone`, no grass appears where its roll passes.
+- TDD: with the fill call disabled, the test failed at the first expected grass plant (`left: None`).
+Decisions:
+- "Passing needs at season 0" is read literally: the needs are checked against the worldgen layers (season-0 temperature, initial light, water-table moisture, no substances). No plant is seeded that would start under stress.
+- Consequence: the shipped world currently starts with **no plants**. `topsoil` is not porous, so it holds no moisture; moss needs 8. The water table (64) lies far below the surface (86..106). Worldgen lays down no `n`, which grass needs. The mechanism works, as the test fixture shows. Making the shipped world green is data tuning (porous soil, or initial surface moisture or nutrients), which changes water behaviour across scenarios. I did not do it in this feature.
+- The species worldgen seeds come from data (`worldgen_chance` in `plants.ron`), not from code that names moss and grass (rule 18).
+- Each species has its own roll (layer `LAYER_PLANTS + species`, 0x0800+). The first species in row order wins.
+Next:
+- F169 (editor eco panel) is unblocked. F170 waits on F147.
+- F170 (`grass_greens_swale`, `fireweed_takes_copper`) will have to plant with the brush (F167). With the shipped data, worldgen gives it no plants. Grass on a swale also needs anchor moisture ≥ 16 and `n` ≥ 2, and non-porous topsoil may never hold moisture. Check that before writing the scenario.
+- E5 is not complete, so no playtester run.
+- Owner: decide whether the shipped world should start green (see Decisions). The E2 playtester run is still outstanding.
+Blockers: none.
