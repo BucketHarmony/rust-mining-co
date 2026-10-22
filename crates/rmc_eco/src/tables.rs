@@ -928,6 +928,11 @@ impl EcoTables {
             organic: self.role_substance("organic"),
             magma_init_temp: self.params.magma_init_temp,
             plant_litter: self.plants.iter().map(|p| p.litter).collect(),
+            plant_materials: self
+                .plants
+                .iter()
+                .map(|p| self.materials.id(&p.material))
+                .collect(),
             harvest_shift: self.params.harvest_shift,
             substance_yields,
             soft_regolith: Some(self.params.soft_regolith),
@@ -1227,6 +1232,16 @@ mod tests {
         assert_eq!(rules.harvest_shift, t.params().harvest_shift);
         let litter: Vec<u8> = t.plants().iter().map(|p| p.litter).collect();
         assert_eq!(rules.plant_litter, litter);
+        let plants: Vec<_> = t
+            .plants()
+            .iter()
+            .map(|p| t.materials().id(&p.material))
+            .collect();
+        assert!(
+            plants.iter().all(Option::is_some),
+            "every species' material exists"
+        );
+        assert_eq!(rules.plant_materials, plants);
         for (i, s) in t.substances().iter().enumerate() {
             let want = s
                 .yield_material

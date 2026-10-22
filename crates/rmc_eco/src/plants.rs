@@ -449,11 +449,14 @@ mod tests {
 
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::{CellAabb, ChunkPos};
+    use rmc_world::edit::{CommandId, EditCommand, EditOp, EditResult, EditStatus, PlayerId};
+    use rmc_world::inventory::Inventory;
     use rmc_world::layers::N_SUBSTANCES;
     use rmc_world::ledger::SeasonLedger;
+    use rmc_world::shape::Shape;
 
     use crate::activity::Activity;
-    use crate::invariants::InvariantChecker;
+    use crate::invariants::{InvariantChecker, Totals};
     use crate::runner::{Exec, activate_holders, run_jacobi};
     use crate::tick::{PassId, season_tick_observed};
     use crate::water::WaterPass;
@@ -875,6 +878,229 @@ mod tests {
         );
         assert_ne!(w.get_cell(grass), Some(id(&t, "grass")), "its cell cleared");
         assert_eq!(w.plant(young).map(|p| p.age_seasons), Some(2));
+    }
+
+    /// Breaks `cell` with one pickaxe edit, which harvests a plant there.
+    fn dig(w: &mut World, seq: u32, cell: CellPos) -> EditResult {
+        let issuer = PlayerId(1);
+        let r = w.apply(&EditCommand {
+            id: CommandId { issuer, seq },
+            issuer,
+            op: EditOp::Damage(u16::MAX),
+            shape: Shape::Cell(cell),
+        });
+        assert_eq!(r.status, EditStatus::Applied);
+        r
+    }
+
+    #[test]
+    fn uptake_invariant_over_life_death_harvest() {
+        let t = tables();
+        let x = |k: &str| usize::from(t.substance_index(k).unwrap());
+        let mut w = world(&t);
+        let healthy = PlantState::default();
+        let copper: [(&str, i32); 5] = [("n", 50), ("p", 50), ("k", 50), ("cu", 60), ("c", 0)];
+        // Two fireweeds (holds) on copper soil, one anchored in the chunk
+        // below; a grass (sinks) beside them.
+        let (kept, doomed, grass) = (
+            CellPos::new(2, 31, 2),
+            CellPos::new(6, 32, 6),
+            CellPos::new(10, 31, 10),
+        );
+        plant(&mut w, &t, kept, "fireweed", healthy, 255, 100, &copper);
+        plant(&mut w, &t, doomed, "fireweed", healthy, 255, 100, &copper);
+        plant(&mut w, &t, grass, "grass", healthy, 255, 100, &FED);
+
+        // One checker from the start: every step's ledger folds into one.
+        let checker = InvariantChecker::new(&w);
+        let mut total = SeasonLedger::default();
+        let step = |w: &mut World, total: &mut SeasonLedger, from: &SeasonLedger| {
+            crate::ledger::merge(total, from);
+            checker.check(w, total).unwrap_or_else(|v| panic!("{v}"));
+        };
+
+        // Life: uptake moves copper from the anchor into `held`, inside the
+        // substance total; the grass's uptake leaves through uptake_sink.
+        let runs = 10;
+        for _ in 0..runs {
+            let ledger = grow(&mut w, &t, Exec::Serial);
+            step(&mut w, &mut total, &ledger);
+        }
+        let held = |w: &World, c: CellPos, k: &str| w.plant(c).map_or(0, |p| p.held[x(k)]);
+        let fw = &t.plants()[usize::from(species(&t, "fireweed"))];
+        let cu_rate = fw.uptake.iter().find(|u| u.0 == "cu").unwrap().1;
+        let taken = i32::from(cu_rate) * runs;
+        for c in [kept, doomed] {
+            assert_eq!(i32::from(held(&w, c, "cu")), taken);
+            assert_eq!(w.layer(below(c), sub(&t, "cu")), 60 - taken);
+        }
+        assert_eq!(total.uptake_sink[x("cu")], 0, "held copper is not sunk");
+        assert_eq!(total.uptake_sink[x("n")], i64::from(runs), "grass sinks n");
+
+        // Death: the doomed fireweed's `held` goes back into its anchor.
+        let dying = PlantState {
+            stress: t.params().stress_death - 1,
+            ..*w.plant(doomed).unwrap()
+        };
+        w.eco_put_plant(doomed, Some(dying));
+        w.eco_put_layer(doomed, LayerId::Light, 0);
+        let ledger = grow(&mut w, &t, Exec::Serial);
+        assert_eq!(ledger.plants_died, 1);
+        step(&mut w, &mut total, &ledger);
+        assert!(w.plant(doomed).is_none());
+        assert_eq!(w.layer(below(doomed), sub(&t, "cu")), 60, "held returned");
+
+        // Harvest: what the kept fireweed holds leaves through harvest_out,
+        // and its copper comes out as copper_dust.
+        let held_cu = held(&w, kept, "cu");
+        let held_n = held(&w, kept, "n");
+        assert!(held_cu > 0 && held_n > 0);
+        let anchor_cu = w.layer(below(kept), sub(&t, "cu"));
+        let r = dig(&mut w, 1, kept);
+        let mut want = SeasonLedger::default();
+        want.harvest_out[x("cu")] = i64::from(held_cu);
+        want.harvest_out[x("n")] = i64::from(held_n);
+        assert_eq!(*r.ledger, want);
+        step(&mut w, &mut total, &r.ledger);
+        let dust = (u32::from(held_cu) >> t.params().harvest_shift).max(1);
+        assert_eq!(
+            Inventory::from_items(&r.yields),
+            Inventory::from_items(&[(id(&t, "fireweed"), 1), (id(&t, "copper_dust"), dust)])
+        );
+        assert!(w.plant(kept).is_none());
+        assert_eq!(w.get_cell(kept), Some(MaterialId::AIR));
+        assert_eq!(
+            w.layer(below(kept), sub(&t, "cu")),
+            anchor_cu,
+            "a harvest returns nothing to the anchor"
+        );
+
+        // Over the whole life the copper total fell by exactly the harvest.
+        let cu_now: i64 = Totals::measure(&w).substances[x("cu")];
+        let cu_before = 2 * 60 + 10;
+        assert_eq!(cu_now, cu_before - i64::from(held_cu));
+    }
+
+    #[test]
+    fn fireweed_holds_copper_anchor_cu_falls() {
+        let t = tables();
+        let cu = sub(&t, "cu");
+        let x = usize::from(t.substance_index("cu").unwrap());
+        let tox = t.substances()[x].tox_plant.expect("cu is toxic to plants");
+        let rich = i32::from(tox) * 5;
+        let soil: [(&str, i32); 4] = [("n", 50), ("p", 50), ("k", 50), ("cu", rich)];
+        let mut w = world(&t);
+        // One anchored in its own chunk, one in the chunk below.
+        let fireweeds = [CellPos::new(4, 31, 4), CellPos::new(9, 32, 9)];
+        for &c in &fireweeds {
+            plant(
+                &mut w,
+                &t,
+                c,
+                "fireweed",
+                PlantState::default(),
+                255,
+                100,
+                &soil,
+            );
+        }
+        let fw = &t.plants()[usize::from(species(&t, "fireweed"))];
+        assert!(fw.holds);
+        let rate = i32::from(fw.uptake.iter().find(|u| u.0 == "cu").unwrap().1);
+
+        // Each sub-step the anchor's copper falls by the uptake and the
+        // plant's held copper rises by the same; nothing is sunk, and the
+        // plant is never stressed by it.
+        let mut runs = 0;
+        while w.layer(below(fireweeds[0]), cu) > 0 {
+            let before: Vec<i32> = fireweeds.iter().map(|&c| w.layer(below(c), cu)).collect();
+            let ledger = grow(&mut w, &t, Exec::Serial);
+            runs += 1;
+            assert_eq!(ledger.uptake_sink[x], 0);
+            assert_eq!(ledger.plants_died, 0);
+            for (&c, &b) in fireweeds.iter().zip(&before) {
+                assert_eq!(w.layer(below(c), cu), b - rate.min(b));
+                let p = w.plant(c).expect("fireweed lives on copper");
+                assert_eq!(i32::from(p.held[x]), rich - w.layer(below(c), cu));
+                assert_eq!(p.stress, 0);
+            }
+        }
+        assert_eq!(runs, (rich + rate - 1) / rate);
+        for &c in &fireweeds {
+            assert_eq!(i32::from(w.plant(c).unwrap().held[x]), rich);
+        }
+        // A drained anchor gives no more.
+        grow(&mut w, &t, Exec::Serial);
+        assert_eq!(w.plant(fireweeds[0]).map(|p| p.held[x]), Some(rich as u8));
+    }
+
+    #[test]
+    fn fireweed_survives_copper_grass_dies() {
+        let t = tables();
+        let cu = sub(&t, "cu");
+        let x = usize::from(t.substance_index("cu").unwrap());
+        let organic = LayerId::Substance(t.role_substance("organic").unwrap());
+        let row = |key: &str| &t.plants()[usize::from(species(&t, key))];
+        // Copper above every cap but fireweed's (it has none).
+        let max_cu = |key: &str| {
+            row(key)
+                .needs
+                .substance_max
+                .iter()
+                .find(|s| s.0 == "cu")
+                .map(|s| i32::from(s.1))
+        };
+        assert_eq!(max_cu("fireweed"), None);
+        let rich = max_cu("grass").unwrap().max(max_cu("moss").unwrap()) * 4;
+        let soil: [(&str, i32); 4] = [("n", 50), ("p", 50), ("k", 50), ("cu", rich)];
+        let mut w = world(&t);
+        let (fireweed, grass, moss) = (
+            CellPos::new(3, 31, 3),
+            CellPos::new(7, 31, 7),
+            CellPos::new(11, 32, 11),
+        );
+        for (c, key) in [(fireweed, "fireweed"), (grass, "grass"), (moss, "moss")] {
+            plant(&mut w, &t, c, key, PlantState::default(), 255, 100, &soil);
+        }
+        // The same plants on clean soil all live.
+        let clean: [(&str, i32); 3] = [("n", 50), ("p", 50), ("k", 50)];
+        let control = [CellPos::new(20, 31, 20), CellPos::new(24, 31, 24)];
+        for (c, key) in control.iter().zip(["grass", "moss"]) {
+            plant(&mut w, &t, *c, key, PlantState::default(), 255, 100, &clean);
+        }
+
+        let death = i32::from(t.params().stress_death);
+        for run in 1..=death {
+            let ledger = grow(&mut w, &t, Exec::Serial);
+            if run < death {
+                assert_eq!(ledger.plants_died, 0, "run {run}");
+                for c in [grass, moss] {
+                    assert_eq!(i32::from(w.plant(c).unwrap().stress), run);
+                }
+            } else {
+                assert_eq!(ledger.plants_died, 2, "grass and moss die together");
+            }
+        }
+        for c in [grass, moss] {
+            assert!(w.plant(c).is_none(), "{c:?} died on copper");
+            assert_eq!(w.get_cell(c), Some(MaterialId::AIR));
+            assert!(w.layer(below(c), organic) > 0, "its litter");
+            assert_eq!(w.layer(below(c), cu), rich, "grass and moss take no cu");
+        }
+        let fw = w.plant(fireweed).expect("fireweed survives copper");
+        assert_eq!(fw.stress, 0);
+        let rate = i32::from(
+            row("fireweed")
+                .uptake
+                .iter()
+                .find(|u| u.0 == "cu")
+                .unwrap()
+                .1,
+        );
+        assert_eq!(i32::from(fw.held[x]), (rate * death).min(rich));
+        for c in control {
+            assert_eq!(w.plant(c).map(|p| p.stress), Some(0), "{c:?} lives");
+        }
     }
 
     /// Two chunks side by side along x: topsoil up to y = 30, air at

@@ -1198,6 +1198,7 @@ mod tests {
             organic: Some(ORGANIC),
             magma_init_temp: MAGMA_INIT,
             plant_litter: vec![LITTER],
+            plant_materials: Vec::new(),
             harvest_shift: HARVEST_SHIFT,
             substance_yields,
             soft_regolith: None,
@@ -2121,5 +2122,56 @@ mod tests {
         assert_eq!(l.water_saturation_loss, 45);
         assert_eq!(l.gas_saturation_loss, [0; N_GASES]);
         assert_eq!(w.layer(a, LayerId::Gas(STEAM)), 255);
+    }
+
+    /// A brush edit that makes a cell a plant species' material plants that
+    /// species there (a fresh state, carried in the `Layers` delta); a
+    /// season pass making the same change does not, and a material no
+    /// species names never gets a plant.
+    #[test]
+    fn brush_plant_material_starts_a_plant() {
+        let mut w = eco_world();
+        let moss = mat(&w, "moss");
+        let mut rules = eco_rules(w.materials());
+        rules.plant_materials = vec![Some(moss)];
+        w.set_eco_rules(rules);
+        let (anchor, cell) = (at(10, 10, 10), at(10, 11, 10));
+        set_at(&mut w, 1, "soil", &[anchor]);
+        let rev = chunk_revs(&w, cell.chunk()).1;
+
+        let r = edit_checked(&mut w, cmd(2, EditOp::Set(moss), cell_shape(cell)));
+        assert_eq!(*r.ledger, SeasonLedger::default());
+        let fresh = PlantState::default();
+        assert_eq!(w.plant(cell), Some(&fresh));
+        assert_eq!(chunk_revs(&w, cell.chunk()).1, rev + 1);
+        let carried = r.deltas.iter().any(|d| {
+            matches!(d, ChunkDelta::Layers { plants, .. }
+                if plants == &[(cell.local().index(), Some(fresh))])
+        });
+        assert!(
+            carried,
+            "the new plant travels in the Layers delta: {:?}",
+            r.deltas
+        );
+
+        // Setting the same material again changes nothing; the plant keeps
+        // its state.
+        put_plant(&mut w, cell, held(CU, 9));
+        let r = w.apply(&cmd(3, EditOp::Set(moss), cell_shape(cell)));
+        assert!(r.deltas.is_empty());
+        assert_eq!(w.plant(cell), Some(&held(CU, 9)));
+
+        // A pass does not plant.
+        let by_pass = at(14, 11, 10);
+        eco_checked(&mut w, by_pass, moss);
+        assert!(w.plant(by_pass).is_none());
+
+        // Without the species row, the brush places the material only.
+        let mut rules = eco_rules(w.materials());
+        rules.plant_materials = Vec::new();
+        w.set_eco_rules(rules);
+        let bare = at(18, 11, 10);
+        edit_checked(&mut w, cmd(4, EditOp::Set(moss), cell_shape(bare)));
+        assert!(w.plant(bare).is_none());
     }
 }

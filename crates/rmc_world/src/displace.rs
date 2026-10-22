@@ -34,6 +34,9 @@ pub struct EcoRules {
     pub magma_init_temp: i16,
     /// `litter` per plant species index.
     pub plant_litter: Vec<u8>,
+    /// `material` per plant species index (`None` while the table lacks
+    /// it): a brush edit that makes a cell one of them plants that species.
+    pub plant_materials: Vec<Option<MaterialId>>,
     /// `eco.harvest_shift`.
     pub harvest_shift: u8,
     /// `yield_material` per substance index.
@@ -41,6 +44,14 @@ pub struct EcoRules {
     /// `eco.soft_regolith` (SAD-P2 §7.5): above it the pickaxe needs half
     /// the hardness. `None` (no eco tables) never softens a cell.
     pub soft_regolith: Option<u8>,
+}
+
+impl EcoRules {
+    /// The first plant species whose material is `id`.
+    fn species_of(&self, id: MaterialId) -> Option<u8> {
+        let i = self.plant_materials.iter().position(|&m| m == Some(id))?;
+        u8::try_from(i).ok()
+    }
 }
 
 /// What caused a material change: an edit (with its op) or a season pass.
@@ -54,6 +65,12 @@ impl Cause {
     /// The pickaxe harvests a plant it breaks (§7.8).
     fn harvests(self) -> bool {
         matches!(self, Cause::Edit(EditOp::Damage(_)))
+    }
+
+    /// Brush `Set` (and `Paint`, and a placed cell) of a plant material
+    /// plants it; season passes place their plant states themselves.
+    fn plants(self) -> bool {
+        self.brush_fills()
     }
 
     /// Brush `Set` (and `Paint`, and a placed cell) of water or ice writes a
@@ -521,6 +538,32 @@ impl World {
             self.put_layer(cell, LayerId::Growth, 0, fx);
             self.kill_plant_above(cell, cause, ledger, fx);
         }
+
+        // Planting: a brush edit that makes the cell a species' material
+        // starts a fresh plant of that species there.
+        if cause.plants()
+            && let Some(species) = self.rules.species_of(to)
+        {
+            self.start_plant(cell, species, fx);
+        }
+    }
+
+    /// Puts a fresh plant of `species` at `cell`, recording it.
+    fn start_plant(&mut self, cell: CellPos, species: u8, fx: &mut Effects) {
+        let (pos, local) = cell.split();
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return;
+        };
+        let plant = PlantState {
+            species,
+            ..PlantState::default()
+        };
+        chunk.plants.insert(local.index(), plant);
+        fx.plants
+            .entry(pos)
+            .or_default()
+            .insert(local.index(), Some(plant));
+        fx.touched.insert(cell);
     }
 
     /// Removes and returns the plant state at `cell`, recording it.

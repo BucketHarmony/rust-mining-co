@@ -19,6 +19,7 @@ use rmc_client::{ClientEco, CommandSeq, FromHost, ToHost};
 use rmc_protocol::{ClientMsg, SeasonReport, ServerMsg};
 use rmc_world::coords::{CellAabb, CellPos, ChunkPos};
 use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS};
+use rmc_world::inventory::Inventory;
 use rmc_world::layers::LayerId;
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
@@ -326,6 +327,34 @@ impl TestApp {
                 None => panic!("no result for {cmd:?} within {MAX_EDIT_STEPS} steps"),
             }
         }
+    }
+
+    /// Digs the plant at `cell` with one pickaxe edit from the local player
+    /// and returns what the harvest added to the player's inventory on the
+    /// host (SAD-P2 §7.8): the plant's material and the yield materials of
+    /// what it held.
+    ///
+    /// Panics if `cell` holds no plant on the host or the edit is not
+    /// applied.
+    pub fn harvest(&mut self, cell: CellPos) -> Inventory {
+        assert!(
+            self.host_world().plant(cell).is_some(),
+            "{cell:?} holds no plant"
+        );
+        let held = |t: &Self| {
+            t.host()
+                .inventory(t.player_id())
+                .cloned()
+                .unwrap_or_default()
+        };
+        let before = held(self);
+        self.apply_edits(&[(EditOp::Damage(u16::MAX), Shape::Cell(cell))]);
+        let gained: Vec<(MaterialId, u32)> = held(self)
+            .items()
+            .into_iter()
+            .map(|(id, n)| (id, n - before.count(id)))
+            .collect();
+        Inventory::from_items(&gained)
     }
 
     fn edit_result(&self, id: CommandId) -> Option<&EditStatus> {
@@ -1005,6 +1034,78 @@ mod tests {
             u64::from(volume(s.feature)) * 50
         );
         assert_eq!(replica_hash(&t), t.host_world().hash());
+    }
+
+    #[test]
+    fn harvest_yields_copper_dust_and_ledgers() {
+        let mut t = joined();
+        let eco = t.eco_tables().clone();
+        let materials = eco.materials();
+        let key = |k: &str| materials.id(k).unwrap();
+        let cu = eco.substance_index("cu").unwrap();
+        let x = usize::from(cu);
+        let soil = materials.with_tag("soil").next().unwrap().id;
+        let s = t.fixture(Fixture::Patch(soil, cu, 120));
+
+        // A fireweed planted with the brush on the copper patch, and one on
+        // clean ground outside it.
+        let top = s.feature.max.0.y;
+        let (mid_x, mid_z) = (s.feature.min.0.x + 3, s.feature.min.0.z + 3);
+        let on_copper = CellPos::new(mid_x, top + 1, mid_z);
+        let clean = CellPos::new(s.site.min.0.x + 2, top + 1, s.site.min.0.z + 2);
+        let fireweed = key("fireweed");
+        for c in [on_copper, clean] {
+            t.apply_edits(&[(EditOp::Set(fireweed), Shape::Cell(c))]);
+            let p = t
+                .host_world()
+                .plant(c)
+                .expect("the brush plants a fireweed");
+            assert_eq!(
+                usize::from(p.species),
+                eco.plants()
+                    .iter()
+                    .position(|p| p.key == "fireweed")
+                    .unwrap()
+            );
+        }
+        let anchor = CellPos::new(on_copper.0.x, top, on_copper.0.z);
+        let anchor_cu = t.layer_u8(anchor, LayerId::Substance(cu));
+        assert_eq!(anchor_cu, 120);
+
+        // A season of uptake: the fireweed holds copper from its anchor.
+        t.advance_season();
+        let held = t.host_world().plant(on_copper).expect("it lives").held[x];
+        assert!(held > 0, "the fireweed took up copper");
+        assert_eq!(t.host_world().plant(clean).map(|p| p.held[x]), Some(0));
+
+        // Harvest: the plant and max(1, held >> harvest_shift) copper_dust
+        // come to the inventory, and the held copper leaves the world
+        // through the between-seasons ledger's harvest_out.
+        let before_out = t.host().between_seasons().unwrap().harvest_out[x];
+        let total_before = t.sum_layer(LayerId::Substance(cu), s.site);
+        let got = t.harvest(on_copper);
+        let dust = (u32::from(held) >> eco.params().harvest_shift).max(1);
+        assert_eq!(
+            got,
+            Inventory::from_items(&[(fireweed, 1), (key("copper_dust"), dust)])
+        );
+        assert_eq!(t.host_world().get_cell(on_copper), Some(MaterialId::AIR));
+        assert!(t.host_world().plant(on_copper).is_none());
+        let ledger = t.host().between_seasons().unwrap();
+        assert_eq!(ledger.harvest_out[x] - before_out, i64::from(held));
+        assert_eq!(
+            t.sum_layer(LayerId::Substance(cu), s.site),
+            total_before,
+            "nothing held goes back into the ground"
+        );
+        // A fireweed that held nothing yields only itself.
+        assert_eq!(t.harvest(clean), Inventory::from_items(&[(fireweed, 1)]));
+        t.step();
+        assert_eq!(replica_hash(&t), t.host_world().hash());
+        // The next season's report carries the harvest.
+        t.advance_season();
+        let report = &t.last_season().unwrap().report;
+        assert_eq!(report.between_seasons.harvest_out[x], i64::from(held));
     }
 
     #[test]
