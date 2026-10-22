@@ -887,12 +887,13 @@ mod tests {
         tap(&mut app, down);
 
         // Material: the default is the first placeable solid; next and
-        // previous walk the solid materials in id order and wrap.
-        let solids: Vec<MaterialId> = table
-            .iter()
-            .filter(|d| d.is_solid())
-            .map(|d| d.id)
-            .collect();
+        // previous walk the brush materials in id order and wrap. Those are
+        // every solid material (and, from SAD-P2 §10, the liquids).
+        let solids: Vec<MaterialId> = brush_materials(&table).collect();
+        assert!(solids.is_sorted(), "brush materials in id order");
+        for def in table.iter().filter(|d| d.is_solid()) {
+            assert!(solids.contains(&def.id), "{} is a brush material", def.key);
+        }
         let placeable = table
             .with_tag("placeable")
             .find(|d| d.is_solid())
