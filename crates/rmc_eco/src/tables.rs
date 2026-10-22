@@ -189,6 +189,17 @@ pub struct PlantDef {
     pub holds: bool,
     #[serde(default)]
     pub tall: bool,
+    /// SAD-P2 §8: the chance in 256, rolled by a seeded cell hash, that
+    /// worldgen starts this species on a surface anchor that passes its
+    /// needs. 0 (absent): worldgen never seeds it. Not encoded when 0, so
+    /// tables written before F168 keep their hash.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub worldgen_chance: u8,
+}
+
+/// Whether `n` is 0, for fields left out of the canonical encoding then.
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 /// One season of `seasons.ron`.

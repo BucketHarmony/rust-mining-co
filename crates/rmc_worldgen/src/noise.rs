@@ -27,6 +27,9 @@ pub const LAYER_WATER_TABLE: u32 = 0x0600;
 pub const LAYER_MAGMA: u32 = 0x0700;
 /// Layer id of the magma chamber boundary noise.
 pub const LAYER_MAGMA_BLOB: u32 = 0x0701;
+/// Layer id of species `i`'s surface plant roll is `LAYER_PLANTS + i`
+/// (SAD-P2 §8).
+pub const LAYER_PLANTS: u32 = 0x0800;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in

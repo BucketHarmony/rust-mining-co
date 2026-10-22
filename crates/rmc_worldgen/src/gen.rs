@@ -18,6 +18,7 @@ use crate::noise::{
     LAYER_SURFACE, LAYER_WATER_TABLE, NoiseLayer, cell_hash,
 };
 use crate::params::{GenError, GenParams, ONE_MILLION};
+use crate::plants::PlantInit;
 use crate::strata::Strata;
 use crate::temperature::TemperatureInit;
 use crate::water::WaterTableInit;
@@ -179,6 +180,10 @@ pub struct Generator {
     magma: Option<(MaterialId, MaterialId)>,
     /// The initial light layer (SAD-P2 §8), when set.
     light: Option<LightInit>,
+    /// The surface plants (SAD-P2 §8), when set.
+    plants: Option<PlantInit>,
+    /// The world seed.
+    seed: u64,
 }
 
 pub(crate) fn resolve(
@@ -304,6 +309,8 @@ impl Generator {
             }),
             magma: None,
             light: None,
+            plants: None,
+            seed,
         })
     }
 
@@ -338,6 +345,16 @@ impl Generator {
     /// out. Without it chunks carry no light layer, as in Phase 1.
     pub fn with_light(mut self, init: LightInit) -> Self {
         self.light = Some(init);
+        self
+    }
+
+    /// Also seeds the surface plants (SAD-P2 §8) in
+    /// [`Generator::generate_world`], after the light layer, whose values
+    /// the plants' needs read: without [`Generator::with_light`] the world
+    /// is dark and only species that need no light can start. Without it
+    /// the world has no plants, as before.
+    pub fn with_plants(mut self, init: PlantInit) -> Self {
+        self.plants = Some(init);
         self
     }
 
@@ -388,11 +405,15 @@ impl Generator {
 
     /// Every chunk that overlaps the world bounds, generated in parallel,
     /// in the bounds' (y, z, x) chunk order, then lit when
-    /// [`Generator::with_light`] is set.
+    /// [`Generator::with_light`] is set and planted when
+    /// [`Generator::with_plants`] is set.
     pub fn generate_world(&self) -> Vec<(ChunkPos, Chunk)> {
         let mut chunks = self.generate_chunks(self.bounds().chunks());
         if let Some(light) = &self.light {
             light.fill(self.bounds(), &mut chunks);
+        }
+        if let Some(plants) = &self.plants {
+            plants.fill(self.seed, self.bounds(), &mut chunks);
         }
         chunks
     }

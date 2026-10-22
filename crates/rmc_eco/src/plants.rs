@@ -398,6 +398,57 @@ impl SweepPass for SpreadPass {
     }
 }
 
+/// The species as worldgen's surface plants see them (SAD-P2 §8): which
+/// species it seeds, and whether one may start on a given anchor.
+#[derive(Clone, Debug)]
+pub struct PlantStarts {
+    species: Vec<Species>,
+    chances: Vec<u8>,
+}
+
+impl PlantStarts {
+    /// From the tables, whose material table must be the one the world
+    /// uses.
+    pub fn new(tables: &EcoTables) -> Self {
+        Self {
+            species: Species::all(tables),
+            chances: tables.plants().iter().map(|p| p.worldgen_chance).collect(),
+        }
+    }
+
+    /// `(species index, material, worldgen_chance)` of every species
+    /// worldgen seeds (a chance above 0 and a material in the table), in
+    /// row order.
+    pub fn seeded(&self) -> impl Iterator<Item = (u8, MaterialId, u8)> + '_ {
+        self.species
+            .iter()
+            .zip(&self.chances)
+            .enumerate()
+            .filter_map(|(i, (sp, &chance))| {
+                let i = u8::try_from(i).ok()?;
+                (chance > 0).then_some((i, sp.material?, chance))
+            })
+    }
+
+    /// Whether a plant of species `species` may start at `cell` over an
+    /// anchor of material `anchor`: the anchor carries one of its
+    /// `anchor_tags` and its needs hold (§7.8 step 1), reading layers
+    /// through `layer`. The caller checks that `cell` is air.
+    pub fn passes(
+        &self,
+        species: u8,
+        cell: CellPos,
+        anchor: MaterialId,
+        layer: impl Fn(CellPos, LayerId) -> i32,
+    ) -> bool {
+        let Some(sp) = self.species.get(usize::from(species)) else {
+            return false;
+        };
+        let below = CellPos::new(cell.0.x, cell.0.y - 1, cell.0.z);
+        sp.anchors_on(anchor) && sp.needs_met(layer, cell, below)
+    }
+}
+
 /// The seeded spread roll of the plant at `cell` in sub-step `substep` of
 /// season `season`, 0..=255 (SAD-P2 §7.8: the hash's low byte).
 pub fn spread_roll(seed: u64, season: u32, substep: u8, cell: CellPos) -> u8 {
