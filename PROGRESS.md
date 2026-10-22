@@ -3177,3 +3177,42 @@ Next:
 - For F156: a cave over coal next to magma will ignite once firedamp reaches 64. The `firedamp_vented_by_shaft` fixture should keep magma away from the cave.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 20:20 — F154 Gas tint at camera and HUD gas readout with lantern icon — passed
+Done:
+- `HudPlugin` samples the `GameCamera`'s own cell in the replica's gas layers every frame, whether the player or the fly camera moved it. `HudState` gains three fields:
+  - `gases`: the nonzero gases in layer order, as `HudGas { layer, name, amount }`;
+  - `gas_tint`;
+  - `lantern`.
+- The readout sits under the temperature, top right, one line per gas (`steam 80`). The lantern icon (`LanternIcon`, a small bordered node) is between them.
+- Full-screen tint: a `GasTintOverlay` node is the first child of the HUD root, so it sits behind the rest of the HUD. `gas_overlay` composites the `eco.gas_tint` rows in order, each a layer of its color at opacity `SubstanceTint::share(c) / 255`.
+- Lantern: `LanternState::{Steady, Flaring, Danger}`. Flaring means some flammable gas below its `ignite_min`; Danger means at or above it. Colors are `LANTERN_*_COLOR`.
+- Data: a new `gas_tint` section in `assets/eco.ron` (steam, smoke), with the same row shape as the water `tint`. `EcoTables` validates it and adds two accessors:
+  - validation: a known gas, used once, `full > 0`, and the gas must be `visible`;
+  - `gas_tints()`, which resolves rows to `LayerId::Gas`;
+  - `flammable_gases()`.
+- `ClientEco` gains `gas_tint` and `flammable`. The game (`rmc_app::session::client_eco`) and the testkit fill them from the tables.
+- The tables hash covers `gas_tint` only when the section is non-empty, the same scheme as `tint`. The golden-hash fixture has neither, so it is unchanged.
+Tests added:
+- `hud::tests::gas_readout_follows_camera_cell` (the feature's test):
+  - it checks the pure `gas_overlay` and `lantern_state` first;
+  - in a rig, the camera follows the eye to cell (32, 7, 32). Gases on the eye's neighbors, the feet cell and the cell to the east are ignored until the camera's own cell holds some;
+  - steam alone, then steam and smoke composited, then firedamp at 10, 63 and 64 (Flaring, Flaring, Danger). Firedamp does not tint;
+  - stepping east follows the eye. With the fly camera on, the camera's own cell is read;
+  - a `LayerSnapshot` updates it; outside the resident chunks nothing is read;
+  - without `ClientEco`: `#i` names, no tint, a steady lantern. Without a camera: nothing;
+  - it also checks the overlay node's color and visibility, the readout text and the icon color.
+  - TDD note: the HUD code was written before this test. A mutation check (camera sampling disabled) makes it fail at the first gas assertion.
+- `tables::tests::gas_tint_rows_resolve_to_visible_gas_layers`: shipped rows resolve to visible gas layers, `flammable_gases` matches the table, the hash covers the rows, and an invisible gas, an unknown gas or `full: 0` is refused.
+- E2E `gas_tint_shows` (extra, for rule 21): each shipped tinted gas at 255 on the camera's cell sets `HudState.gas_tint` and the overlay; firedamp at `ignite_min` puts the lantern in Danger. Screenshots: `docs/screens/gas_tint_shows-{clean-41,steam-47,smoke-57,lantern-67}.png`. Passes (46 s).
+- `hudstate_reflects_target` now lists the three new `HudState` fields with their empty values. No assertion was removed.
+Decisions:
+- "Camera samples its own cell" means the `GameCamera`'s `Transform`, not the player's feet. The temperature readout stays on the feet cell (F144).
+- SAD-P2 §10 names no color source for gases, and rule 5 bars per-key code. So the tint is a data section, `eco.gas_tint`, mirroring the water `tint`. Only `visible` gases (§7.4) may have rows, and the loader enforces it.
+- Lantern icon state: the SAD gives no states. I used the safety-lamp reading: Steady with no flammable gas, Flaring below `ignite_min`, Danger at or above it. The icon only reports. Lantern ignition and gas harm stay out (§16, §17).
+- Rule 21: semantic assertions are on `HudState`, the overlay node's `BackgroundColor`/`Visibility`/size and the icon color. The only capture check is "frames differ". No pixel thresholds. In the steam shot the haze washes the view out to pale gray; the playtester judges the strength (the `strength`/`full` data in `eco.ron`).
+Next:
+- F156 (`firedamp_vented_by_shaft`) is now unblocked: F151, F153, F154 and F109 all pass. F155 and F160 are also ready.
+- The E3b milestone completes with F156, and then the playtester runs.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
