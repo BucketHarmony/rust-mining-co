@@ -7,6 +7,7 @@ pub mod chemistry;
 pub mod gases;
 pub mod invariants;
 pub mod ledger;
+pub mod light;
 pub mod reference;
 pub mod runner;
 pub mod tables;
@@ -21,6 +22,7 @@ pub use chemistry::{Move, MoveLog, ReactionsPass, Transport, TransportReport};
 pub use gases::GasPass;
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
 pub use ledger::SeasonLedger;
+pub use light::{LightGrid, LightPass};
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };

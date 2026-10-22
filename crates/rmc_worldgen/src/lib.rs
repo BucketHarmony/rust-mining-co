@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 pub mod r#gen;
+pub mod light;
 pub mod magma;
 pub mod noise;
 pub mod params;
@@ -10,6 +11,7 @@ pub mod temperature;
 pub mod water;
 
 pub use r#gen::{Generator, generate_chunk};
+pub use light::LightInit;
 pub use magma::MagmaInit;
 pub use params::{GenError, GenParams};
 pub use temperature::TemperatureInit;

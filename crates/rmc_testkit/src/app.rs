@@ -36,7 +36,9 @@ use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::GenParams;
 use rmc_worldgen::params::WorldBounds;
-use rmc_worldgen::{Generator, MagmaInit, NOISE_CRATE_VERSION, TemperatureInit, WaterTableInit};
+use rmc_worldgen::{
+    Generator, LightInit, MagmaInit, NOISE_CRATE_VERSION, TemperatureInit, WaterTableInit,
+};
 
 use crate::eco::SeasonLogPlugin;
 
@@ -395,8 +397,8 @@ fn gen_params(config: &TestConfig) -> GenParams {
 }
 
 /// The host's world: every chunk in the bounds of `params`, generated from
-/// `config.seed` with its temperature layer, water table and magma
-/// chambers (SAD-P2 §8)
+/// `config.seed` with its temperature layer, water table, magma
+/// chambers and light layer (SAD-P2 §8)
 /// and inserted.
 fn generate_world(config: &TestConfig, params: &GenParams, eco: &EcoTables) -> CellWorld {
     let materials = eco.materials();
@@ -404,7 +406,8 @@ fn generate_world(config: &TestConfig, params: &GenParams, eco: &EcoTables) -> C
         .expect("worldgen params fit the table")
         .with_temperature(TemperatureInit::new(eco))
         .with_water_table(WaterTableInit::new(eco))
-        .with_magma(MagmaInit::new(eco));
+        .with_magma(MagmaInit::new(eco))
+        .with_light(LightInit::new(eco));
     let mut world = CellWorld::new(materials.clone(), config.world_bounds);
     for (pos, chunk) in generator.generate_world() {
         world

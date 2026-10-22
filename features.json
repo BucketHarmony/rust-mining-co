@@ -2176,8 +2176,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Light is a single-threaded sweep (SAD-P2 §3, §7.7): column pass, then double-buffered lateral iterations. Attenuation comes only from MaterialDef.light_attenuation."
+      "passes": true,
+      "notes": "Light is a single-threaded sweep (SAD-P2 §3, §7.7): column pass, then double-buffered lateral iterations. Attenuation comes only from MaterialDef.light_attenuation.",
+      "passedAt": "2026-10-22T02:26:58Z"
     },
     {
       "id": "F161",

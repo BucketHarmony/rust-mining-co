@@ -11,6 +11,7 @@ use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 
+use crate::light::LightInit;
 use crate::magma::{Chamber, ChamberCell, Chambers, MagmaInit};
 use crate::noise::{
     LAYER_CAVE_BLOB, LAYER_CAVE_WORM_A, LAYER_CAVE_WORM_B, LAYER_CRYSTAL, LAYER_ORE, LAYER_SOIL,
@@ -176,6 +177,8 @@ pub struct Generator {
     chambers: Option<Chambers>,
     /// `(magma, core)` materials, when set and the table has both.
     magma: Option<(MaterialId, MaterialId)>,
+    /// The initial light layer (SAD-P2 §8), when set.
+    light: Option<LightInit>,
 }
 
 pub(crate) fn resolve(
@@ -300,6 +303,7 @@ impl Generator {
                 Chambers::plan(seed, m, params.bounds.aabb(), b.floor_cells, b.wall_cells)
             }),
             magma: None,
+            light: None,
         })
     }
 
@@ -324,6 +328,16 @@ impl Generator {
     /// magma, as in Phase 1.
     pub fn with_magma(mut self, init: MagmaInit) -> Self {
         self.magma = init.materials();
+        self
+    }
+
+    /// Also writes the light layer (SAD-P2 §8) in
+    /// [`Generator::generate_world`], by one full light pass over the
+    /// generated world. A single chunk cannot be lit alone, so
+    /// [`Generator::generate`] and [`Generator::generate_chunks`] leave it
+    /// out. Without it chunks carry no light layer, as in Phase 1.
+    pub fn with_light(mut self, init: LightInit) -> Self {
+        self.light = Some(init);
         self
     }
 
@@ -373,9 +387,14 @@ impl Generator {
     }
 
     /// Every chunk that overlaps the world bounds, generated in parallel,
-    /// in the bounds' (y, z, x) chunk order.
+    /// in the bounds' (y, z, x) chunk order, then lit when
+    /// [`Generator::with_light`] is set.
     pub fn generate_world(&self) -> Vec<(ChunkPos, Chunk)> {
-        self.generate_chunks(self.bounds().chunks())
+        let mut chunks = self.generate_chunks(self.bounds().chunks());
+        if let Some(light) = &self.light {
+            light.fill(self.bounds(), &mut chunks);
+        }
+        chunks
     }
 
     /// The chunks at `positions`, generated in parallel (rayon) and

@@ -269,6 +269,27 @@ impl ChunkLayers {
         }
     }
 
+    /// Sets every value of the `u8` layer `id` and returns whether any read
+    /// changed. An absent layer reads 0, so all zeros leave it absent and
+    /// unchanged; other values materialize it. Panics if `id` is an `i16`
+    /// layer or out of range.
+    pub fn replace_u8(&mut self, id: LayerId, values: &[u8; CHUNK_VOLUME]) -> bool {
+        check_u8(id);
+        if !self.map.contains_key(&id) && values.iter().all(|&v| v == 0) {
+            return false;
+        }
+        match self.layer_mut(id) {
+            LayerData::U8(data) => {
+                if **data == *values {
+                    return false;
+                }
+                data.copy_from_slice(values);
+                true
+            }
+            LayerData::I16(_) => unreachable!("u8 layer {id:?} stored as i16"),
+        }
+    }
+
     /// Materializes `id` as all zeros if it is absent. Reads do not change.
     pub fn materialize(&mut self, id: LayerId) {
         assert!(id.is_valid(), "layer {id:?} index out of range");
@@ -652,6 +673,27 @@ mod tests {
             LocalPos::new(0, 0, 0),
             1,
         );
+    }
+
+    #[test]
+    fn replace_u8_reports_read_changes() {
+        let mut layers = ChunkLayers::default();
+        let mut values = Box::new([0u8; CHUNK_VOLUME]);
+        // All zeros over an absent layer: no read changes, nothing stored.
+        assert!(!layers.replace_u8(LayerId::Light, &values));
+        assert!(!layers.contains(LayerId::Light));
+        let at = LocalPos::new(3, 4, 5);
+        values[usize::from(at.index())] = 200;
+        assert!(layers.replace_u8(LayerId::Light, &values));
+        assert_eq!(layers.get_u8(LayerId::Light, at), 200);
+        assert!(!layers.replace_u8(LayerId::Light, &values), "same values");
+        values[usize::from(at.index())] = 0;
+        assert!(layers.replace_u8(LayerId::Light, &values));
+        assert!(
+            layers.contains(LayerId::Light),
+            "a materialized layer stays"
+        );
+        assert!(!layers.replace_u8(LayerId::Light, &values));
     }
 
     #[test]

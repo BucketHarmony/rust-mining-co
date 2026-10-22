@@ -18,6 +18,7 @@ use rmc_world::world::World;
 use crate::activity::{Activity, JacobiKind};
 use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::{Emission, GasPass};
+use crate::light::LightPass;
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
@@ -38,6 +39,9 @@ pub struct TickReport {
     /// Chunks computed (not skipped as quiet) by each Jacobi pass, in run
     /// order (sub-step major).
     pub active_chunks_per_jacobi: Vec<u32>,
+    /// Sub-steps whose light pass found the world dirty and recomputed
+    /// (SAD-P2 §7.7).
+    pub light_recomputes: u32,
 }
 
 /// One pass of a sub-step, as [`season_tick_observed`] reports it.
@@ -62,6 +66,8 @@ pub enum PassId {
     Transport,
     /// Chemistry reactions (§7.6).
     Reactions,
+    /// Light (§7.7), reported whether or not the world was dirty.
+    Light,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -89,6 +95,8 @@ struct Passes {
     transport: Transport,
     /// §7.6 reactions, after transport.
     reactions: ReactionsPass,
+    /// §7.7, after chemistry.
+    light: LightPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -144,6 +152,7 @@ pub fn season_tick_observed(
         weathering: WeatheringPass::new(tables),
         transport: Transport::new(tables),
         reactions: ReactionsPass::new(tables),
+        light: LightPass::new(tables),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
@@ -172,7 +181,8 @@ pub fn season_tick_observed(
 /// The gases (§7.4) run one sweep per gas row, then emission.
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
-/// this sub-step. Only the flow and gas sweeps add an
+/// this sub-step. Light (§7.7) runs last, and only when the world is
+/// dirty. Only the flow and gas sweeps add an
 /// `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
@@ -256,6 +266,10 @@ fn substep(
         report,
     );
     after(PassId::Reactions, world, &report.ledger);
+    if passes.light.run(world) {
+        report.light_recomputes += 1;
+    }
+    after(PassId::Light, world, &report.ledger);
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -739,6 +753,7 @@ mod tests {
                         (i, PassId::Weathering),
                         (i, PassId::Transport),
                         (i, PassId::Reactions),
+                        (i, PassId::Light),
                     ]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");

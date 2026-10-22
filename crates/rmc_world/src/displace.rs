@@ -243,6 +243,37 @@ impl World {
         true
     }
 
+    /// Whether any chunk's `revision` changed since the last
+    /// [`World::eco_clear_light_dirty`] (SAD-P2 §7.7: the world-level dirty
+    /// flag). A new world is dirty.
+    pub fn light_dirty(&self) -> bool {
+        self.light_dirty
+    }
+
+    /// Clears the light dirty flag. Host-only, for `rmc_eco`'s light pass.
+    pub fn eco_clear_light_dirty(&mut self) {
+        self.light_dirty = false;
+    }
+
+    /// Season-pass light write (rule 14). Host-only, called only by
+    /// `rmc_eco`'s light pass inside `season_tick`.
+    ///
+    /// Replaces the `Light` layer of the resident chunk at `pos` with
+    /// `values` (indexed by [`crate::coords::LocalPos::index`]) and returns whether it
+    /// changed; a change bumps the chunk's `eco_revision`. Light is no sweep
+    /// quantity, so no active set changes. A non-resident chunk changes
+    /// nothing.
+    pub fn eco_put_light(&mut self, pos: ChunkPos, values: &[u8; CHUNK_VOLUME]) -> bool {
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return false;
+        };
+        if !chunk.layers.replace_u8(LayerId::Light, values) {
+            return false;
+        }
+        chunk.eco_revision += 1;
+        true
+    }
+
     /// Season-pass plant write (rule 14). Host-only, called only by
     /// `rmc_eco` inside `season_tick`.
     ///
@@ -399,6 +430,7 @@ impl World {
             return false;
         }
         chunk.storage.set(local, to);
+        self.light_dirty = true;
         self.damage.clear(cell);
         fx.cells.entry(pos).or_default().insert(local.index(), to);
         fx.touched.insert(cell);

@@ -59,6 +59,9 @@ pub struct World {
     pub(crate) columns: Columns,
     /// Roles for the displacement rules (SAD-P2 §7.0).
     pub(crate) rules: Arc<EcoRules>,
+    /// Set when any chunk's `revision` changes (a cell's material changed
+    /// or a chunk was inserted); cleared by the light pass (SAD-P2 §7.7).
+    pub(crate) light_dirty: bool,
 }
 
 impl World {
@@ -80,6 +83,7 @@ impl World {
             bounds,
             columns: Columns::default(),
             rules: Arc::default(),
+            light_dirty: true,
         }
     }
 
@@ -487,6 +491,7 @@ impl World {
                 let chunk = self.chunks.get_mut(&pos).expect("checked resident");
                 chunk.revision = *revision;
                 chunk.modified = true;
+                self.light_dirty = true;
             }
             ChunkDelta::Full {
                 revision, storage, ..
@@ -513,6 +518,7 @@ impl World {
                 chunk.storage = storage;
                 chunk.revision = *revision;
                 chunk.modified = true;
+                self.light_dirty = true;
                 self.rebuild_columns(pos);
             }
             ChunkDelta::Layers {
@@ -584,6 +590,7 @@ impl World {
         tracing::debug!(?pos, revision = chunk.revision, "chunk inserted");
         self.damage.clear_chunk(pos);
         let previous = self.chunks.insert(pos, chunk);
+        self.light_dirty = true;
         self.rebuild_columns(pos);
         Ok(previous)
     }
@@ -1686,5 +1693,59 @@ mod tests {
         let far = CellPos::new(-1, 3, 1);
         w.apply_keeping_clear(&edit(5, EditOp::Damage(u16::MAX), Shape::Cell(far)), &keep);
         assert_eq!(w.get_cell(far), Some(MaterialId::AIR));
+    }
+
+    #[test]
+    fn light_dirty_follows_material_changes() {
+        let table = phase1();
+        let stone = id(&table, "stone");
+        let mut w = replica_test_world(&table);
+        let p = ChunkPos::new(0, 0, 0);
+        let cell = cell_in(p, 4, 31, 4);
+        assert!(w.light_dirty(), "a new world is dirty");
+        w.eco_clear_light_dirty();
+
+        // Layer-only changes and refused edits leave it clean.
+        w.apply(&edit(
+            1,
+            EditOp::SetLayer {
+                layer: LayerId::Moisture,
+                value: 7,
+            },
+            Shape::Cell(cell),
+        ));
+        assert!(!w.light_dirty(), "a layer edit");
+        w.apply(&edit(
+            2,
+            EditOp::Set(w.get_cell(cell).unwrap()),
+            Shape::Cell(cell),
+        ));
+        assert!(!w.light_dirty(), "a cell set to what it holds");
+
+        // A material edit dirties it.
+        w.apply(&edit(3, EditOp::Remove, Shape::Cell(cell)));
+        assert!(w.light_dirty(), "an edit");
+        w.eco_clear_light_dirty();
+
+        // So do cell and full deltas, and an insertion.
+        let rev = w.chunk(p).unwrap().revision;
+        w.apply_delta(&ChunkDelta::Cells {
+            pos: p,
+            revision: rev + 1,
+            changes: vec![(cell.local().index(), stone)],
+        })
+        .unwrap();
+        assert!(w.light_dirty(), "a cell delta");
+        w.eco_clear_light_dirty();
+        w.apply_delta(&ChunkDelta::Full {
+            pos: p,
+            revision: rev + 2,
+            storage: ChunkStorage::Uniform(stone),
+        })
+        .unwrap();
+        assert!(w.light_dirty(), "a full delta");
+        w.eco_clear_light_dirty();
+        w.insert_chunk(p, Chunk::uniform(stone)).unwrap();
+        assert!(w.light_dirty(), "an insertion");
     }
 }
