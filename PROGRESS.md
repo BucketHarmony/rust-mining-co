@@ -3245,3 +3245,34 @@ Next:
 - For F156: soil with `c` next to air now makes chokedamp each sub-step. The fixture's ledger and gas totals should allow for it, or keep `c` out of the cave's soil.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 21:12 — F156 E2E: firedamp_vented_by_shaft — passed
+Done:
+- New scenario `tests/e2e/tests/firedamp_vented_by_shaft.rs` (SAD-P2 §12). No production code changed.
+  - Build: `Fixture::SealedCave`, then the cave's shell (floor, walls, roof) and its lower two rows are set to the material that emits the flammable gas (coal). That leaves an 8×2×8 sealed working inside the seam. Rain is 0.
+  - 3 sealed seasons: the ceiling row's firedamp sum must be ≥ 64 × `ignite_min`. It reached 4720 (mean 73; rows 4496 / 4720).
+  - The camera goes in the ceiling cell with the most gas (97). The HUD lantern must be `Danger`. Screenshot `sealed`.
+  - Dig the shaft: the cave's footprint, from the roof up to the ground level. `surface_y` must drop to the cave floor.
+  - 1 season: ceiling 4720 → 78 (mean 1). The test asserts:
+    - `after * 10 < before`;
+    - `emit_in > 0` (the seam keeps emitting);
+    - `vent_out ≥` the drop;
+    - the lantern is not `Danger` (it reads 5).
+  - Screenshot `vented`, looking up the shaft.
+- Screenshots: `docs/screens/firedamp_vented_by_shaft-{sealed-22,vented-34}.png`. The scenario passes in about 60 s.
+Tests added: `e2e:firedamp_vented_by_shaft`.
+Decisions:
+- A seam under the floor alone cannot reach the threshold at the shipped rates. Coal emits 2 per sub-step (§8), over 8 sub-steps × 3 seasons, so each column gains at most 48, below `ignite_min` 64, whatever the cave's shape.
+  - A scratch simulation confirmed it: an 8×4×8 cave over a coal floor reaches a ceiling mean of 18 (30 after 6 seasons). A roof chimney did not concentrate the gas enough either.
+  - So the cave is cut *into* the seam: it lies on coal, and its walls and roof are coal too. It is two cells high so the ceiling mean clears 64 with margin (73). With all coal and the full 4-row cave, the mean is 57.
+  - No rate was tuned (rule 19).
+- The "shaft" is as wide as the cave (8×8 cells, 4 m × 4 m), so every cave cell is sky-open and vents by §7.4 step 3. This acts as a skylight. It does not prove venting up a narrow shaft, which is diffusion-limited (F151: a one-cell shaft needs about 7 seasons).
+  - In simulation, 2×2, 4×4 and 6×6 shafts left the ceiling at 79, 50 and 17 of 73 after one season, because the coal roof under the ledge keeps emitting.
+  - The reviewer accepted this as a defensible reading.
+- "Ceiling" means the cave's top row. Both checks use its sum (mean). The per-cell minimum after 3 seasons is about 58, so "every ceiling cell ≥ 64" would not hold. The lantern check uses the hottest ceiling cell.
+- Dry seasons (rain 0) keep water off the seam in the open shaft, so the scenario measures gas only.
+Next:
+- E3b is complete (F151–F156 pass). The playtester runs this session (step 11).
+- Ready: F160 (light).
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
