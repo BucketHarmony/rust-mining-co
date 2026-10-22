@@ -290,6 +290,23 @@ pub struct TintDef {
     pub strength: u8,
 }
 
+/// One row of `eco.gas_tint` (SAD-P2 §10): how a `visible` gas at the
+/// camera's cell tints the screen. The client composites the rows in
+/// order, each a layer of `color` whose opacity is
+/// [`SubstanceTint::share`] of the concentration, out of 255.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GasTintDef {
+    pub gas: String,
+    /// sRGB.
+    pub color: [u8; 3],
+    /// The concentration at and above which the tint is at full strength;
+    /// above 0.
+    pub full: u8,
+    /// The opacity at full strength, out of 255.
+    pub strength: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EcoFile {
@@ -299,6 +316,9 @@ struct EcoFile {
     /// Absent means no tint.
     #[serde(default)]
     tint: Vec<TintDef>,
+    /// Absent means no gas tint.
+    #[serde(default)]
+    gas_tint: Vec<GasTintDef>,
 }
 
 /// The text of the seven Phase 2 files, for loading from memory.
@@ -386,6 +406,7 @@ pub struct EcoTables {
     roles: Roles,
     eco_test: EcoTestParams,
     tint: Vec<TintDef>,
+    gas_tint: Vec<GasTintDef>,
     unresolved: BTreeSet<String>,
     hash: u64,
 }
@@ -435,6 +456,7 @@ impl EcoTables {
             roles,
             eco_test,
             tint,
+            gas_tint,
         } = parse(ECO_FILE, &src.eco)?;
 
         let mut unresolved = BTreeSet::new();
@@ -616,6 +638,23 @@ impl EcoTables {
                 ));
             }
         }
+        unique_keys(ECO_FILE, "gas_tint", gas_tint.iter().map(|r| &r.gas))?;
+        for row in &gas_tint {
+            key_in(ECO_FILE, "gas_tint", "gas", &row.gas, &gas_keys)?;
+            if row.full == 0 {
+                return Err(invalid(
+                    ECO_FILE,
+                    format!("gas_tint {:?} has full 0", row.gas),
+                ));
+            }
+            // Only gases the player can see tint the view (§7.4 `visible`).
+            if gases.iter().any(|g| g.key == row.gas && !g.visible) {
+                return Err(invalid(
+                    ECO_FILE,
+                    format!("gas_tint {:?} names a gas that is not visible", row.gas),
+                ));
+            }
+        }
         // Role `air` is the only Phase::Air material (SAD-P2 §3).
         let air_key = &roles.materials["air"];
         for d in materials.iter().filter(|d| d.phase == Phase::Air) {
@@ -656,6 +695,7 @@ impl EcoTables {
             roles,
             eco_test,
             tint,
+            gas_tint,
             unresolved,
             hash: 0,
         };
@@ -676,11 +716,12 @@ impl EcoTables {
             &self.eco_test,
         );
         // Tables without `tint` hash as they did before the section existed
-        // (F146), so the golden hash and older save headers still match.
-        if self.tint.is_empty() {
-            tables_hash(self.materials.hash(), &tables)
-        } else {
-            tables_hash(self.materials.hash(), &(tables, &self.tint))
+        // (F146), and tables without `gas_tint` as they did before F154, so
+        // the golden hash and older save headers still match.
+        match (self.tint.is_empty(), self.gas_tint.is_empty()) {
+            (true, true) => tables_hash(self.materials.hash(), &tables),
+            (false, true) => tables_hash(self.materials.hash(), &(tables, &self.tint)),
+            _ => tables_hash(self.materials.hash(), &(tables, &self.tint, &self.gas_tint)),
         }
     }
 
@@ -770,6 +811,39 @@ impl EcoTables {
                     strength: row.strength,
                 })
             })
+            .collect()
+    }
+
+    /// The `gas_tint` rows of `eco.ron`, in order.
+    pub fn gas_tint(&self) -> &[GasTintDef] {
+        &self.gas_tint
+    }
+
+    /// The `gas_tint` rows resolved to gas layers (SAD-P2 §10), in order:
+    /// what the client composites over the view at the camera's cell.
+    pub fn gas_tints(&self) -> Vec<SubstanceTint> {
+        self.gas_tint
+            .iter()
+            .filter_map(|row| {
+                let i = self.gases.iter().position(|g| g.key == row.gas)?;
+                Some(SubstanceTint {
+                    layer: LayerId::Gas(u8::try_from(i).ok()?),
+                    color: row.color,
+                    full: row.full,
+                    strength: row.strength,
+                })
+            })
+            .collect()
+    }
+
+    /// The flammable gases' layers with their `ignite_min`, in row order:
+    /// what the client's lantern icon reads (SAD-P2 §10).
+    pub fn flammable_gases(&self) -> Vec<(LayerId, u8)> {
+        self.gases
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.flammable)
+            .filter_map(|(i, g)| Some((LayerId::Gas(u8::try_from(i).ok()?), g.ignite_min)))
             .collect()
     }
 
@@ -1002,6 +1076,56 @@ mod tests {
         assert_eq!(rule.ph_shift, t.params().ph_shift);
         assert_eq!(rule.acid, t.substance_layers().layer("acid"));
         assert_eq!(rule.lime, t.substance_layers().layer("lime"));
+    }
+
+    #[test]
+    fn gas_tint_rows_resolve_to_visible_gas_layers() {
+        let t = shipped();
+        let tints = t.gas_tints();
+        assert!(!tints.is_empty(), "the shipped gas tints");
+        assert_eq!(tints.len(), t.gas_tint().len());
+        for (row, tint) in t.gas_tint().iter().zip(&tints) {
+            let i = t.gases().iter().position(|g| g.key == row.gas).unwrap();
+            assert_eq!(tint.layer, LayerId::Gas(u8::try_from(i).unwrap()));
+            assert!(t.gases()[i].visible, "{} is visible", row.gas);
+            assert_eq!(
+                (tint.color, tint.full, tint.strength),
+                (row.color, row.full, row.strength)
+            );
+            assert!(tint.full > 0 && tint.strength > 0, "{}", row.gas);
+        }
+        // Every flammable row, with its ignition threshold.
+        let flammable = t.flammable_gases();
+        let want: Vec<(LayerId, u8)> = t
+            .gases()
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.flammable)
+            .map(|(i, g)| (LayerId::Gas(u8::try_from(i).unwrap()), g.ignite_min))
+            .collect();
+        assert!(!want.is_empty());
+        assert_eq!(flammable, want);
+
+        // The hash covers the rows.
+        let edited =
+            load_edited(|src| replace_once(&mut src.eco, "full: 160", "full: 161")).unwrap();
+        assert_ne!(edited.hash(), t.hash());
+        // An invisible gas, an unknown gas and full 0 are refused.
+        let invisible = t.gases().iter().find(|g| !g.visible).unwrap().key.clone();
+        let first = t.gas_tint()[0].gas.clone();
+        for (from, to) in [
+            (format!("gas: {first:?}"), format!("gas: {invisible:?}")),
+            (format!("gas: {first:?}"), "gas: \"nope\"".to_string()),
+            ("full: 160".to_string(), "full: 0".to_string()),
+        ] {
+            assert!(
+                matches!(
+                    load_edited(|src| replace_once(&mut src.eco, &from, &to)),
+                    Err(EcoTableError::Invalid { file: ECO_FILE, .. })
+                ),
+                "{to}"
+            );
+        }
     }
 
     #[test]

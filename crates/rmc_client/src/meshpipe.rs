@@ -1599,6 +1599,8 @@ mod tests {
             player_tox: Default::default(),
             plant_tox: Default::default(),
             tint: vec![fe_tint],
+            gas_tint: Vec::new(),
+            flammable: Vec::new(),
         });
         f.join();
         f.drain();

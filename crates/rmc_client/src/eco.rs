@@ -35,6 +35,12 @@ pub struct ClientEco {
     /// `eco.tint`: how dissolved substances shift the color of water in
     /// the liquid pass, in row order.
     pub tint: Vec<SubstanceTint>,
+    /// `eco.gas_tint`: how visible gases at the camera's cell tint the
+    /// view, in row order (layers are `LayerId::Gas`).
+    pub gas_tint: Vec<SubstanceTint>,
+    /// The flammable gases' layers and `ignite_min`: what the HUD's
+    /// lantern icon reads.
+    pub flammable: Vec<(LayerId, u8)>,
 }
 
 impl ClientEco {
@@ -50,7 +56,7 @@ impl ClientEco {
     }
 }
 
-fn unnamed(id: LayerId) -> String {
+pub(crate) fn unnamed(id: LayerId) -> String {
     match id {
         LayerId::Substance(i) | LayerId::Gas(i) => format!("#{i}"),
         other => format!("{other:?}"),
@@ -197,6 +203,8 @@ mod tests {
             player_tox: ToxProfile::new(player),
             plant_tox: ToxProfile::new(plant),
             tint: Vec::new(),
+            gas_tint: Vec::new(),
+            flammable: Vec::new(),
         }
     }
 

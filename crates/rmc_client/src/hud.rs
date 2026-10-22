@@ -27,6 +27,22 @@
 //!   `substances.ron`), [`SPOIL_LABEL`] shows under the material name in
 //!   [`SPOIL_COLOR`]. It reads the replica's substance layers, so it follows
 //!   seasons and layer edits. Without [`ClientEco`] it never shows.
+//! - Gas (SAD-P2 §10): every frame the [`GameCamera`]'s own cell is
+//!   sampled in the replica's gas layers, whether the player or the fly
+//!   camera moves it.
+//!   - The readout, under the temperature, lists each nonzero gas in layer
+//!     order as `<key> <concentration>` ([`HudGas`]).
+//!   - The view tint is a full-screen [`GasTintOverlay`] node behind the
+//!     rest of the HUD: the `eco.gas_tint` rows composited in order, each
+//!     a layer of its color at opacity [`SubstanceTint::share`] of the
+//!     concentration ([`gas_overlay`]). Only `visible` gases have rows.
+//!   - The [`LanternIcon`] next to it shows [`LanternState`]: steady with
+//!     no flammable gas at the camera, flaring with some below its
+//!     `ignite_min`, danger at or above it. Gas harm and lantern ignition
+//!     are not modelled (SAD-P2 §16: HUD only).
+//!   - Without [`ClientEco`], gases read by layer index, with no tint and
+//!     a steady lantern. Without a camera, or outside the resident chunks,
+//!     nothing is shown.
 //! - Inventory: the host sends an `Inventory` message with the new totals
 //!   after every `Applied` result that yields (SAD §8.4). [`ClientInventory`]
 //!   holds the last totals; `Welcome` empties it. Yields in `Applied` are
@@ -73,14 +89,15 @@ use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellPos, ChunkPos, LocalPos};
 use rmc_world::edit::{ChunkDelta, EditOp};
 use rmc_world::inventory::Inventory;
-use rmc_world::layers::LayerId;
+use rmc_world::layers::{LayerId, N_GASES};
 use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::query::SubstanceTint;
 use rmc_world::world::World;
 
 use crate::controller::Player;
-use crate::eco::ClientEco;
+use crate::eco::{ClientEco, unnamed};
 use crate::editor::EditorState;
-use crate::flycam::FlyCam;
+use crate::flycam::{FlyCam, FlyCamSystems};
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
 use crate::render::{GameCamera, chunk_material};
@@ -111,6 +128,19 @@ pub const SPOIL_LABEL: &str = "SPOIL";
 
 /// The spoil indicator's text color: a sickly yellow-green.
 pub const SPOIL_COLOR: Color = Color::srgb(0.78, 0.92, 0.22);
+
+/// Size of the [`LanternIcon`], in logical pixels.
+pub const LANTERN_ICON_SIZE: Vec2 = Vec2::new(10.0, 16.0);
+
+/// The lantern icon with no flammable gas at the camera: a warm flame.
+pub const LANTERN_STEADY_COLOR: Color = Color::srgb(1.0, 0.82, 0.35);
+
+/// The lantern icon with flammable gas below its `ignite_min`: the blue
+/// cap a safety lamp's flame shows in firedamp.
+pub const LANTERN_FLARING_COLOR: Color = Color::srgb(0.45, 0.68, 1.0);
+
+/// The lantern icon with flammable gas at or above its `ignite_min`.
+pub const LANTERN_DANGER_COLOR: Color = Color::srgb(1.0, 0.22, 0.12);
 
 /// The damage bar's size, in logical pixels.
 pub const DAMAGE_BAR_SIZE: Vec2 = Vec2::new(120.0, 6.0);
@@ -263,6 +293,38 @@ pub struct BreakEffect {
 }
 
 /// One inventory line.
+/// One gas in the HUD readout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudGas {
+    pub layer: LayerId,
+    /// The gas's key, or `#<index>` without [`ClientEco`].
+    pub name: String,
+    pub amount: u8,
+}
+
+/// What the lantern icon shows (SAD-P2 §10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LanternState {
+    /// No flammable gas at the camera.
+    #[default]
+    Steady,
+    /// Some flammable gas, below its `ignite_min`.
+    Flaring,
+    /// A flammable gas at or above its `ignite_min`.
+    Danger,
+}
+
+impl LanternState {
+    /// The icon's color.
+    pub fn color(self) -> Color {
+        match self {
+            Self::Steady => LANTERN_STEADY_COLOR,
+            Self::Flaring => LANTERN_FLARING_COLOR,
+            Self::Danger => LANTERN_DANGER_COLOR,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HudItem {
     pub material: MaterialId,
@@ -295,6 +357,52 @@ pub struct HudState {
     /// Whether the targeted cell is spoil for the player's toxicity
     /// profile.
     pub spoil: bool,
+    /// The nonzero gases at the camera's cell, in layer order.
+    pub gases: Vec<HudGas>,
+    /// The full-screen gas tint ([`gas_overlay`]), if any gas tints.
+    pub gas_tint: Option<Color>,
+    /// The lantern icon's state.
+    pub lantern: LanternState,
+}
+
+/// The view tint of a cell whose gas layer `id` holds `amount(id)`: the
+/// `tints` rows composited in order, each a layer of its color at opacity
+/// [`SubstanceTint::share`]` / 255` laid over the ones before it (sRGB).
+/// `None` when no row has a share.
+pub fn gas_overlay(tints: &[SubstanceTint], amount: impl Fn(LayerId) -> u8) -> Option<Color> {
+    let mut out: Option<(Vec3, f32)> = None;
+    for row in tints {
+        let a = f32::from(row.share(amount(row.layer))) / 255.0;
+        if a <= 0.0 {
+            continue;
+        }
+        let [r, g, b] = row.color.map(|c| f32::from(c) / 255.0);
+        let color = Vec3::new(r, g, b);
+        out = Some(match out {
+            None => (color, a),
+            Some((under, under_a)) => {
+                let total = a + under_a * (1.0 - a);
+                ((color * a + under * under_a * (1.0 - a)) / total, total)
+            }
+        });
+    }
+    out.map(|(c, a)| Color::srgba(c.x, c.y, c.z, a))
+}
+
+/// The lantern icon's state for a cell whose gas layer `id` holds
+/// `amount(id)`, given the flammable gases' layers and `ignite_min`.
+pub fn lantern_state(flammable: &[(LayerId, u8)], amount: impl Fn(LayerId) -> u8) -> LanternState {
+    let mut state = LanternState::Steady;
+    for &(layer, ignite_min) in flammable {
+        let c = amount(layer);
+        if c > 0 && c >= ignite_min {
+            return LanternState::Danger;
+        }
+        if c > 0 {
+            state = LanternState::Flaring;
+        }
+    }
+    state
 }
 
 /// The material right mouse places, if one is selected. It may no longer
@@ -409,6 +517,18 @@ struct InventoryText;
 #[derive(Component, Debug)]
 struct TemperatureText;
 
+/// The gas readout under the temperature.
+#[derive(Component, Debug)]
+struct GasText;
+
+/// The full-screen gas tint, behind the rest of the HUD.
+#[derive(Component, Debug)]
+pub struct GasTintOverlay;
+
+/// The lantern icon, colored by [`LanternState::color`].
+#[derive(Component, Debug)]
+pub struct LanternIcon;
+
 /// `t` (0.1 °C) as the HUD shows it: whole degrees and one tenth, with
 /// the sign of the whole value (`-0.5 C`). ASCII only: Bevy's default font
 /// has no degree sign.
@@ -449,11 +569,13 @@ impl Plugin for HudPlugin {
                     estimate_damage,
                     select_material,
                     update_state,
-                    show_state.run_if(resource_changed::<HudState>),
+                    (show_state, show_gas).run_if(resource_changed::<HudState>),
                 )
                     .chain()
                     .in_set(HudSystems::Show)
-                    .after(PickaxeSystems::Target),
+                    .after(PickaxeSystems::Target)
+                    // The gas readout samples where the camera is this frame.
+                    .after(FlyCamSystems),
             )
             // Chips and the crack overlay need mesh and material assets,
             // which a logic-only app does not have; they do nothing there.
@@ -631,6 +753,7 @@ fn update_state(
     time: Res<Time>,
     mut feedback: ResMut<Feedback>,
     players: Query<&Player>,
+    cameras: Query<&Transform, With<GameCamera>>,
     mut hud: ResMut<HudState>,
 ) {
     let now = time.elapsed();
@@ -677,6 +800,34 @@ fn update_state(
             .and_then(|(player, world)| cell_temperature(world, CellPos::from_meters(player.feet))),
         ..default()
     };
+    let camera_cell = cameras
+        .iter()
+        .next()
+        .map(|t| CellPos::from_meters(t.translation));
+    if let Some(gases) = camera_cell
+        .zip(world)
+        .and_then(|(cell, world)| cell_gases(world, cell))
+    {
+        let eco = eco.as_deref();
+        let amount = |id: LayerId| {
+            gases
+                .iter()
+                .find(|&&(layer, _)| layer == id)
+                .map_or(0, |&(_, c)| c)
+        };
+        next.gas_tint = eco.and_then(|e| gas_overlay(&e.gas_tint, amount));
+        next.lantern = eco.map_or(LanternState::Steady, |e| {
+            lantern_state(&e.flammable, amount)
+        });
+        next.gases = gases
+            .iter()
+            .map(|&(layer, amount)| HudGas {
+                layer,
+                name: eco.map_or_else(|| unnamed(layer), |e| e.layer_name(layer)),
+                amount,
+            })
+            .collect();
+    }
     let aimed = target.0.filter(|_| crosshair && !flying);
     if let (Some(hit), Some(world)) = (aimed, world)
         && let Some(id) = world.get_cell(hit.cell)
@@ -704,6 +855,20 @@ fn cell_temperature(world: &World, cell: CellPos) -> Option<i16> {
     world
         .chunk(pos)
         .map(|chunk| chunk.layers.get_i16(LayerId::Temperature, local))
+}
+
+/// The nonzero gas layers of `cell`, in layer order, if its chunk is
+/// resident.
+fn cell_gases(world: &World, cell: CellPos) -> Option<Vec<(LayerId, u8)>> {
+    let (pos, local) = cell.split();
+    let layers = &world.chunk(pos)?.layers;
+    Some(
+        (0..N_GASES)
+            .filter_map(|i| u8::try_from(i).ok())
+            .map(|i| (LayerId::Gas(i), layers.get_u8(LayerId::Gas(i), local)))
+            .filter(|&(_, c)| c > 0)
+            .collect(),
+    )
 }
 
 /// The material key of `id`, or `#<id>` if the table does not have it.
@@ -750,6 +915,17 @@ fn spawn_hud(mut commands: Commands) {
             ..default()
         },
         children![
+            (
+                GasTintOverlay,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                Visibility::Hidden,
+            ),
             (
                 CrosshairNode,
                 Node {
@@ -816,14 +992,30 @@ fn spawn_hud(mut commands: Commands) {
                 },
             ),
             (
-                TemperatureText,
-                text(),
                 Node {
                     position_type: PositionType::Absolute,
                     right: Val::Px(8.0),
                     top: Val::Px(8.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::End,
+                    row_gap: Val::Px(4.0),
                     ..default()
                 },
+                children![
+                    (TemperatureText, text()),
+                    (
+                        LanternIcon,
+                        Node {
+                            width: Val::Px(LANTERN_ICON_SIZE.x),
+                            height: Val::Px(LANTERN_ICON_SIZE.y),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor::all(OUTLINE_COLOR),
+                        BackgroundColor(LanternState::Steady.color()),
+                    ),
+                    (GasText, text(), TextLayout::justify(Justify::Right)),
+                ],
             ),
         ],
     ));
@@ -959,6 +1151,36 @@ fn show_state(
 }
 
 /// `base` blended toward [`SWING_PULSE_COLOR`] by `pulse` (0.0..=1.0).
+/// Puts [`HudState`]'s gas fields on screen: the tint, the lantern icon
+/// and the readout.
+#[allow(clippy::type_complexity)]
+fn show_gas(
+    hud: Res<HudState>,
+    mut overlay: Query<(&mut BackgroundColor, &mut Visibility), With<GasTintOverlay>>,
+    mut lantern: Query<&mut BackgroundColor, (With<LanternIcon>, Without<GasTintOverlay>)>,
+    mut text: Query<&mut Text, With<GasText>>,
+) {
+    for (mut background, mut visibility) in &mut overlay {
+        background.set_if_neq(BackgroundColor(hud.gas_tint.unwrap_or(Color::NONE)));
+        visibility.set_if_neq(if hud.gas_tint.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
+    for mut background in &mut lantern {
+        background.set_if_neq(BackgroundColor(hud.lantern.color()));
+    }
+    let lines: Vec<String> = hud
+        .gases
+        .iter()
+        .map(|g| format!("{} {}", g.name, g.amount))
+        .collect();
+    for mut text in &mut text {
+        text.0 = lines.join("\n");
+    }
+}
+
 fn pulse_color(base: Color, pulse: f32) -> Color {
     base.mix(&SWING_PULSE_COLOR, pulse)
 }
@@ -1382,6 +1604,9 @@ mod tests {
                 selected: None,
                 temperature: Some(0),
                 spoil: false,
+                gases: vec![],
+                gas_tint: None,
+                lantern: LanternState::Steady,
             }
         );
 
@@ -1468,6 +1693,8 @@ mod tests {
             player_tox: ToxProfile::new(player),
             plant_tox: ToxProfile::new(plant),
             tint: Vec::new(),
+            gas_tint: Vec::new(),
+            flammable: Vec::new(),
         }
     }
 
@@ -2132,5 +2359,339 @@ mod tests {
         ] {
             assert_eq!(format_temperature(t), text, "{t}");
         }
+    }
+
+    fn gas_text(rig: &mut Rig) -> String {
+        let mut q = rig.app.world_mut().query_filtered::<&Text, With<GasText>>();
+        let texts: Vec<String> = q.iter(rig.app.world()).map(|t| t.0.clone()).collect();
+        assert_eq!(texts.len(), 1, "one gas readout");
+        texts[0].clone()
+    }
+
+    /// The tint overlay's color and whether it shows.
+    fn overlay(rig: &mut Rig) -> (Color, bool) {
+        let mut q = rig
+            .app
+            .world_mut()
+            .query_filtered::<(&BackgroundColor, &Visibility, &Node), With<GasTintOverlay>>();
+        let (bg, v, node) = q.single(rig.app.world()).expect("one gas tint overlay");
+        assert_eq!(
+            (node.width, node.height, node.position_type),
+            (
+                Val::Percent(100.0),
+                Val::Percent(100.0),
+                PositionType::Absolute
+            ),
+            "the overlay covers the screen"
+        );
+        (bg.0, *v == Visibility::Inherited)
+    }
+
+    fn lantern_icon(rig: &mut Rig) -> Color {
+        let mut q = rig
+            .app
+            .world_mut()
+            .query_filtered::<&BackgroundColor, With<LanternIcon>>();
+        q.single(rig.app.world()).expect("one lantern icon").0
+    }
+
+    /// Whether two colors match to within float rounding.
+    fn near(a: Color, b: Color) -> bool {
+        let (a, b) = (a.to_srgba(), b.to_srgba());
+        [
+            a.red - b.red,
+            a.green - b.green,
+            a.blue - b.blue,
+            a.alpha - b.alpha,
+        ]
+        .iter()
+        .all(|d| d.abs() < 1e-4)
+    }
+
+    #[test]
+    fn gas_readout_follows_camera_cell() {
+        use rmc_world::query::SubstanceTint;
+
+        let (steam, firedamp, chokedamp, smoke) = (
+            LayerId::Gas(0),
+            LayerId::Gas(1),
+            LayerId::Gas(2),
+            LayerId::Gas(3),
+        );
+        let steam_tint = SubstanceTint {
+            layer: steam,
+            color: [226, 230, 236],
+            full: 160,
+            strength: 150,
+        };
+        let smoke_tint = SubstanceTint {
+            layer: smoke,
+            color: [62, 56, 50],
+            full: 128,
+            strength: 190,
+        };
+        let mut eco = client_eco();
+        eco.gases = ["steam", "firedamp", "chokedamp", "smoke"]
+            .map(String::from)
+            .to_vec();
+        eco.gas_tint = vec![steam_tint, smoke_tint];
+        eco.flammable = vec![(firedamp, 64)];
+
+        // The pure parts first. One row: its own color at its share.
+        let only = |id: LayerId, c: u8| move |l: LayerId| if l == id { c } else { 0 };
+        assert_eq!(gas_overlay(&eco.gas_tint, |_| 0), None);
+        let one = gas_overlay(&eco.gas_tint, only(steam, 80)).unwrap();
+        // share = 80 * 150 / 160 = 75.
+        assert!(near(one, Color::srgba_u8(226, 230, 236, 75)), "{one:?}");
+        assert_eq!(steam_tint.share(255), 150, "full strength from `full` up");
+        // Two rows: smoke (share 64 * 190 / 128 = 95) over steam (75).
+        let (a1, a2) = (75.0 / 255.0, 95.0 / 255.0);
+        let alpha = a2 + a1 * (1.0 - a2);
+        let mix = |c1: u8, c2: u8| {
+            (f32::from(c2) / 255.0 * a2 + f32::from(c1) / 255.0 * a1 * (1.0 - a2)) / alpha
+        };
+        let both = gas_overlay(&eco.gas_tint, |l| match l {
+            LayerId::Gas(0) => 80,
+            LayerId::Gas(3) => 64,
+            _ => 0,
+        })
+        .unwrap();
+        let want = Color::srgba(mix(226, 62), mix(230, 56), mix(236, 50), alpha);
+        assert!(near(both, want), "{both:?} != {want:?}");
+        // Gases without a row (firedamp, chokedamp) do not tint.
+        assert!(gas_overlay(&eco.gas_tint, |l| if l == steam { 0 } else { 255 }).is_some());
+        assert_eq!(
+            gas_overlay(&eco.gas_tint, |l| if l == firedamp || l == chokedamp {
+                255
+            } else {
+                0
+            }),
+            None
+        );
+        for (c, state) in [
+            (0, LanternState::Steady),
+            (1, LanternState::Flaring),
+            (63, LanternState::Flaring),
+            (64, LanternState::Danger),
+            (255, LanternState::Danger),
+        ] {
+            assert_eq!(
+                lantern_state(&eco.flammable, only(firedamp, c)),
+                state,
+                "{c}"
+            );
+        }
+        assert_eq!(
+            lantern_state(&eco.flammable, only(smoke, 255)),
+            LanternState::Steady,
+            "smoke is not flammable"
+        );
+
+        // The camera follows the player's eye at (16.25, 3.55, 16.0) m: cell
+        // (32, 7, 32), in the air. Its neighbours, the player's feet cell and
+        // the targeted wall cell get other gases, so a readout of any of
+        // them would show. (Gases live on air cells only, so the wall has
+        // none.)
+        let eye_cell = CellPos::new(32, 7, 32);
+        let east = CellPos::new(33, 7, 32);
+        let mut host = world("granite", "stone");
+        let mut rig = Rig::new(world("granite", "stone"));
+        rig.app.insert_resource(eco.clone());
+        let camera = rig
+            .app
+            .world_mut()
+            .spawn((GameCamera, Transform::default()))
+            .id();
+        rig.frames(3);
+        let camera_cell = |rig: &Rig| {
+            CellPos::from_meters(
+                rig.app
+                    .world()
+                    .get::<Transform>(camera)
+                    .unwrap()
+                    .translation,
+            )
+        };
+        assert_eq!(camera_cell(&rig), eye_cell);
+        assert_eq!(CellPos::from_meters(FEET), CellPos::new(32, 4, 32));
+        let clean = rig.hud();
+        assert_eq!(
+            (clean.gases.clone(), clean.gas_tint, clean.lantern),
+            (vec![], None, LanternState::Steady)
+        );
+        assert_eq!(gas_text(&mut rig), "");
+        assert_eq!(overlay(&mut rig), (Color::NONE, false));
+        assert_eq!(lantern_icon(&mut rig), LANTERN_STEADY_COLOR);
+
+        rig.deliver([
+            set_layer(&mut host, CellPos::new(32, 6, 32), steam, 200),
+            set_layer(&mut host, CellPos::new(32, 8, 32), smoke, 255),
+            set_layer(&mut host, CellPos::new(31, 7, 32), smoke, 255),
+            set_layer(&mut host, CellPos::new(32, 7, 31), firedamp, 255),
+            set_layer(&mut host, CellPos::new(32, 7, 33), firedamp, 255),
+            set_layer(&mut host, CellPos::new(32, 4, 32), chokedamp, 99),
+            set_layer(&mut host, east, firedamp, 200),
+            set_layer(&mut host, east, chokedamp, 30),
+        ]);
+        assert_eq!(
+            rig.hud().gases,
+            vec![],
+            "the neighbours are not the camera's cell"
+        );
+        assert_eq!(gas_text(&mut rig), "");
+
+        // Steam at the camera: the readout, the tint, a steady lantern.
+        rig.deliver([set_layer(&mut host, eye_cell, steam, 80)]);
+        let hud = rig.hud();
+        let gas = |layer: LayerId, name: &str, amount: u8| HudGas {
+            layer,
+            name: name.to_string(),
+            amount,
+        };
+        assert_eq!(hud.gases, vec![gas(steam, "steam", 80)]);
+        assert_eq!(hud.gas_tint, Some(one));
+        assert_eq!(hud.lantern, LanternState::Steady);
+        assert_eq!(gas_text(&mut rig), "steam 80");
+        assert_eq!(overlay(&mut rig), (one, true));
+
+        // Smoke too: both lines in layer order and the composite tint.
+        rig.deliver([set_layer(&mut host, eye_cell, smoke, 64)]);
+        assert_eq!(rig.hud().gas_tint, Some(both));
+        assert_eq!(gas_text(&mut rig), "steam 80\nsmoke 64");
+        assert_eq!(overlay(&mut rig), (both, true));
+
+        // Firedamp below its ignite_min flares the lantern and leaves the
+        // tint alone (it is not visible); at ignite_min it is danger.
+        rig.deliver([set_layer(&mut host, eye_cell, firedamp, 10)]);
+        let hud = rig.hud();
+        assert_eq!(
+            hud.gases,
+            vec![
+                gas(steam, "steam", 80),
+                gas(firedamp, "firedamp", 10),
+                gas(smoke, "smoke", 64)
+            ]
+        );
+        assert_eq!(
+            (hud.gas_tint, hud.lantern),
+            (Some(both), LanternState::Flaring)
+        );
+        assert_eq!(gas_text(&mut rig), "steam 80\nfiredamp 10\nsmoke 64");
+        assert_eq!(lantern_icon(&mut rig), LANTERN_FLARING_COLOR);
+        rig.deliver([set_layer(&mut host, eye_cell, firedamp, 63)]);
+        assert_eq!(rig.hud().lantern, LanternState::Flaring);
+        rig.deliver([set_layer(&mut host, eye_cell, firedamp, 64)]);
+        assert_eq!(rig.hud().lantern, LanternState::Danger);
+        assert_eq!(lantern_icon(&mut rig), LANTERN_DANGER_COLOR);
+
+        // Clearing the visible gases clears the tint; the readout stays.
+        rig.deliver([
+            set_layer(&mut host, eye_cell, steam, 0),
+            set_layer(&mut host, eye_cell, smoke, 0),
+        ]);
+        let hud = rig.hud();
+        assert_eq!(hud.gases, vec![gas(firedamp, "firedamp", 64)]);
+        assert_eq!((hud.gas_tint, hud.lantern), (None, LanternState::Danger));
+        assert_eq!(overlay(&mut rig), (Color::NONE, false));
+
+        // Stepping one cell east moves the eye, and the readout with it.
+        rig.player_mut().feet.x += CELL_SIZE_M;
+        rig.frames(3);
+        assert_eq!(camera_cell(&rig), east);
+        let hud = rig.hud();
+        assert_eq!(
+            hud.gases,
+            vec![
+                gas(firedamp, "firedamp", 200),
+                gas(chokedamp, "chokedamp", 30)
+            ]
+        );
+        assert_eq!(gas_text(&mut rig), "firedamp 200\nchokedamp 30");
+        rig.player_mut().feet = FEET;
+        rig.frames(3);
+        assert_eq!(camera_cell(&rig), eye_cell);
+
+        // The fly camera: the player stays, the camera's own cell is read.
+        rig.app.world_mut().resource_mut::<FlyCam>().enabled = true;
+        let above = CellPos::new(32, 8, 32);
+        rig.app
+            .world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = above.min_corner_m() + Vec3::splat(CELL_SIZE_M / 2.0);
+        rig.frames(1);
+        assert_eq!(camera_cell(&rig), above);
+        let smoke_only = gas_overlay(&eco.gas_tint, only(smoke, 255));
+        let hud = rig.hud();
+        assert_eq!(hud.gases, vec![gas(smoke, "smoke", 255)]);
+        assert_eq!(
+            (hud.gas_tint, hud.lantern),
+            (smoke_only, LanternState::Steady)
+        );
+        assert_eq!(lantern_icon(&mut rig), LANTERN_STEADY_COLOR);
+
+        // A layer snapshot (the end of a season) moves it: the host's chunk
+        // after changes the replica has not seen as deltas.
+        set_layer(&mut host, above, smoke, 0);
+        set_layer(&mut host, above, chokedamp, 7);
+        let pos = above.chunk();
+        let chunk = host.chunk(pos).unwrap();
+        assert!(chunk.eco_revision > rig.replica_world().chunk(pos).unwrap().eco_revision);
+        rig.deliver([ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision: chunk.eco_revision,
+            layers: chunk.layers.clone(),
+            plants: BTreeMap::new(),
+        }]);
+        let hud = rig.hud();
+        assert_eq!(hud.gases, vec![gas(chokedamp, "chokedamp", 7)]);
+        assert_eq!(hud.gas_tint, None);
+        assert_eq!(gas_text(&mut rig), "chokedamp 7");
+
+        // Outside the replica's chunks there is nothing to read.
+        rig.app
+            .world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::new(16.0, 3.5, -40.0);
+        rig.frames(1);
+        let hud = rig.hud();
+        assert_eq!(
+            (hud.gases, hud.gas_tint, hud.lantern),
+            (vec![], None, LanternState::Steady)
+        );
+        assert_eq!(gas_text(&mut rig), "");
+
+        // Without the eco tables: layer indices, no tint, a steady lantern.
+        rig.app.world_mut().resource_mut::<FlyCam>().enabled = false;
+        rig.deliver([set_layer(&mut host, eye_cell, steam, 90)]);
+        assert_eq!(camera_cell(&rig), eye_cell);
+        assert_eq!(rig.hud().lantern, LanternState::Danger);
+        rig.app
+            .world_mut()
+            .remove_resource::<crate::eco::ClientEco>();
+        rig.frames(1);
+        let hud = rig.hud();
+        assert_eq!(
+            hud.gases,
+            vec![gas(steam, "#0", 90), gas(firedamp, "#1", 64)]
+        );
+        assert_eq!((hud.gas_tint, hud.lantern), (None, LanternState::Steady));
+        assert_eq!(gas_text(&mut rig), "#0 90\n#1 64");
+        assert_eq!(overlay(&mut rig), (Color::NONE, false));
+
+        // Without a camera, nothing.
+        rig.app.insert_resource(eco);
+        rig.frames(1);
+        assert_eq!(rig.hud().lantern, LanternState::Danger);
+        rig.app.world_mut().despawn(camera);
+        rig.frames(1);
+        let hud = rig.hud();
+        assert_eq!(
+            (hud.gases, hud.gas_tint, hud.lantern),
+            (vec![], None, LanternState::Steady)
+        );
+        assert_eq!(gas_text(&mut rig), "");
+        assert_eq!(lantern_icon(&mut rig), LANTERN_STEADY_COLOR);
     }
 }

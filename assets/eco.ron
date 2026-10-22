@@ -79,6 +79,13 @@
         (substance: "fe", color: (184, 98, 36), full: 32, strength: 192),
         (substance: "cu", color: (60, 170, 150), full: 32, strength: 160),
     ],
+    // §10 client: a visible gas at the camera's cell tints the view. Rows
+    // composite in order, each a layer of `color` (sRGB) at opacity
+    // min(c, full) * strength / full / 255. Only `visible` gases may appear.
+    gas_tint: [
+        (gas: "steam", color: (226, 230, 236), full: 160, strength: 150),
+        (gas: "smoke", color: (62, 56, 50), full: 128, strength: 190),
+    ],
     // Thresholds read by E2E scenarios and budget tests.
     eco_test: (
         swale_min: 8,
