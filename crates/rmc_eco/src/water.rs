@@ -45,13 +45,21 @@
 //! [`Condensation`] (A) before them, then [`Evaporation`] (C) and
 //! [`Rain`] (D), whose per-column amount follows [`rain_pattern`].
 //!
+//! A water or porous cell whose visit moved nothing is marked settled
+//! ([`World::eco_settle_water`]), and the flow sweeps skip it until it or
+//! a face neighbor changes material or moisture, which the world tracks.
+//! Its visit reads only those 7 cells (and, for magma, which never
+//! settles, the iteration), so a skipped visit is one that would have
+//! moved nothing (F173, SAD-P2 §7.9 activity).
+//!
 //! [`reference::flat_sweep_water`]: crate::reference::flat_sweep_water
 
 use std::collections::BTreeSet;
 
+use rmc_world::chunk::Chunk;
 use rmc_world::columns::NO_SURFACE;
 use rmc_world::coords::{CellAabb, CellPos};
-use rmc_world::layers::{LayerId, SWEEP_WATER};
+use rmc_world::layers::{CellSet, LayerId, SWEEP_WATER};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, Phase};
 use rmc_world::world::World;
@@ -62,6 +70,13 @@ use crate::gases::GasPass;
 use crate::reference::global_order;
 use crate::runner::{SweepCtx, SweepPass};
 use crate::tables::{EcoTables, SEEP_DEN};
+
+#[cfg(test)]
+thread_local! {
+    /// Tests turn settling off on their thread (the sweeps run on the
+    /// caller's) to compare with sweeps that visit every active cell.
+    pub(crate) static SETTLING: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
 
 /// The water flow sweep. Without a `water` (or `air`) material in the
 /// tables, it changes nothing.
@@ -96,10 +111,13 @@ pub struct WaterPass {
     /// The moves of steps 2–4 and 7 since the log was last cleared, for
     /// chemistry transport (§7.6).
     log: MoveLog,
+    /// A hash of every constant above that a visit reads: settled cells
+    /// hold for a pass with the same key.
+    settle_key: u64,
 }
 
 /// The constants of a porous solid (a `Solid` tagged `porous`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 struct Porous {
     permeability: u8,
     /// `field_capacity`: the most moisture it takes in.
@@ -139,6 +157,18 @@ fn moisture(world: &World, cell: CellPos) -> i32 {
     world.layer(cell, LayerId::Moisture)
 }
 
+/// The material and moisture of `cell`, read with one chunk lookup;
+/// `None` outside the bounds and in a non-resident chunk.
+fn material_and_moisture(world: &World, cell: CellPos) -> Option<(MaterialId, i32)> {
+    if !world.bounds().contains(cell) {
+        return None;
+    }
+    let (pos, local) = cell.split();
+    let chunk = world.chunk(pos)?;
+    let held = chunk.layers.get_u8(LayerId::Moisture, local);
+    Some((chunk.storage.get(local), i32::from(held)))
+}
+
 /// `perm / 2^shift`.
 fn rate(perm: u8, shift: u8) -> i32 {
     (u32::from(perm) >> shift) as i32
@@ -165,7 +195,7 @@ impl WaterPass {
         let viscosity = magma
             .and_then(|m| tables.materials().get(m))
             .map_or(0, |d| d.viscosity);
-        Self {
+        let mut pass = Self {
             air: tables.role_material("air"),
             water: tables.role_material("water"),
             flow_iters: params.flow_iters,
@@ -179,7 +209,48 @@ impl WaterPass {
             magma_period: u16::from(viscosity) + 1,
             iter: 0,
             log: MoveLog::default(),
+            settle_key: 0,
+        };
+        pass.settle_key = pass.constants_key(tables);
+        pass
+    }
+
+    /// A hash of the constants a visit reads, including which materials
+    /// are air.
+    fn constants_key(&self, tables: &EcoTables) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        /// Feeds `Hash` values to xxh3.
+        struct Feed(Xxh3);
+        impl Hasher for Feed {
+            fn finish(&self) -> u64 {
+                self.0.digest()
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.update(bytes);
+            }
         }
+        let mut h = Feed(Xxh3::new());
+        (self.air, self.water, self.magma, self.obsidian).hash(&mut h);
+        (self.flow_cap, self.infil_shift, self.infil_side_shift).hash(&mut h);
+        (self.seep_shift, self.magma_period).hash(&mut h);
+        self.porous.hash(&mut h);
+        let air: Vec<bool> = tables
+            .materials()
+            .iter()
+            .map(|d| d.phase == Phase::Air)
+            .collect();
+        air.hash(&mut h);
+        h.finish()
+    }
+
+    /// Marks `cell` settled after a visit that moved nothing.
+    fn settle(world: &mut World, cell: CellPos) {
+        #[cfg(test)]
+        if !SETTLING.get() {
+            return;
+        }
+        world.eco_settle_water(cell);
     }
 
     /// Tells the pass which of the sub-step's `flow_iters` sweeps runs
@@ -222,8 +293,7 @@ impl WaterPass {
     /// porous; `None` for anything else, outside the bounds and in a
     /// non-resident chunk.
     fn receiver(&self, world: &World, cell: CellPos) -> Option<Receiver> {
-        let m = world.get_cell(cell)?;
-        let held = moisture(world, cell);
+        let (m, held) = material_and_moisture(world, cell)?;
         if let Some(porous) = self.porous(m) {
             return Some(Receiver::Porous { held, porous });
         }
@@ -397,14 +467,18 @@ impl SweepPass for WaterPass {
         let (Some(air), Some(water)) = (self.air, self.water) else {
             return;
         };
-        let Some(m) = ctx.world.get_cell(cell) else {
-            return;
-        };
         // The cell's moisture, kept current through its moves: only they
         // change it during the visit.
-        let mut fill = moisture(ctx.world, cell);
+        let Some((m, mut fill)) = material_and_moisture(ctx.world, cell) else {
+            return;
+        };
+        // Every move is logged, so an unchanged log length means no move.
+        let logged = self.log.len();
         if let Some(p) = self.porous(m) {
             self.seep(ctx, cell, fill, p);
+            if self.log.len() == logged {
+                Self::settle(ctx.world, cell);
+            }
             return;
         }
         if Some(m) == self.magma {
@@ -415,13 +489,10 @@ impl SweepPass for WaterPass {
             return;
         }
         // 1. Air with moisture becomes water.
-        let is_water = if Self::is_air(ctx.world, m) && fill > 0 {
+        let became_water = Self::is_air(ctx.world, m) && fill > 0;
+        if became_water {
             ctx.world.eco_set(cell, water, ctx.ledger);
-            true
-        } else {
-            m == water
-        };
-        if !is_water {
+        } else if m != water {
             return;
         }
         // 2. Down: as much as the cell below has room for; into a porous
@@ -460,7 +531,21 @@ impl SweepPass for WaterPass {
         // 5. Water at fill 0 becomes air.
         if fill == 0 {
             ctx.world.eco_set(cell, air, ctx.ledger);
+        } else if !became_water && self.log.len() == logged {
+            Self::settle(ctx.world, cell);
         }
+    }
+
+    /// Settled cells hold for this pass's constants only: a pass with
+    /// other constants starts with none.
+    fn begin(&mut self, world: &mut World) {
+        if world.water_settle_key() != self.settle_key {
+            world.eco_clear_water_settled(self.settle_key);
+        }
+    }
+
+    fn settled<'c>(&self, chunk: &'c Chunk) -> Option<&'c CellSet> {
+        Some(&chunk.water_settled)
     }
 
     /// Water cells, moist air, magma, and porous cells above their seepage
@@ -2690,6 +2775,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Settled cells (F173): a water or porous cell whose visit moved
+    /// nothing is skipped until it or a face neighbor changes. On the
+    /// 32-chunk terrain, sweeps that skip settled cells give the same
+    /// world, move log and ledger after every sweep as sweeps that visit
+    /// every active cell (the settled sets cleared before each), with
+    /// fewer visits.
+    #[test]
+    fn settled_cells_skipped_without_changing_results() {
+        let f = Fix::new();
+        for seed in 0..MULTI_CHUNK_SEEDS {
+            let (mut a, mut pa) = terrain_world(&f, seed);
+            let (mut b, mut pb) = terrain_world(&f, seed);
+            let (mut la, mut lb) = (SeasonLedger::default(), SeasonLedger::default());
+            let (mut va, mut vb) = (0, 0);
+            for round in 0..MULTI_CHUNK_ROUNDS {
+                for i in 0..pa.flow_iters() {
+                    pa.set_iter(i);
+                    pb.set_iter(i);
+                    va += run_sweep(&mut a, &mut pa, &mut la).visits;
+                    b.eco_clear_water_settled(b.water_settle_key());
+                    vb += run_sweep(&mut b, &mut pb, &mut lb).visits;
+                    let at = format!("seed {seed}, round {round}, sweep {i}");
+                    assert_eq!(a.hash(), b.hash(), "{at}: worlds");
+                    assert_eq!(pa.log(), pb.log(), "{at}: move logs");
+                    assert_eq!(la, lb, "{at}: ledgers");
+                }
+            }
+            assert!(
+                va < vb,
+                "seed {seed}: {va} visits with settling, {vb} without"
+            );
+        }
+    }
+
+    /// A settled cell wakes when it or a face neighbor changes moisture or
+    /// material, by a pass or an edit, and not for a change further away.
+    #[test]
+    fn settled_cell_wakes_on_neighbor_change() {
+        let f = Fix::new();
+        let pocket = CellPos::new(10, SLAB_Y, 10);
+        let mut w = f.world(&[(pocket, f.water)]);
+        w.eco_put_layer(pocket, LayerId::Moisture, i32::from(u8::MAX));
+        let mut pass = WaterPass::new(&f.t);
+        let mut ledger = SeasonLedger::default();
+        let settled = |w: &World| {
+            let (pos, local) = pocket.split();
+            w.chunk(pos).unwrap().water_settled.contains(local)
+        };
+        // A full pocket in stone has nowhere to go (air above takes none).
+        assert_eq!(run_sweep(&mut w, &mut pass, &mut ledger).visits, 1);
+        assert!(settled(&w), "a visit that moved nothing settles the cell");
+        assert_eq!(run_sweep(&mut w, &mut pass, &mut ledger).visits, 0);
+        // Two cells away: still settled.
+        w.eco_put_layer(CellPos::new(12, SLAB_Y + 1, 10), LayerId::Moisture, 5);
+        assert!(settled(&w));
+        // The stone beside the pocket turns to air: the pocket can spill.
+        let side = CellPos::new(11, SLAB_Y, 10);
+        w.eco_set(side, f.air, &mut ledger);
+        assert!(!settled(&w), "a neighbor's material change wakes it");
+        run_sweep(&mut w, &mut pass, &mut ledger);
+        assert!(
+            w.layer(side, LayerId::Moisture) > 0,
+            "the woken pocket spilled"
+        );
+    }
+
+    /// Settled sets hold for one set of water constants: a pass with the
+    /// same constants keeps them, and one with other constants clears them
+    /// before it sweeps.
+    #[test]
+    fn settled_sets_clear_for_other_constants() {
+        let f = Fix::new();
+        let pocket = CellPos::new(10, SLAB_Y, 10);
+        let mut w = f.world(&[(pocket, f.water)]);
+        w.eco_put_layer(pocket, LayerId::Moisture, i32::from(u8::MAX));
+        let mut ledger = SeasonLedger::default();
+        let mut pass = WaterPass::new(&f.t);
+        assert_eq!(run_sweep(&mut w, &mut pass, &mut ledger).visits, 1);
+        assert_eq!(w.water_settle_key(), pass.settle_key);
+        let mut same = WaterPass::new(&f.t);
+        assert_eq!(
+            run_sweep(&mut w, &mut same, &mut ledger).visits,
+            0,
+            "the same constants keep the pocket settled"
+        );
+        let mut other = WaterPass::new(&f.t);
+        other.flow_cap -= 1;
+        other.settle_key = other.constants_key(&f.t);
+        assert_ne!(other.settle_key, pass.settle_key);
+        assert_eq!(
+            run_sweep(&mut w, &mut other, &mut ledger).visits,
+            1,
+            "other constants clear the settled sets"
+        );
+        assert_eq!(w.water_settle_key(), other.settle_key);
+        assert_eq!(
+            run_sweep(&mut w, &mut pass, &mut ledger).visits,
+            1,
+            "and so does switching back"
+        );
     }
 
     proptest! {

@@ -14,7 +14,9 @@
 //! leaves the set when it holds none at the end of its visit. A receiver
 //! later in the global order is visited in the same sweep, an earlier one
 //! in the next, exactly as a full scan of every cell would
-//! ([`reference::flat_sweep`](crate::reference::flat_sweep)).
+//! ([`reference::flat_sweep`](crate::reference::flat_sweep)). A sweep may
+//! also skip active cells it knows are settled ([`SweepPass::settled`]):
+//! cells whose visit would move nothing, as their last one did (F173).
 
 use std::collections::BTreeMap;
 
@@ -24,7 +26,7 @@ use rmc_world::chunk::Chunk;
 use rmc_world::coords::{
     CHUNK_MASK, CHUNK_SHIFT, CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos,
 };
-use rmc_world::layers::{LayerId, N_SWEEPS, PlantState};
+use rmc_world::layers::{CellSet, LayerId, N_SWEEPS, PlantState};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::World;
@@ -417,6 +419,16 @@ pub trait SweepPass {
     /// Whether `cell` holds the moving quantity. A visited cell that holds
     /// none leaves the active set.
     fn holds(&self, world: &World, cell: CellPos) -> bool;
+
+    /// Called once before each sweep, with the world it runs on.
+    fn begin(&mut self, _world: &mut World) {}
+
+    /// The active cells of `chunk` the sweep skips: cells whose visit is
+    /// known to move nothing, because their last visit moved nothing and
+    /// nothing it reads has changed since (F173). `None` skips none.
+    fn settled<'c>(&self, _chunk: &'c Chunk) -> Option<&'c CellSet> {
+        None
+    }
 }
 
 /// What a sweep visit may change.
@@ -456,6 +468,7 @@ pub fn run_sweep(
 ) -> SweepReport {
     let kind = pass.kind();
     assert!(kind < N_SWEEPS, "sweep kind {kind} out of range");
+    pass.begin(world);
     let bounds = world.bounds();
     // Resident chunks per chunk-y, each list in (cz, cx) order.
     let mut layers: BTreeMap<i32, Vec<ChunkPos>> = BTreeMap::new();
@@ -474,21 +487,23 @@ pub fn run_sweep(
         };
         let plane = (y & CHUNK_MASK) as usize * WORDS_PER_PLANE;
         for &pos in chunks {
-            // Nothing active in this plane of the chunk yet (earlier visits
-            // of this sweep included): skip it.
-            let idle = ctx.world.chunk(pos).is_none_or(|c| {
-                (plane..plane + WORDS_PER_PLANE).all(|w| c.active[kind].word(w) == 0)
-            });
+            // Nothing to visit in this plane of the chunk yet (earlier
+            // visits of this sweep included): skip it.
+            let idle = ctx
+                .world
+                .chunk(pos)
+                .is_none_or(|c| (plane..plane + WORDS_PER_PLANE).all(|w| due(&*pass, c, w) == 0));
             if idle {
                 continue;
             }
             for w in plane..plane + WORDS_PER_PLANE {
                 // Re-read the word after every visit: a visit may activate
-                // a later cell of the same word, visited in this sweep.
+                // (or wake) a later cell of the same word, visited in this
+                // sweep.
                 let mut from = 0;
                 while from < u64::BITS {
-                    let word = ctx.world.chunk(pos).map_or(0, |c| c.active[kind].word(w))
-                        & (u64::MAX << from);
+                    let word =
+                        ctx.world.chunk(pos).map_or(0, |c| due(&*pass, c, w)) & (u64::MAX << from);
                     if word == 0 {
                         break;
                     }
@@ -509,6 +524,12 @@ pub fn run_sweep(
     }
     tracing::debug!(kind, visits = report.visits, "sweep done");
     report
+}
+
+/// The cells of word `w` of `chunk` a sweep of `pass` visits: active and
+/// not settled.
+fn due(pass: &impl SweepPass, chunk: &Chunk, w: usize) -> u64 {
+    chunk.active[pass.kind()].word(w) & !pass.settled(chunk).map_or(0, |s| s.word(w))
 }
 
 /// Bits per active-set word.

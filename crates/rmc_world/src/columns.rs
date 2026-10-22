@@ -6,10 +6,9 @@
 //! "Sky-open" means `y > surface_y`. [`World`](crate::world::World) keeps the
 //! cache current in `apply`, `apply_delta` and `insert_chunk`.
 
-use std::collections::HashMap;
-
 use crate::chunk::{Chunk, ChunkStorage};
 use crate::coords::{CHUNK_MASK, CHUNK_SHIFT, CHUNK_SIZE, CellAabb, CellPos, ChunkPos, LocalPos};
+use crate::fasthash::PosMap;
 use crate::materials::{MaterialDef, MaterialId, MaterialTable};
 
 /// `surface_y` of a column with no solid or liquid cell.
@@ -21,7 +20,7 @@ pub const COLUMN_CELLS: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
 /// indexed by `lx + lz * 32`.
 #[derive(Clone, Debug, Default)]
 pub struct Columns {
-    map: HashMap<(i32, i32), [i16; COLUMN_CELLS]>,
+    map: PosMap<(i32, i32), [i16; COLUMN_CELLS]>,
 }
 
 impl Columns {
@@ -39,7 +38,7 @@ impl Columns {
         &mut self,
         cx: i32,
         cz: i32,
-        chunks: &HashMap<ChunkPos, Chunk>,
+        chunks: &PosMap<ChunkPos, Chunk>,
         materials: &MaterialTable,
         bounds: CellAabb,
     ) {
@@ -61,7 +60,7 @@ impl Columns {
         cell: CellPos,
         old: MaterialId,
         new: MaterialId,
-        chunks: &HashMap<ChunkPos, Chunk>,
+        chunks: &PosMap<ChunkPos, Chunk>,
         materials: &MaterialTable,
         bounds: CellAabb,
     ) {
@@ -106,7 +105,7 @@ fn scan_down(
     x: i32,
     z: i32,
     from_y: i32,
-    chunks: &HashMap<ChunkPos, Chunk>,
+    chunks: &PosMap<ChunkPos, Chunk>,
     materials: &MaterialTable,
     bounds: CellAabb,
 ) -> i16 {

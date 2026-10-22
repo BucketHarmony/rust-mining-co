@@ -2374,8 +2374,9 @@
       ],
       "e2e": true,
       "review": true,
-      "passes": false,
-      "notes": "Dev budget is eco_test.quiet_tick_dev_ms (60000). Default 32-chunk world. Record release numbers in docs/perf-p2.md."
+      "passes": true,
+      "notes": "Dev budget is eco_test.quiet_tick_dev_ms (60000). Default 32-chunk world. Record release numbers in docs/perf-p2.md.",
+      "passedAt": "2026-10-22T10:15:03Z"
     },
     {
       "id": "F174",

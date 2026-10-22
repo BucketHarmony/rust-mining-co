@@ -1,7 +1,7 @@
 //! The world (SAD §7): resident chunks inside fixed bounds, plus the material
 //! table that gives cells their meaning.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::chunk::{Chunk, ChunkStorage};
@@ -13,6 +13,7 @@ use crate::edit::{
     ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, FULL_DELTA_THRESHOLD, MAX_EDIT_CELLS,
     RejectReason,
 };
+use crate::fasthash::PosMap;
 use crate::layers::{ChunkLayers, LayerId, PlantState};
 use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
@@ -52,7 +53,7 @@ pub enum DeltaError {
 /// Chunks keyed by position, bounded by a [`CellAabb`].
 #[derive(Clone, Debug)]
 pub struct World {
-    pub(crate) chunks: HashMap<ChunkPos, Chunk>,
+    pub(crate) chunks: PosMap<ChunkPos, Chunk>,
     pub(crate) damage: DamageMap,
     pub(crate) materials: Arc<MaterialTable>,
     pub(crate) bounds: CellAabb,
@@ -62,6 +63,9 @@ pub struct World {
     /// Set when any chunk's `revision` changes (a cell's material changed
     /// or a chunk was inserted); cleared by the light pass (SAD-P2 §7.7).
     pub(crate) light_dirty: bool,
+    /// The water-pass constants the settled water cells hold for
+    /// ([`World::eco_clear_water_settled`]).
+    pub(crate) water_settle_key: u64,
 }
 
 impl World {
@@ -77,13 +81,14 @@ impl World {
             bounds.max.0.y
         );
         Self {
-            chunks: HashMap::new(),
+            chunks: PosMap::default(),
             damage: DamageMap::default(),
             materials,
             bounds,
             columns: Columns::default(),
             rules: Arc::default(),
             light_dirty: true,
+            water_settle_key: 0,
         }
     }
 
@@ -478,6 +483,7 @@ impl World {
                     let cell = CellPos::from_chunk_local(pos, local);
                     let chunk = self.chunks.get_mut(&pos).expect("checked resident");
                     let old = chunk.storage.set(local, id);
+                    self.wake_water(cell);
                     self.damage.clear(cell);
                     self.columns.cell_changed(
                         cell,
@@ -519,6 +525,7 @@ impl World {
                 chunk.revision = *revision;
                 chunk.modified = true;
                 self.light_dirty = true;
+                self.wake_water_chunk(pos);
                 self.rebuild_columns(pos);
             }
             ChunkDelta::Layers {
@@ -571,6 +578,7 @@ impl World {
                     };
                 }
                 chunk.eco_revision = *eco_revision;
+                self.wake_water_chunk(pos);
             }
         }
         tracing::debug!(?pos, revision = delta.revision(), "delta applied");
@@ -591,6 +599,7 @@ impl World {
         self.damage.clear_chunk(pos);
         let previous = self.chunks.insert(pos, chunk);
         self.light_dirty = true;
+        self.wake_water_chunk(pos);
         self.rebuild_columns(pos);
         Ok(previous)
     }
@@ -620,6 +629,7 @@ impl World {
         chunk.layers = layers;
         chunk.plants = plants;
         chunk.eco_revision = eco_revision;
+        self.wake_water_chunk(pos);
         tracing::debug!(?pos, eco_revision, "eco snapshot applied");
         Ok(())
     }

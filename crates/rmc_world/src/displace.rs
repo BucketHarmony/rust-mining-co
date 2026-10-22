@@ -15,6 +15,17 @@ use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialId, Phase};
 use crate::world::World;
 
+/// A cell and its 6 face neighbors, as offsets.
+const WAKE: [[i32; 3]; 7] = [
+    [0, 0, 0],
+    [0, -1, 0],
+    [0, 0, -1],
+    [-1, 0, 0],
+    [1, 0, 0],
+    [0, 0, 1],
+    [0, 1, 0],
+];
+
 /// The ecology roles and constants the displacement rules read. Built by
 /// `rmc_eco` from `eco.ron`, `plants.ron` and `substances.ron`; the default
 /// (no roles) leaves water, ice, magma, steam and litter rules inert.
@@ -227,14 +238,16 @@ impl World {
             return false;
         }
         // The single-cell case of `put_layer` + `finish_effects`, without
-        // their effect maps: the sweeps call this for every move.
-        let wet_material = self
-            .get_cell(cell)
-            .is_some_and(|id| matches!(self.class(id), Class::Water | Class::Magma));
+        // their effect maps: the sweeps call this for every move, so the
+        // chunk is looked up once.
         let (pos, local) = cell.split();
+        let rules = &self.rules;
         let Some(chunk) = self.chunks.get_mut(&pos) else {
             return false;
         };
+        // `class` is Water or Magma.
+        let m = Some(chunk.storage.get(local));
+        let wet_material = m == rules.water || (m != rules.ice && m == rules.magma);
         if id.is_i16() {
             let v = i16::try_from(v).expect("i16 layer value in range");
             if chunk.layers.get_i16(id, local) == v {
@@ -256,6 +269,9 @@ impl World {
             if chunk.layers.get_u8(LayerId::Gas(g), local) > 0 {
                 chunk.active[SWEEP_GAS + usize::from(g)].insert(local);
             }
+        }
+        if id == LayerId::Moisture {
+            self.wake_water(cell);
         }
         true
     }
@@ -351,6 +367,84 @@ impl World {
         }
     }
 
+    /// Marks the water-sweep cell `cell` settled: its last visit moved
+    /// nothing, so until it or a face neighbor changes material or
+    /// moisture the sweep skips it (F173). Returns whether it was not
+    /// settled. Host-only, for `rmc_eco`'s water pass. A cell outside the
+    /// bounds or in a non-resident chunk is never settled.
+    pub fn eco_settle_water(&mut self, cell: CellPos) -> bool {
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        let (pos, local) = cell.split();
+        self.chunks
+            .get_mut(&pos)
+            .is_some_and(|c| c.water_settled.insert(local))
+    }
+
+    /// Clears every settled water-sweep cell and records `key`, the
+    /// constants of the water pass the settled cells will hold for.
+    /// Host-only, for `rmc_eco`'s water pass, when a pass with other
+    /// constants starts.
+    pub fn eco_clear_water_settled(&mut self, key: u64) {
+        for chunk in self.chunks.values_mut() {
+            chunk.water_settled.clear();
+        }
+        self.water_settle_key = key;
+    }
+
+    /// The key [`World::eco_clear_water_settled`] last recorded; 0 for a
+    /// new world.
+    pub fn water_settle_key(&self) -> u64 {
+        self.water_settle_key
+    }
+
+    /// `cell` changed material or moisture: neither it nor a face neighbor
+    /// stays settled. The water visit of a cell reads only the cell and
+    /// its face neighbors, so no other visit can see the change.
+    pub(crate) fn wake_water(&mut self, cell: CellPos) {
+        let (pos, _) = cell.split();
+        // The neighbors in the cell's own chunk share one lookup; those
+        // across a chunk face (on a face only) take their own.
+        let mut across = [None; WAKE.len()];
+        if let Some(c) = self.chunks.get_mut(&pos) {
+            for (d, other) in WAKE.iter().zip(&mut across) {
+                let n = CellPos::new(cell.0.x + d[0], cell.0.y + d[1], cell.0.z + d[2]);
+                let (p, local) = n.split();
+                if p == pos {
+                    c.water_settled.remove(local);
+                } else {
+                    *other = Some(n);
+                }
+            }
+        } else {
+            for (d, other) in WAKE.iter().zip(&mut across) {
+                *other = Some(CellPos::new(
+                    cell.0.x + d[0],
+                    cell.0.y + d[1],
+                    cell.0.z + d[2],
+                ));
+            }
+        }
+        for n in across.into_iter().flatten() {
+            let (p, local) = n.split();
+            if let Some(c) = self.chunks.get_mut(&p) {
+                c.water_settled.remove(local);
+            }
+        }
+    }
+
+    /// No cell of the chunk at `pos` or of its 6 neighbor chunks stays
+    /// settled: the chunk's content was replaced wholesale.
+    pub(crate) fn wake_water_chunk(&mut self, pos: ChunkPos) {
+        for d in WAKE {
+            let p = ChunkPos::new(pos.0.x + d[0], pos.0.y + d[1], pos.0.z + d[2]);
+            if let Some(c) = self.chunks.get_mut(&p) {
+                c.water_settled.clear();
+            }
+        }
+    }
+
     /// Removes `cell` from the active set of sweep `sweep`; returns whether
     /// it was present. Panics if `sweep` is not below `N_SWEEPS`.
     pub fn eco_deactivate(&mut self, cell: CellPos, sweep: usize) -> bool {
@@ -414,6 +508,9 @@ impl World {
             .or_default()
             .insert((local.index(), id), v);
         fx.touched.insert(cell);
+        if id == LayerId::Moisture {
+            self.wake_water(cell);
+        }
     }
 
     /// Adds up to `amount` to layer `id` at `cell`, capped by the layer's
@@ -448,6 +545,7 @@ impl World {
         }
         chunk.storage.set(local, to);
         self.light_dirty = true;
+        self.wake_water(cell);
         self.damage.clear(cell);
         fx.cells.entry(pos).or_default().insert(local.index(), to);
         fx.touched.insert(cell);

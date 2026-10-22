@@ -813,4 +813,162 @@ mod tests {
             assert!(v > 0, "no world exercised {name}");
         }
     }
+
+    /// A world the size of the default Phase 2 world, 4 × 2 × 4 chunks
+    /// (128 × 64 × 128 cells, 1 M cells), laid out like a generated one:
+    /// bedrock, stone, a limestone aquifer near field capacity, dirt under a
+    /// topsoil surface that rolls between y 36 and 41, and a lake of full
+    /// water cells in a basin. Every cell is at `air_temp`. (Worldgen
+    /// itself cannot run here: `rmc_eco`'s unit tests may not use
+    /// `rmc_worldgen` types; see `bench_support`.)
+    fn default_size_world(t: &EcoTables) -> World {
+        let m = t.materials();
+        let id = |k: &str| m.id(k).unwrap_or_else(|| panic!("material {k}"));
+        let (bedrock, stone, granite) = (id("bedrock"), id("stone"), id("granite"));
+        let (limestone, dirt, topsoil, water) =
+            (id("limestone"), id("dirt"), id("topsoil"), id("water"));
+        let aquifer = i32::from(m.get(limestone).unwrap().field_capacity);
+        let air_temp = t.seasons().seasons[0].air_temp;
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(127, 63, 127));
+        let mut w = World::new(m.clone(), bounds);
+        for pos in bounds.chunks() {
+            let mut c = Chunk::uniform(MaterialId::AIR);
+            c.layers.materialize(LayerId::Temperature);
+            for i in 0..CHUNK_VOLUME as u16 {
+                let l = LocalPos::from_index(i);
+                let at = CellPos::from_chunk_local(pos, l);
+                let (x, y, z) = (at.0.x, at.0.y, at.0.z);
+                let roll = (noise(CellPos::new(x / 8, 0, z / 8), 1) % 6) as i32;
+                let (dx, dz) = (x - 64, z - 64);
+                let basin = dx * dx + dz * dz < 16 * 16;
+                let surface = if basin { 30 } else { 36 + roll };
+                let (mat, moisture) = match y {
+                    0 => (bedrock, 0),
+                    1..=15 if noise(at, 2).is_multiple_of(3) => (granite, 0),
+                    1..=15 => (stone, 0),
+                    // Near capacity, unevenly, so seepage keeps trading
+                    // water between aquifer cells as it does in a
+                    // generated world.
+                    16..=27 => (limestone, aquifer - (noise(at, 3) % 8) as i32),
+                    _ if y < surface => (dirt, 0),
+                    _ if y == surface => (topsoil, 0),
+                    _ if basin && y <= 34 => (water, i32::from(u8::MAX)),
+                    _ => (MaterialId::AIR, 0),
+                };
+                c.storage.set(l, mat);
+                c.layers
+                    .set_u8(LayerId::Moisture, l, u8::try_from(moisture).unwrap());
+                c.layers.set_i16(LayerId::Temperature, l, air_temp);
+            }
+            w.insert_chunk(pos, c).unwrap();
+        }
+        w
+    }
+
+    #[test]
+    fn quiet_world_tick_under_dev_budget() {
+        let t = tables();
+        let quiet = crate::bench_support::quiet_tables(&t);
+        let mut w = default_size_world(&quiet);
+        assert_eq!(w.chunk_count(), 32);
+        let mut activity = crate::bench_support::install(&mut w, &quiet);
+        let season = crate::bench_support::settle(&mut w, &quiet, 1, &mut activity);
+
+        let start = Instant::now();
+        let r = crate::bench_support::tick_quiet(&mut w, &quiet, season, 1, &mut activity);
+        let ms = start.elapsed().as_millis();
+        eprintln!(
+            "quiet season tick: {ms} ms, sweeps {:?}",
+            r.active_cells_per_sweep
+        );
+
+        assert_eq!(r.substep_ms.len(), usize::from(quiet.seasons().substeps));
+        assert_eq!(r.ledger.rain_in, 0, "a quiet season does not rain");
+        let budget = u128::from(t.eco_test().quiet_tick_dev_ms);
+        assert!(
+            ms < budget,
+            "quiet season tick took {ms} ms, budget {budget} ms (eco_test.quiet_tick_dev_ms)"
+        );
+    }
+
+    /// Settled water cells (F173) change no result. Rich worlds (rain,
+    /// ponds, ice, magma, boiling, moss), with a dig and a water fill
+    /// between seasons, end each season with the same world, ledger,
+    /// Jacobi activity and sweep active sets as with settling turned off,
+    /// where the flow sweeps visit every active cell, which is more.
+    #[test]
+    fn settling_changes_no_season_result() {
+        use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, PlayerId};
+        use rmc_world::shape::Shape;
+
+        const SEASONS: u32 = 2;
+        let t = rich_tables();
+        let water = t.materials().id("water").unwrap();
+        let run = |seed: u64, settle: bool| {
+            crate::water::SETTLING.set(settle);
+            let mut w = rich_world(&t, seed);
+            let mut activity = Activity::new(t.params().quiet_skip);
+            let mut seasons = Vec::new();
+            for season in 0..SEASONS {
+                let r = season_tick(&mut w, &t, season, seed, &mut activity, Exec::Serial);
+                let issuer = PlayerId(1);
+                let dig = Shape::Box {
+                    min: CellPos::new(-2, -3, -2),
+                    max: CellPos::new(2, 3, 2),
+                };
+                let fill = Shape::Box {
+                    min: CellPos::new(10, -1, 10),
+                    max: CellPos::new(11, 3, 11),
+                };
+                for (seq, (op, shape)) in [(EditOp::Remove, dig), (EditOp::Set(water), fill)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let id = CommandId {
+                        issuer,
+                        seq: seq as u32 + season * 2,
+                    };
+                    let e = w.apply(&EditCommand {
+                        id,
+                        issuer,
+                        op,
+                        shape,
+                    });
+                    assert_eq!(e.status, EditStatus::Applied);
+                    for d in &e.deltas {
+                        activity.touch(d.pos());
+                    }
+                }
+                let active: Vec<_> = w
+                    .iter_chunks_sorted()
+                    .map(|(_, c)| c.active.clone())
+                    .collect();
+                seasons.push((w.hash(), r, active));
+            }
+            crate::water::SETTLING.set(true);
+            seasons
+        };
+        // One seed keeps the test under the dev time budget.
+        let seed = 0;
+        let on = run(seed, true);
+        let off = run(seed, false);
+        let (mut visits_on, mut visits_off) = (0, 0);
+        for (season, (a, b)) in on.iter().zip(&off).enumerate() {
+            let at = format!("seed {seed}, season {season}");
+            assert_eq!(a.0, b.0, "{at}: worlds");
+            assert_eq!(a.1.ledger, b.1.ledger, "{at}: ledgers");
+            assert_eq!(
+                a.1.active_chunks_per_jacobi, b.1.active_chunks_per_jacobi,
+                "{at}: Jacobi activity"
+            );
+            assert_eq!(a.1.light_recomputes, b.1.light_recomputes, "{at}");
+            assert!(a.2 == b.2, "{at}: sweep active sets");
+            visits_on += a.1.active_cells_per_sweep.iter().sum::<u32>();
+            visits_off += b.1.active_cells_per_sweep.iter().sum::<u32>();
+        }
+        assert!(
+            visits_on < visits_off,
+            "seed {seed}: {visits_on} visits with settling, {visits_off} without"
+        );
+    }
 }

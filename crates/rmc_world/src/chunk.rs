@@ -24,6 +24,12 @@ pub struct Chunk {
     pub freeze_thaw: CellSet,
     /// Cells each sweep visits. Not hashed or saved.
     pub active: [CellSet; N_SWEEPS],
+    /// Water-sweep cells whose last visit moved nothing, with no change to
+    /// them or their 6 face neighbors since: the water sweep skips them
+    /// (F173). Kept by the world ([`World`](crate::world::World) wakes a
+    /// cell and its neighbors when a material or moisture changes). Not
+    /// hashed or saved.
+    pub water_settled: CellSet,
     /// Increments on every material change.
     pub revision: u64,
     /// Increments on every layer or plant-state change.
@@ -41,6 +47,7 @@ impl Chunk {
             plants: BTreeMap::new(),
             freeze_thaw: CellSet::default(),
             active: Default::default(),
+            water_settled: CellSet::default(),
             revision: 0,
             eco_revision: 0,
             modified: false,
@@ -83,6 +90,7 @@ impl Chunk {
             + self.layers.heap_bytes()
             + self.freeze_thaw.heap_bytes()
             + self.active.iter().map(CellSet::heap_bytes).sum::<usize>()
+            + self.water_settled.heap_bytes()
             + self.plants.len() * std::mem::size_of::<(u16, PlantState)>()
     }
 }

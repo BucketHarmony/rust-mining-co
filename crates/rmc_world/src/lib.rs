@@ -8,6 +8,7 @@ pub mod coords;
 pub mod damage;
 pub mod displace;
 pub mod edit;
+pub mod fasthash;
 pub mod inventory;
 pub mod layers;
 pub mod ledger;

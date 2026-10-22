@@ -2174,4 +2174,37 @@ mod tests {
         edit_checked(&mut w, cmd(4, EditOp::Set(moss), cell_shape(bare)));
         assert!(w.plant(bare).is_none());
     }
+
+    /// Settled water cells (F173) wake when they or a face neighbor change
+    /// material or moisture by an edit, and when a neighbor chunk is
+    /// replaced; a change further away leaves them settled.
+    #[test]
+    fn edits_and_chunk_inserts_wake_settled_water_cells() {
+        let mut w = eco_world();
+        // On the x face between the two chunks.
+        let a = at(31, 10, 10);
+        let settled = |w: &World| {
+            let (pos, local) = a.split();
+            w.chunk(pos).unwrap().water_settled.contains(local)
+        };
+        assert!(w.eco_settle_water(a));
+        assert!(!w.eco_settle_water(a), "already settled");
+        set_at(&mut w, 1, "stone", &[at(29, 10, 10)]);
+        assert!(settled(&w), "two cells away");
+        set_at(&mut w, 2, "stone", &[at(32, 10, 10)]);
+        assert!(!settled(&w), "material of the neighbor across the face");
+        w.eco_settle_water(a);
+        layer_at(&mut w, 3, at(31, 11, 10), LayerId::Moisture, 4);
+        assert!(!settled(&w), "moisture of the cell above");
+        w.eco_settle_water(a);
+        layer_at(&mut w, 4, at(31, 11, 10), LayerId::Temperature, 40);
+        assert!(settled(&w), "temperature is not read by a water visit");
+        w.insert_chunk(ChunkPos::new(1, 0, 0), Chunk::uniform(MaterialId::AIR))
+            .unwrap();
+        assert!(!settled(&w), "the neighbor chunk was replaced");
+        w.eco_settle_water(a);
+        w.eco_clear_water_settled(7);
+        assert!(!settled(&w));
+        assert_eq!(w.water_settle_key(), 7);
+    }
 }

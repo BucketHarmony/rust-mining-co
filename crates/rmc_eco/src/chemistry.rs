@@ -170,16 +170,29 @@ impl Transport {
     /// sweep logs neither.
     pub fn run(&self, world: &mut World, log: &MoveLog) -> TransportReport {
         let mut report = TransportReport::default();
+        let mut donor = vec![0; self.mobility.len()];
         for m in log.moves() {
             report.entries += 1;
             let resident = |c: CellPos| world.get_cell(c).is_some();
             if m.from == m.to || m.fill_from == 0 || !resident(m.from) || !resident(m.to) {
                 continue;
             }
+            // The donor's substances, read with one chunk lookup. A move
+            // changes only the substance it carries, so each stays current
+            // until its own turn below.
+            let (pos, local) = m.from.split();
+            let chunk = world.chunk(pos).expect("checked resident");
+            for (x, v) in donor.iter_mut().enumerate() {
+                let id = LayerId::Substance(u8::try_from(x).expect("substance rows fit a u8"));
+                *v = i32::from(chunk.layers.get_u8(id, local));
+            }
+            if donor.iter().all(|&v| v == 0) {
+                continue;
+            }
             let acidic = self.ph(world, m.from) < self.acid_ph;
             for (x, &(mobility, mobility_acid)) in self.mobility.iter().enumerate() {
                 let id = LayerId::Substance(u8::try_from(x).expect("substance rows fit a u8"));
-                let x_a = world.layer(m.from, id);
+                let x_a = donor[x];
                 if x_a == 0 {
                     continue;
                 }
