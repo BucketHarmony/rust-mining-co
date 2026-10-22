@@ -3276,3 +3276,8 @@ Next:
 - Ready: F160 (light).
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+- E3b playtester report: committed in 643c8de (`docs/PLAYTEST.md`, `tests/e2e/tests/playtest_20261021.rs`). Owner items it raises:
+  - In a coal-lined working, a shaft narrower than most of the roof never brings the ceiling's maximum below 64. The seam's own emission beats diffusion-limited venting, so only the full-width skylight in F156 vents.
+  - Coal caves render near-black.
+  - Flaring starts at 1, so it carries little information.
+  - Ignition has no visual. A lone brushed magma cell flows away and freezes to basalt before it can ignite anything.
