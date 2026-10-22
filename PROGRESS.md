@@ -3216,3 +3216,32 @@ Next:
 - The E3b milestone completes with F156, and then the playtester runs.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 20:45 — F155 Chokedamp from organic decomposition reaction — passed
+Done:
+- The `EmitGas(kind, amount)` side of a reaction (SAD-P2 §7.6) now applies in `ReactionsPass`.
+  - The gas goes to the firing cell's first air face neighbor in sorted (y, z, x) order, below first. This is the same rule as §7.4 emission.
+  - It adds `min(amount, room)`, with room read from the previous state, as a `Queued` delta (the neighbor may be in another chunk), and books `react_in[g]`.
+  - The receiver joins the gas's sweep through `eco_put_layer`.
+- `decompose` (4 `c` → 1 `n` on `soil`) therefore emits 2 chokedamp. Only `rmc_eco/src/chemistry.rs` changed; no table or rate changed.
+Tests added:
+- `chemistry::tests::decompose_c_to_n_emits_chokedamp`:
+  - the shipped row's shape;
+  - neighbor order (−z before −x before above);
+  - room 254 → 1, and a full first neighbor takes nothing (the gas does not go on to the next neighbor);
+  - with no air neighbor (buried, or water only) the row still fires and emits nothing;
+  - a non-soil cell, or one with 3 `c`, changes nothing;
+  - the receiver is in the chokedamp active set;
+  - two chunks emitting into one shared cell: sums are clamped, the excess goes to `gas_saturation_loss`, and parallel equals serial;
+  - one season in a covered cave: `react_in` = substeps · cells · 2, no venting, the gas total matches, and it settles at the floor.
+  - Invariants are checked throughout.
+- TDD: before the side was implemented, the test failed at the first emission assertion (`(0, 0)` vs `(2, 0)`).
+Decisions:
+- With no air neighbor, or a full first one, the reaction still fires (consume and produce) and emits nothing. The SAD's `where` for decompose is `Tag("soil")` only. This differs from `Coat`, which needs a floor to fire (F142/F146).
+- Room is read from the previous state (Jacobi). When two cells emit into one air cell in the same pass, the queued sum is clamped by the runner and the excess is booked as `gas_saturation_loss`. So in that rare case `react_in` overstates the actual by that excess, but the gas invariant stays exact. The alternative, a per-source booking in the runner's queue, was not worth a new `Queued` field.
+- I tried refusing a reaction that emits the steam role at load: steam counts as water, and the water invariant has no `react_in` term. I reverted it, because the existing `tables_hash_is_stable` fixture maps every gas role to one gas and has an `EmitGas` row. No shipped row emits steam. Such a row would need a water-ledger term first.
+Next:
+- Ready: F156 (`firedamp_vented_by_shaft`, E2E, completes E3b → playtester) and F160 (light).
+- For F156: soil with `c` next to air now makes chokedamp each sub-step. The fixture's ledger and gas totals should allow for it, or keep `c` out of the cave's soil.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
