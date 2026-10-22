@@ -24,7 +24,7 @@ pub use gases::GasPass;
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};
 pub use ledger::SeasonLedger;
 pub use light::{LightGrid, LightPass};
-pub use plants::{GrowthPass, age_plants};
+pub use plants::{GrowthPass, SpreadPass, age_plants, spread_roll};
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };

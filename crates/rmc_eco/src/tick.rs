@@ -19,7 +19,7 @@ use crate::activity::{Activity, JacobiKind};
 use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::{Emission, GasPass};
 use crate::light::LightPass;
-use crate::plants::{GrowthPass, age_plants};
+use crate::plants::{GrowthPass, SpreadPass, age_plants};
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
 use crate::temperature::TemperaturePass;
@@ -71,6 +71,8 @@ pub enum PassId {
     Light,
     /// Plant growth (§7.8).
     Growth,
+    /// Plant spread (§7.8), after growth.
+    Spread,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -102,13 +104,16 @@ struct Passes {
     light: LightPass,
     /// §7.8 growth, after light.
     growth: GrowthPass,
+    /// §7.8 spread, after growth.
+    spread: SpreadPass,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
 /// clears the freeze-thaw bits (SAD-P2 §7.5), marks the season boundary in
 /// `activity`, then runs `seasons.substeps` sub-steps. `seed` is the world
-/// seed; it patterns the rain (§7.3 D). `world` must carry the tables'
-/// displacement rules ([`EcoTables::displacement_rules`]).
+/// seed; it patterns the rain (§7.3 D) and the plant spread (§7.8).
+/// `world` must carry the tables' displacement rules
+/// ([`EcoTables::displacement_rules`]).
 pub fn season_tick(
     world: &mut World,
     tables: &EcoTables,
@@ -159,12 +164,14 @@ pub fn season_tick_observed(
         reactions: ReactionsPass::new(tables),
         light: LightPass::new(tables),
         growth: GrowthPass::new(tables),
+        spread: SpreadPass::new(tables, season, seed),
     };
     let mut report = TickReport::default();
     world.eco_clear_freeze_thaw();
     activity.season_boundary(world);
     for i in 0..tables.seasons().substeps {
         let start = Instant::now();
+        passes.spread.set_substep(i);
         let mut after =
             |pass: PassId, world: &World, ledger: &SeasonLedger| observe(i, pass, world, ledger);
         substep(world, &mut passes, activity, exec, &mut report, &mut after);
@@ -190,8 +197,8 @@ pub fn season_tick_observed(
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
 /// this sub-step. Light (§7.7) runs only when the world is dirty. Plant
-/// growth (§7.8) runs last. Only the flow and gas sweeps add an
-/// `active_cells_per_sweep` entry.
+/// growth (§7.8) and then the spread sweep run last. Only the flow and gas
+/// sweeps add an `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
     world: &mut World,
@@ -287,6 +294,8 @@ fn substep(
         report,
     );
     after(PassId::Growth, world, &report.ledger);
+    passes.spread.run(world, &mut report.ledger);
+    after(PassId::Spread, world, &report.ledger);
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -774,6 +783,7 @@ mod tests {
                         (i, PassId::Reactions),
                         (i, PassId::Light),
                         (i, PassId::Growth),
+                        (i, PassId::Spread),
                     ]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");

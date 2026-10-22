@@ -30,16 +30,33 @@
 //! writes them as [`Queued`] changes. Only one plant sits on an anchor, so
 //! the queued deltas never compete.
 //!
+//! **Spread (sweep, after growth)**, per mature plant (growth 255, its
+//! cell of its species' material) in the global cell order: when the seeded
+//! [`spread_roll`] of `(seed, season, sub-step, cell)` is below
+//! `spread_chance`, the plant takes the first cell in the global order
+//! within `spread_radius` horizontally (a square) and ±1 vertically that is
+//! air and whose cell below carries one of `anchor_tags` and passes the
+//! species' needs. The new plant is placed at once (`World::eco_set`, then
+//! a fresh [`PlantState`]), so no later plant claims the same cell; ledger
+//! `plants_born`. The spread active set holds the mature plants: the pass
+//! adds them from the chunks' plant maps before the sweep, and a visited
+//! cell that is no longer a mature plant leaves it.
+//!
 //! **Aging.** At the end of each season every plant's `age_seasons` goes up
 //! by one ([`age_plants`]); a plant that reached its lifespan dies in the
 //! next season's first growth pass.
 
 use rmc_world::coords::{CellPos, LocalPos};
-use rmc_world::layers::{LayerId, PlantState};
+use rmc_world::layers::{LayerId, PlantState, SWEEP_SPREAD};
+use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
 use rmc_world::world::World;
+use xxhash_rust::xxh3::Xxh3;
 
-use crate::runner::{ChunkView, JacobiOut, JacobiPass, Queued};
+use crate::reference::order_key;
+use crate::runner::{
+    ChunkView, JacobiOut, JacobiPass, Queued, SweepCtx, SweepPass, SweepReport, run_sweep,
+};
 use crate::tables::EcoTables;
 
 /// One `plants.ron` row, resolved to ids and widened.
@@ -59,6 +76,82 @@ struct Species {
     uptake: Vec<(u8, i32)>,
     holds: bool,
     tall: bool,
+    /// Per material id: whether it carries one of `anchor_tags`.
+    anchors: Vec<bool>,
+    spread_chance: u8,
+    spread_radius: i32,
+}
+
+impl Species {
+    /// Every `plants.ron` row, in row order.
+    fn all(tables: &EcoTables) -> Vec<Self> {
+        let sub = |pairs: &[(String, u8)]| -> Vec<(u8, i32)> {
+            pairs
+                .iter()
+                .map(|(key, n)| {
+                    let x = tables
+                        .substance_index(key)
+                        .expect("the tables validate plant substance keys");
+                    (x, i32::from(*n))
+                })
+                .collect()
+        };
+        let m = tables.materials();
+        tables
+            .plants()
+            .iter()
+            .map(|p| Species {
+                material: m.id(&p.material),
+                light: i32::from(p.needs.light),
+                moisture: i32::from(p.needs.moisture),
+                temp: (i32::from(p.needs.temp.0), i32::from(p.needs.temp.1)),
+                substance_min: sub(&p.needs.substance_min),
+                substance_max: sub(&p.needs.substance_max),
+                growth_per_substep: i32::from(p.growth_per_substep),
+                litter: i32::from(p.litter),
+                lifespan_seasons: p.lifespan_seasons,
+                uptake: sub(&p.uptake),
+                holds: p.holds,
+                tall: p.tall,
+                anchors: m
+                    .iter()
+                    .map(|d| p.anchor_tags.iter().any(|tag| d.has_tag(tag)))
+                    .collect(),
+                spread_chance: p.spread_chance,
+                spread_radius: i32::from(p.spread_radius),
+            })
+            .collect()
+    }
+
+    /// Whether material `id` carries one of the species' `anchor_tags`.
+    fn anchors_on(&self, id: MaterialId) -> bool {
+        self.anchors
+            .get(usize::from(id.0))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// §7.8 step 1: whether the needs hold at the plant `cell` and its
+    /// `anchor`, reading layers through `layer`.
+    fn needs_met(
+        &self,
+        layer: impl Fn(CellPos, LayerId) -> i32,
+        cell: CellPos,
+        anchor: CellPos,
+    ) -> bool {
+        let temp = layer(cell, LayerId::Temperature);
+        layer(cell, LayerId::Light) >= self.light
+            && (self.temp.0..=self.temp.1).contains(&temp)
+            && layer(anchor, LayerId::Moisture) >= self.moisture
+            && self
+                .substance_min
+                .iter()
+                .all(|&(x, min)| layer(anchor, LayerId::Substance(x)) >= min)
+            && self
+                .substance_max
+                .iter()
+                .all(|&(x, max)| layer(anchor, LayerId::Substance(x)) <= max)
+    }
 }
 
 /// The plant growth pass (SAD-P2 §7.8), built once from the tables.
@@ -74,35 +167,7 @@ pub struct GrowthPass {
 
 impl GrowthPass {
     pub fn new(tables: &EcoTables) -> Self {
-        let sub = |pairs: &[(String, u8)]| -> Vec<(u8, i32)> {
-            pairs
-                .iter()
-                .map(|(key, n)| {
-                    let x = tables
-                        .substance_index(key)
-                        .expect("the tables validate plant substance keys");
-                    (x, i32::from(*n))
-                })
-                .collect()
-        };
-        let species = tables
-            .plants()
-            .iter()
-            .map(|p| Species {
-                material: tables.materials().id(&p.material),
-                light: i32::from(p.needs.light),
-                moisture: i32::from(p.needs.moisture),
-                temp: (i32::from(p.needs.temp.0), i32::from(p.needs.temp.1)),
-                substance_min: sub(&p.needs.substance_min),
-                substance_max: sub(&p.needs.substance_max),
-                growth_per_substep: i32::from(p.growth_per_substep),
-                litter: i32::from(p.litter),
-                lifespan_seasons: p.lifespan_seasons,
-                uptake: sub(&p.uptake),
-                holds: p.holds,
-                tall: p.tall,
-            })
-            .collect();
+        let species = Species::all(tables);
         let params = tables.params();
         Self {
             species,
@@ -115,29 +180,6 @@ impl GrowthPass {
 }
 
 impl GrowthPass {
-    /// Step 1: whether `sp`'s needs hold at the plant `cell` and its
-    /// `anchor`.
-    fn needs_met(
-        &self,
-        view: &ChunkView<'_>,
-        sp: &Species,
-        cell: CellPos,
-        anchor: CellPos,
-    ) -> bool {
-        let temp = view.layer(cell, LayerId::Temperature);
-        view.layer(cell, LayerId::Light) >= sp.light
-            && (sp.temp.0..=sp.temp.1).contains(&temp)
-            && view.layer(anchor, LayerId::Moisture) >= sp.moisture
-            && sp
-                .substance_min
-                .iter()
-                .all(|&(x, min)| view.layer(anchor, LayerId::Substance(x)) >= min)
-            && sp
-                .substance_max
-                .iter()
-                .all(|&(x, max)| view.layer(anchor, LayerId::Substance(x)) <= max)
-    }
-
     /// Step 2: the plant at local index `i` dies.
     fn die(
         &self,
@@ -184,7 +226,7 @@ impl JacobiPass for GrowthPass {
             if view.plant(anchor).is_some() {
                 continue;
             }
-            let met = self.needs_met(view, sp, cell, anchor);
+            let met = sp.needs_met(|c, id| view.layer(c, id), cell, anchor);
             let stress = if met {
                 0
             } else {
@@ -234,6 +276,138 @@ impl JacobiPass for GrowthPass {
         }
         out
     }
+}
+
+/// The plant spread sweep (SAD-P2 §7.8), built once per season.
+#[derive(Clone, Debug)]
+pub struct SpreadPass {
+    species: Vec<Species>,
+    air: MaterialId,
+    season: u32,
+    seed: u64,
+    /// The sub-step the next run belongs to.
+    substep: u8,
+}
+
+impl SpreadPass {
+    /// The spread of season `season`, seeded by the world seed `seed`.
+    pub fn new(tables: &EcoTables, season: u32, seed: u64) -> Self {
+        Self {
+            species: Species::all(tables),
+            air: tables.role_material("air").unwrap_or(MaterialId::AIR),
+            season,
+            seed,
+            substep: 0,
+        }
+    }
+
+    /// Sets the sub-step the next [`SpreadPass::run`] belongs to (part of
+    /// the roll).
+    pub fn set_substep(&mut self, substep: u8) {
+        self.substep = substep;
+    }
+
+    /// Adds every mature plant to the spread active set, then runs the
+    /// sweep.
+    pub fn run(&mut self, world: &mut World, ledger: &mut SeasonLedger) -> SweepReport {
+        let mature: Vec<CellPos> = world
+            .iter_chunks_sorted()
+            .flat_map(|(pos, chunk)| {
+                chunk
+                    .plants
+                    .keys()
+                    .map(move |&i| CellPos::from_chunk_local(pos, LocalPos::from_index(i)))
+            })
+            .filter(|&cell| self.mature(world, cell).is_some())
+            .collect();
+        for cell in mature {
+            world.eco_activate(cell, SWEEP_SPREAD);
+        }
+        run_sweep(world, self, ledger)
+    }
+
+    /// The species index and row of a mature plant at `cell`: a plant
+    /// state, its cell of its species' material, growth 255.
+    fn mature(&self, world: &World, cell: CellPos) -> Option<(u8, &Species)> {
+        let plant = world.plant(cell)?;
+        let sp = self.species.get(usize::from(plant.species))?;
+        let mature = sp.material.is_some()
+            && world.get_cell(cell) == sp.material
+            && world.layer(cell, LayerId::Growth) == i32::from(u8::MAX);
+        mature.then_some((plant.species, sp))
+    }
+
+    /// The first cell in the global order within `sp`'s reach of `cell`
+    /// that is air on an anchor with one of `sp`'s tags and passes `sp`'s
+    /// needs.
+    fn target(&self, world: &World, sp: &Species, cell: CellPos) -> Option<CellPos> {
+        let (c, r) = (cell.0, sp.spread_radius);
+        let mut reach: Vec<CellPos> = (c.y - 1..=c.y + 1)
+            .flat_map(|y| {
+                (c.z - r..=c.z + r)
+                    .flat_map(move |z| (c.x - r..=c.x + r).map(move |x| CellPos::new(x, y, z)))
+            })
+            .collect();
+        reach.sort_by_key(|&t| order_key(t));
+        reach.into_iter().find(|&t| self.takes(world, sp, t))
+    }
+
+    /// Whether a plant of `sp` can start at `cell`: an air cell in the
+    /// bounds whose cell below carries one of `sp`'s anchor tags, with
+    /// `sp`'s needs met there.
+    fn takes(&self, world: &World, sp: &Species, cell: CellPos) -> bool {
+        let anchor = CellPos::new(cell.0.x, cell.0.y - 1, cell.0.z);
+        world.bounds().contains(cell)
+            && world.get_cell(cell) == Some(self.air)
+            && world.get_cell(anchor).is_some_and(|a| sp.anchors_on(a))
+            && sp.needs_met(|c, id| world.layer(c, id), cell, anchor)
+    }
+}
+
+impl SweepPass for SpreadPass {
+    fn kind(&self) -> usize {
+        SWEEP_SPREAD
+    }
+
+    fn visit(&mut self, ctx: &mut SweepCtx<'_>, cell: CellPos) {
+        let Some((species, sp)) = self.mature(ctx.world, cell) else {
+            return;
+        };
+        let Some(material) = sp.material else {
+            return;
+        };
+        if spread_roll(self.seed, self.season, self.substep, cell) >= sp.spread_chance {
+            return;
+        }
+        let Some(target) = self.target(ctx.world, sp, cell) else {
+            return;
+        };
+        ctx.world.eco_set(target, material, ctx.ledger);
+        ctx.world.eco_put_plant(
+            target,
+            Some(PlantState {
+                species,
+                ..PlantState::default()
+            }),
+        );
+        ctx.ledger.plants_born += 1;
+    }
+
+    fn holds(&self, world: &World, cell: CellPos) -> bool {
+        self.mature(world, cell).is_some()
+    }
+}
+
+/// The seeded spread roll of the plant at `cell` in sub-step `substep` of
+/// season `season`, 0..=255 (SAD-P2 §7.8: the hash's low byte).
+pub fn spread_roll(seed: u64, season: u32, substep: u8, cell: CellPos) -> u8 {
+    let mut h = Xxh3::with_seed(seed);
+    h.update(&season.to_le_bytes());
+    h.update(&[substep]);
+    h.update(&cell.0.x.to_le_bytes());
+    h.update(&cell.0.y.to_le_bytes());
+    h.update(&cell.0.z.to_le_bytes());
+    h.digest().to_le_bytes()[0]
 }
 
 /// Adds one season to every plant's `age_seasons` (saturating), in sorted
@@ -701,5 +875,270 @@ mod tests {
         );
         assert_ne!(w.get_cell(grass), Some(id(&t, "grass")), "its cell cleared");
         assert_eq!(w.plant(young).map(|p| p.age_seasons), Some(2));
+    }
+
+    /// Two chunks side by side along x: topsoil up to y = 30, air at
+    /// y = 31. The border between them runs between x = 31 and x = 32.
+    fn wide_world(t: &EcoTables) -> World {
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 31, 31));
+        let mut w = World::new(Arc::clone(t.materials()), bounds);
+        w.set_eco_rules(t.displacement_rules());
+        let mut soil = Chunk::uniform(id(t, "topsoil"));
+        for z in 0..32 {
+            for x in 0..32 {
+                soil.storage
+                    .set(CellPos::new(x, 31, z).split().1, MaterialId::AIR);
+            }
+        }
+        w.insert_chunk(ChunkPos::new(0, 0, 0), soil.clone())
+            .unwrap();
+        w.insert_chunk(ChunkPos::new(1, 0, 0), soil).unwrap();
+        w
+    }
+
+    /// Makes the air cell `cell` a site where every shipped species'
+    /// needs hold: lit, 20.0 °C, its anchor (topsoil) moist and fed.
+    fn site(w: &mut World, t: &EcoTables, cell: CellPos) {
+        assert_eq!(w.get_cell(cell), Some(MaterialId::AIR));
+        assert_eq!(w.get_cell(below(cell)), Some(id(t, "topsoil")));
+        w.eco_put_layer(cell, LayerId::Light, 255);
+        w.eco_put_layer(cell, LayerId::Temperature, 200);
+        w.eco_put_layer(below(cell), LayerId::Moisture, 100);
+        for &(x, n) in &FED {
+            w.eco_put_layer(below(cell), sub(t, x), n);
+        }
+    }
+
+    /// A mature plant of `key` at `cell` (growth 255).
+    fn mature(w: &mut World, t: &EcoTables, cell: CellPos, key: &str) {
+        plant(w, t, cell, key, PlantState::default(), 255, 100, &FED);
+        w.eco_put_layer(cell, LayerId::Growth, 255);
+    }
+
+    /// Runs the spread sweep once for sub-step `substep` of `season`,
+    /// checking the invariants.
+    fn spread(w: &mut World, t: &EcoTables, seed: u64, season: u32, substep: u8) -> SeasonLedger {
+        let checker = InvariantChecker::new(w);
+        let mut ledger = SeasonLedger::default();
+        let mut pass = SpreadPass::new(t, season, seed);
+        pass.set_substep(substep);
+        pass.run(w, &mut ledger);
+        checker.check(w, &ledger).unwrap_or_else(|v| panic!("{v}"));
+        ledger
+    }
+
+    fn chance(t: &EcoTables, key: &str) -> u8 {
+        t.plants()[usize::from(species(t, key))].spread_chance
+    }
+
+    /// Every plant cell of the world, sorted.
+    fn plant_cells(w: &World) -> Vec<CellPos> {
+        let mut cells: Vec<CellPos> = w
+            .iter_chunks_sorted()
+            .flat_map(|(pos, c)| {
+                c.plants
+                    .keys()
+                    .map(move |&i| CellPos::from_chunk_local(pos, LocalPos::from_index(i)))
+            })
+            .collect();
+        cells.sort_by_key(|&c| crate::reference::order_key(c));
+        cells
+    }
+
+    fn born(n: u32) -> SeasonLedger {
+        SeasonLedger {
+            plants_born: n,
+            ..SeasonLedger::default()
+        }
+    }
+
+    #[test]
+    fn spread_only_onto_passing_anchors() {
+        let t = tables();
+        let mut w = world(&t);
+        let grass = id(&t, "grass");
+        let p = CellPos::new(10, 31, 10);
+        mature(&mut w, &t, p, "grass");
+
+        // The cells around P in the global order: y = 30 is soil, then the
+        // first row of y = 31. Each of the first sites fails one condition.
+        let at = |x, z| CellPos::new(x, 31, z);
+        let (stone, dark, dry, copper, cold, solid) = (
+            at(8, 8),
+            at(9, 8),
+            at(10, 8),
+            at(11, 8),
+            at(12, 8),
+            at(8, 9),
+        );
+        let (first, second) = (at(9, 9), at(11, 11));
+        let mut scratch = SeasonLedger::default();
+        for c in [stone, dark, dry, copper, cold, solid, first, second] {
+            site(&mut w, &t, c);
+        }
+        // Grass anchors on soil only.
+        w.eco_set(below(stone), id(&t, "stone"), &mut scratch);
+        w.eco_put_layer(dark, LayerId::Light, 0);
+        w.eco_put_layer(below(dry), LayerId::Moisture, 0);
+        w.eco_put_layer(below(copper), sub(&t, "cu"), 200);
+        w.eco_put_layer(cold, LayerId::Temperature, -50);
+        // Not air (its own cell above, at y = 32, is outside this world's
+        // lit sites: dark).
+        w.eco_set(solid, id(&t, "topsoil"), &mut scratch);
+        // Out of reach (radius 2), though passing.
+        let far = at(13, 10);
+        site(&mut w, &t, far);
+        // A plant one step short of mature, and a mature one whose roll
+        // fails, each beside a passing site.
+        let young = CellPos::new(20, 31, 20);
+        mature(&mut w, &t, young, "grass");
+        w.eco_put_layer(young, LayerId::Growth, 254);
+        site(&mut w, &t, at(21, 20));
+        let unlucky = CellPos::new(20, 31, 4);
+        mature(&mut w, &t, unlucky, "grass");
+        site(&mut w, &t, at(21, 4));
+
+        let c = chance(&t, "grass");
+        let season = 2;
+        let roll = |seed, step, cell| spread_roll(seed, season, step, cell);
+        let seed = (0..u64::from(u32::MAX))
+            .find(|&s| {
+                (0..3)
+                    .all(|i| roll(s, i, p) < c && roll(s, i, unlucky) >= c && roll(s, i, young) < c)
+            })
+            .expect("a seed where P and the young plant roll to spread and the other never");
+        let before = plant_cells(&w);
+
+        // The first passing site in the global order is taken.
+        assert_eq!(spread(&mut w, &t, seed, season, 0), born(1));
+        assert_eq!(w.get_cell(first), Some(grass));
+        let fresh = PlantState {
+            species: species(&t, "grass"),
+            ..PlantState::default()
+        };
+        assert_eq!(w.plant(first), Some(&fresh));
+        assert_eq!(w.layer(first, LayerId::Growth), 0);
+        for c in [
+            stone,
+            dark,
+            dry,
+            copper,
+            cold,
+            second,
+            far,
+            at(21, 20),
+            at(21, 4),
+        ] {
+            assert_eq!(w.get_cell(c), Some(MaterialId::AIR), "{c:?} stays air");
+        }
+        assert_eq!(w.get_cell(solid), Some(id(&t, "topsoil")));
+        let mut want = before.clone();
+        want.push(first);
+        want.sort_by_key(|&c| crate::reference::order_key(c));
+        assert_eq!(plant_cells(&w), want, "one new plant");
+
+        // The next roll takes the next passing site; the newborn is no
+        // parent yet.
+        assert_eq!(spread(&mut w, &t, seed, season, 1), born(1));
+        assert_eq!(w.plant(second), Some(&fresh));
+        // Nothing passing is left in reach.
+        let hash = w.hash();
+        assert_eq!(spread(&mut w, &t, seed, season, 2), born(0));
+        assert_eq!(w.hash(), hash);
+        assert_eq!(w.get_cell(far), Some(MaterialId::AIR));
+    }
+
+    #[test]
+    fn spread_is_seeded_deterministic() {
+        let t = tables();
+        let mut w = world(&t);
+        // Every air cell of y = 31 is a passing site; mature grass on a
+        // grid whose reaches (radius 2) do not overlap.
+        for z in 0..32 {
+            for x in 0..32 {
+                site(&mut w, &t, CellPos::new(x, 31, z));
+            }
+        }
+        let parents: Vec<CellPos> = (0..4)
+            .flat_map(|i| (0..4).map(move |j| CellPos::new(4 + 8 * j, 31, 4 + 8 * i)))
+            .collect();
+        for &p in &parents {
+            mature(&mut w, &t, p, "grass");
+        }
+        let c = chance(&t, "grass");
+        let (season, substep) = (3, 2);
+        let mut outcomes = std::collections::BTreeSet::new();
+        for seed in 0..16 {
+            let mut a = w.clone();
+            let mut b = w.clone();
+            let la = spread(&mut a, &t, seed, season, substep);
+            assert_eq!(spread(&mut b, &t, seed, season, substep), la);
+            assert_eq!(
+                a.hash(),
+                b.hash(),
+                "seed {seed}: the same seed spreads the same"
+            );
+            // Exactly the parents whose roll is below spread_chance spread,
+            // each onto its first site in the global order.
+            let spreading: Vec<CellPos> = parents
+                .iter()
+                .copied()
+                .filter(|&p| spread_roll(seed, season, substep, p) < c)
+                .collect();
+            assert_eq!(la, born(spreading.len() as u32), "seed {seed}");
+            for &p in &parents {
+                let first = CellPos::new(p.0.x - 2, 31, p.0.z - 2);
+                assert_eq!(
+                    a.plant(first).is_some(),
+                    spreading.contains(&p),
+                    "seed {seed}: {p:?}"
+                );
+            }
+            outcomes.insert(spreading);
+        }
+        assert!(outcomes.len() > 1, "the seed changes which plants spread");
+        // The season and the sub-step are part of the roll too.
+        let roll_of = |season, step| -> Vec<u8> {
+            parents
+                .iter()
+                .map(|&p| spread_roll(0, season, step, p))
+                .collect()
+        };
+        assert_ne!(roll_of(season, substep), roll_of(season + 1, substep));
+        assert_ne!(roll_of(season, substep), roll_of(season, substep + 1));
+    }
+
+    #[test]
+    fn no_double_claim_across_chunk_border() {
+        let t = tables();
+        let season = 1;
+        // P1 in the west chunk and P2 in the east chunk both reach the one
+        // passing site X, in the east chunk. P1 comes first in the global
+        // order (same y-plane, chunk (0, 0) before (1, 0)) and claims it.
+        let x = CellPos::new(32, 31, 10);
+        let (west, east) = (CellPos::new(30, 31, 10), CellPos::new(34, 31, 10));
+        assert_ne!(west.split().0, x.split().0);
+        assert_eq!(east.split().0, x.split().0);
+        for (first, second) in [("grass", "moss"), ("moss", "grass")] {
+            let mut w = wide_world(&t);
+            mature(&mut w, &t, west, first);
+            mature(&mut w, &t, east, second);
+            site(&mut w, &t, x);
+            let seed = (0..u64::from(u32::MAX))
+                .find(|&s| {
+                    spread_roll(s, season, 0, west) < chance(&t, first)
+                        && spread_roll(s, season, 0, east) < chance(&t, second)
+                })
+                .expect("a seed where both roll to spread");
+
+            assert_eq!(
+                spread(&mut w, &t, seed, season, 0),
+                born(1),
+                "{first} first"
+            );
+            assert_eq!(w.get_cell(x), Some(id(&t, first)));
+            assert_eq!(w.plant(x).map(|p| p.species), Some(species(&t, first)));
+            assert_eq!(plant_cells(&w), vec![west, x, east], "no second plant");
+        }
     }
 }
