@@ -2356,8 +2356,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Expose the bench bodies as pub fns in rmc_eco::bench_support; benches/ call them; tests/benches_run_once.rs (integration test, path = name) calls each once with a tiny world."
+      "passes": true,
+      "notes": "Expose the bench bodies as pub fns in rmc_eco::bench_support; benches/ call them; tests/benches_run_once.rs (integration test, path = name) calls each once with a tiny world.",
+      "passedAt": "2026-10-22T07:20:24Z"
     },
     {
       "id": "F173",

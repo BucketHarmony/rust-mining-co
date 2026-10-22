@@ -18,3 +18,25 @@ xxhash-rust.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The benches and `tests/benches_run_once.rs` run on a generated world. A
+# dev-dependency may depend on this crate: integration tests and benches
+# link the same `rmc_eco` library that `rmc_worldgen` does.
+rmc_worldgen.workspace = true
+criterion.workspace = true
+
+# SAD-P2 §13. Bodies in `rmc_eco::bench_support`; results in docs/perf-p2.md.
+[[bench]]
+name = "tick_quiet"
+harness = false
+
+[[bench]]
+name = "tick_first"
+harness = false
+
+[[bench]]
+name = "water_sweep_world"
+harness = false
+
+[[bench]]
+name = "chem_transport_world"
+harness = false

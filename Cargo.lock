@@ -5928,10 +5928,12 @@ dependencies = [
 name = "rmc_eco"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "postcard",
  "proptest",
  "rayon",
  "rmc_world",
+ "rmc_worldgen",
  "ron",
  "serde",
  "thiserror 2.0.21",

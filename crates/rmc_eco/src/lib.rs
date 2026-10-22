@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 pub mod activity;
+pub mod bench_support;
 pub mod chemistry;
 pub mod gases;
 pub mod invariants;
