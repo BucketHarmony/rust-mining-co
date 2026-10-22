@@ -6,10 +6,14 @@
 // cell above once growth passes 192. worldgen_chance (SAD-P2 §8): the chance
 // in 256 that worldgen starts the species on a surface anchor passing its
 // needs at season 0; absent means worldgen never seeds it.
+// Anchor substance amounts are on the porous scale: a full loam anchor
+// (field_capacity 48) trading water with a pool holds about 48/255 of the
+// pool cell's amount (§7.6 transport). Moss's acid cap of 4 is what water
+// near pH 2 leaves there, so moss dies beside acid drainage (F171).
 [
     (key: "moss", material: "moss", anchor_tags: ["stone", "soil"],
      needs: (light: 16, moisture: 8, temp: (0, 300),
-             substance_max: [("cu", 24), ("acid", 32)]),
+             substance_max: [("cu", 24), ("acid", 4)]),
      growth_per_substep: 8, spread_chance: 32, spread_radius: 2, litter: 8,
      lifespan_seasons: 12, uptake: [("n", 1)], worldgen_chance: 64),
     (key: "grass", material: "grass", anchor_tags: ["soil"],
