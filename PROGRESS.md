@@ -3461,3 +3461,31 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 05:00 — F166 Spread by seeded hash onto passing anchors within radius — passed
+Done:
+- `rmc_eco::plants::SpreadPass` is a sweep (`SWEEP_SPREAD`, SAD-P2 §7.8). It visits mature plants in the global order. A mature plant has growth 255 and its cell holds its species' material. When `spread_roll(seed, season, substep, cell) < spread_chance`, the plant takes the first cell, in global order, within `spread_radius` horizontally and ±1 vertically that:
+  - is air;
+  - has a cell below carrying one of `anchor_tags`;
+  - passes the species' needs: light and temperature at the cell, moisture and substances at the anchor.
+- The new plant is placed immediately (`eco_set` to the species material, then a fresh `PlantState`), so a later plant cannot claim the same cell. Each birth books `plants_born`.
+- `spread_roll` hashes `(season, substep, x, y, z)` with xxh3 seeded by the world seed and takes the low byte (the SAD's `& 255`).
+- `season_tick` runs the spread sweep after growth in every sub-step (`PassId::Spread`). `SpreadPass::set_substep` feeds the sub-step into the roll.
+- `Species` construction and the needs check moved into `Species::all` / `Species::needs_met`, so growth and spread share them. Growth behaviour is unchanged.
+Tests added:
+- `plants::tests::spread_only_onto_passing_anchors`: the first sites in order each fail one condition (stone anchor for grass, dark, dry, copper, cold, not air). The first passing site is taken; the next roll takes the next site; then nothing is left. A site out of reach, a plant at growth 254 and a plant whose roll fails do not spread.
+- `plants::tests::spread_is_seeded_deterministic`: 16 seeds on a grid of mature grass. The same seed gives the same world and ledger. Exactly the parents whose roll is below `spread_chance` spread, onto their first site. The seed changes the outcome, and so do the season and the sub-step.
+- `plants::tests::no_double_claim_across_chunk_border`: two parents in neighbouring chunks share one passing site. The first in global order claims it, there is one birth, and no second plant appears. This holds for both species orders.
+- TDD: with the target search stubbed to `None`, all three failed with `plants_born` 0 against an expected 1 or 2.
+- `tick::tests::invariants_hold_after_each_pass_20_worlds` now expects `PassId::Spread` after `Growth` in the observed pass order.
+Decisions:
+- "Within `spread_radius` horizontally" is read as a square (Chebyshev) reach, `|dx|, |dz| ≤ radius`. "First in sorted order" uses the sweep's global order key `(y, cz, cx, lz, lx)`.
+- The spread active set holds the mature plants. Growth is a Jacobi pass and does not touch active sets, so each spread run first adds the mature plants from the chunks' plant maps. That costs one pass over the plants, not the world. A visited cell that is no longer a mature plant leaves the set. Newborns (growth 0) are not activated.
+- The spread sweep adds no `active_cells_per_sweep` entry, like transport. Only flow and gas sweeps report there, and the host report layout stays as it is.
+- The parent keeps its growth at 255 after spreading. The SAD gives no cost, so a mature plant can roll again every sub-step.
+- `age_seasons`, `stress` and `held` of a newborn all start at 0. The air cell had growth 0 (§7.0 zeroes it on Solid→Air).
+Next:
+- F168 (worldgen surface plants) and F169 (editor eco panel) are unblocked. F167 waits on its blockers.
+- E5 is not complete, so no playtester run.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
