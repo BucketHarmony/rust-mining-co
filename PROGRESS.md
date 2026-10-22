@@ -3333,3 +3333,56 @@ Next:
 - F165 (plants) also needs F142 and F122.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 23:55 — F161 Layer overlay color source in the mesher and editor picker — passed
+Done:
+- `rmc_client::mesher`:
+  - `ColorSource` is `Material` (the default) or `Layer(LayerId, Colormap)`.
+  - `Colormap` is an integer linear ramp between two sRGB ends, clamped to a per-layer value range (`Colormap::for_layer`).
+  - `MeshInput::from_world_colored` reads the source layer for all 34³ cells, the border from neighbour chunks included. `from_world_tinted` is the Material case.
+  - Overlay faces take the colormap color times the face/AO shade, and merge only at equal values. Liquids keep their opacity and get the colormap color in place of the dissolved tint.
+- `rmc_client::meshpipe`:
+  - New resource `MeshColorSource`. A new system `follow_color_source` runs first in the pipeline chain. When the source changes it marks every resident chunk dirty and sets `MeshStats::recoloring`.
+  - Uploads use the initial-load burst budget until the pipeline is idle again.
+  - Jobs mesh with the current source.
+- `rmc_client::replica`: `set_layer_remesh(on)`. While the overlay is on, `ChunkDelta::Layers` and `LayerSnapshot` mark the chunk and its 26 neighbours. Otherwise only liquid chunks are marked, as before. `mark_all_dirty` is no longer test-only.
+- `rmc_client::editor`:
+  - `EditorState.overlay: Option<LayerId>`.
+  - `F7` (`EditorAction::NextOverlay`) cycles `OVERLAY_LAYERS`: temperature, moisture, regolith, light, growth, substances 0..10, gases 0..4, then none.
+  - `follow_overlay` writes `overlay_source(state.overlay)` into `MeshColorSource`.
+- `docs/CONTROLS.md`: F7 row and an overlay note.
+- `lib.rs` re-exports the new types.
+Tests added:
+- `mesher::tests::overlay_colors_from_layer`:
+  - colormap ends, clamping and ranges;
+  - Material ignores values;
+  - uniform values give the material geometry with colormap colors and no emissive;
+  - unequal values split merged faces;
+  - Light and Gas sample the front cell;
+  - liquid opacity kept;
+  - `from_world_colored` reads a neighbour-chunk border value and an i16 temperature.
+- `editor::tests::overlay_pick_triggers_remesh`:
+  - F7 does nothing while the editor is closed;
+  - with no overlay, a layer snapshot remeshes nothing;
+  - picking a layer sets the source and remeshes all 8 chunks with more than 1 upload per frame, with `recoloring` reported and cleared when drained; the uploaded colors equal a direct mesh with that source;
+  - with the overlay on, a layer snapshot remeshes the chunk and its neighbours (8);
+  - the cycle goes through every layer and back to Material, which remeshes in material colors;
+  - with the overlay off again, layer snapshots no longer remesh.
+- TDD:
+  - before the mesher change, `overlay_colors_from_layer` failed on its color comparison;
+  - before the pipeline followed the source, `overlay_pick_triggers_remesh` failed with "every chunk remeshed, left: 8, right: 16".
+  - My own new assertion, "replica dirty after a layer snapshot", read the replica after the frame in which the pipeline had already drained it. I fixed that uncommitted assertion to accept "queue busy or replica dirty". The +8 jobs check still holds.
+Decisions:
+- Colormaps are client presentation constants in `mesher.rs`, like `FACE_SHADES`; they are not ecology rates, so they are not in `eco.ron`. The value ranges are:
+  - temperature −200..1000;
+  - u8 layers 0..255.
+- Light and gas live in open cells, so a face shows the value of the cell in front of it. All other layers show the solid cell's own value.
+- The overlay drops emissive glow and the water dissolved tint, so the colors read as data.
+- The SAD-P2 §10 "egui picker" is an editor key action (F7) here. A combo box in the panel is left to F169, which owns panel work. The overlay persists when the editor closes.
+- "Remeshes resident chunks under the existing budget" is read as: the in-flight job budget as usual, plus the initial-load upload burst while recoloring, so the switch does not trickle at 1 upload per frame.
+- While the overlay is on, layer changes remesh the affected chunk and its neighbours (their borders sample it). This costs nothing with the overlay off.
+Next:
+- F162 (E2E `layer_overlay_renders`) builds on `MeshColorSource` / `EditorAction::NextOverlay`.
+- F165 (plants) still needs F142 and F122.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
