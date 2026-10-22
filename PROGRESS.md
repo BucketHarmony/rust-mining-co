@@ -3577,3 +3577,38 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 09:00 — F170 E2E: grass_greens_swale and fireweed_takes_copper — passed
+Done:
+- New material `loam` (id 29) in `assets/materials.ron`: tags `soil`, `porous`; permeability 64, field_capacity 48; `anchor`. It is data only. Worldgen does not lay it, and the fixtures still use topsoil, the first `soil` material.
+- `tests/e2e/tests/grass_greens_swale.rs`:
+  - Setup: `Fixture::Swale(2)`. Every site column's soil and the berm are painted to loam, and nitrogen is set to 96 in every loam cell. The swale is filled with brush water. Grass is planted on every column whose top is loam.
+  - Six seasons of drought (rain 0, default air temperatures).
+  - Asserts: grass in the band around the swale (2 columns uphill to 3 downhill) exceeds both an equally wide band uphill and the rest of the site. Some grass was born (spread). The near loam is wetter than the uphill loam. Every living grass stands on loam with moisture > 0. The swale still holds water.
+  - Screenshot: `docs/screens/grass_greens_swale-34.png`.
+- `tests/e2e/tests/fireweed_takes_copper.rs`:
+  - Setup: `Fixture::Patch(loam, cu, 120)` plus a clean loam control patch, both with nitrogen 96. Fireweed and grass are planted on the copper, and grass on the control.
+  - Three default seasons (spring, summer, autumn).
+  - Asserts: the anchor's cu fell. The site's cu plus the fireweed's held cu equals the starting total. The grass on copper is dead and has no plant state; the control grass lives. The harvest yields 1 fireweed plus `max(1, held >> harvest_shift)` copper_dust.
+  - Screenshot: `docs/screens/fireweed_takes_copper-24.png`.
+Tests added:
+- `e2e:grass_greens_swale`: the reviewer's run read grass 176 → 34 in and around the swale and 288 → 0 in the uphill band. 870 of 912 planted grass die in the first season.
+- `e2e:fireweed_takes_copper`: in a no-render prototype with the same seed and edits, anchor cu went 120 → 72, the fireweed held 48 cu, and the harvest gave 6 copper_dust.
+- TDD: without the loam row, `fireweed_takes_copper` failed at setup ("no loam").
+Decisions:
+- **Porous soil is needed.** With the shipped tables no soil is porous, so a plant's anchor moisture is always 0. Every species needs moisture 8–24 and dies after `stress_death` = 16 sub-steps (2 seasons). Neither scenario could pass.
+  - I added a separate porous soil, `loam`, rather than making topsoil porous. Porous topsoil would change water and chemistry in every fixture-based scenario and in worldgen (the F168 decision left that to the owner).
+  - The scenarios lay loam with edits (test code names it; rules 5 and 18 hold).
+- **Nitrogen.** Grass needs `n` ≥ 2 and nothing in the shipped world supplies it (only `decompose` of litter). Both scenarios fertilize evenly: the whole swale site, and both patches. Copper, or water, is then the only difference between the compared regions.
+- **Drought for the swale.** In the SAD-P2 model a porous cell never dries: there is no evaporation from porous solids, and seepage only sheds above `field_capacity · seep_num / 256`. So rain would wet the whole loam slope and grass would live everywhere.
+  - The scenario therefore fills the swale with brush water and runs six seasons with rain 0. The swale's water is the only water on the site. `season_swale_fills` already shows that rain fills a swale.
+- The swale's water count drops in winter (season 3: 2 cells) because the pool freezes to ice. It is water again in spring.
+- **Look and feel (rule 21).** No pixel checks. The fireweed shot is taken from high above, so the control grass, the fireweed and the bare patch are in frame. After autumn rain, thin rain sheets cover the impermeable topsoil around the patches; that is honest water, not an overlay.
+- Reviewer (F170): no SAD or rule violations. I addressed its gaps: the rest-of-site comparison, the "green where wet" anchor check, the swale still holding water, copper conservation, and the screenshot framing.
+Next:
+- F171 (`tailings_kill_moss`) is unblocked. Moss also needs a wet anchor (moisture 8, `stone` or `soil` tag). Lay loam under the moss as these scenarios do. Remember that porous soil never dries.
+- E5 is not complete, so no playtester run.
+- Owner:
+  - The shipped world still starts with no plants and has no soil plants can live on. Decide whether worldgen should lay loam, or whether topsoil should become porous, and give soil some starting `n`.
+  - The E2 playtester run is still outstanding.
+Blockers: none.
