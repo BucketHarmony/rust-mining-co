@@ -66,7 +66,7 @@ fn plain_solids(t: &TestApp) -> Vec<MaterialDef> {
     t.host_world()
         .materials()
         .iter()
-        .filter(|d| d.phase == Phase::Solid && d.emissive == 0.0 && d.diggable)
+        .filter(|d| d.phase == Phase::Solid && !d.passable && d.emissive == 0.0 && d.diggable)
         .cloned()
         .collect()
 }

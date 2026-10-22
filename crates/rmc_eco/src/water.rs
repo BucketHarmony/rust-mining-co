@@ -837,8 +837,8 @@ mod tests {
                      emissive: 0.0, passable: true),\n"
                 )
             };
-            // Rows in id order from n; magma and obsidian only if the
-            // shipped table lacks them.
+            // Rows in id order from n; magma, moss and obsidian only if
+            // the shipped table lacks them.
             let has = |key: &str| base.contains(&format!("key: \"{key}\""));
             let mut rows: Vec<Box<dyn Fn(usize) -> String>> = vec![
                 Box::new(|id| row(id, "test_loam", LOAM_PERM)),
@@ -854,7 +854,9 @@ mod tests {
                 }));
             }
             rows.push(Box::new(|id| liquid(id, "test_brine", "")));
-            rows.push(Box::new(|id| plant(id, "moss")));
+            if !has("moss") {
+                rows.push(Box::new(|id| plant(id, "moss")));
+            }
             if !has("obsidian") {
                 rows.push(Box::new(|id| {
                     format!(

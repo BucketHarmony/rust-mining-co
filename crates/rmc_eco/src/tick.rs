@@ -510,8 +510,8 @@ mod tests {
     /// The shipped tables with rows appended to the material table: magma
     /// if the table lacks it (the SAD-P2 §5 row: Liquid, viscosity 3,
     /// conductivity 64, with F131's heat capacity 64), so that the magma
-    /// swaps and transitions run, and the passable `moss` of plants.ron, so
-    /// that rain finds plants.
+    /// swaps and transitions run, and the passable `moss` of plants.ron if
+    /// the table lacks it, so that rain finds plants.
     fn rich_tables() -> EcoTables {
         let base = std::fs::read_to_string(format!("{ASSETS}/materials.ron")).unwrap();
         let mut n = rmc_world::materials::MaterialTable::from_ron_str(&base)
@@ -527,11 +527,13 @@ mod tests {
             ));
             n += 1;
         }
-        rows.push_str(&format!(
-            "(id: {n}, key: \"moss\", phase: Solid, tags: [\"plant\"], hardness: 1, \
-             diggable: true, yield_count: 1, color: (60, 140, 60, 255), emissive: 0.0, \
-             passable: true),\n"
-        ));
+        if !base.contains("key: \"moss\"") {
+            rows.push_str(&format!(
+                "(id: {n}, key: \"moss\", phase: Solid, tags: [\"plant\"], hardness: 1, \
+                 diggable: true, yield_count: 1, color: (60, 140, 60, 255), emissive: 0.0, \
+                 passable: true),\n"
+            ));
+        }
         let text = format!("{}{rows}]", &base[..end]);
         let m = std::sync::Arc::new(
             rmc_world::materials::MaterialTable::from_ron_str(&text).expect("test table loads"),

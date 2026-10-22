@@ -1157,7 +1157,7 @@ mod tests {
             .host_world()
             .materials()
             .iter()
-            .filter(|d| d.phase == Phase::Solid && d.diggable)
+            .filter(|d| d.phase == Phase::Solid && !d.passable && d.diggable)
             .min_by_key(|d| d.hardness)
             .expect("a diggable solid")
             .id;
