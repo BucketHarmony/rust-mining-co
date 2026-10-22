@@ -3544,3 +3544,5 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: decide whether the shipped world should start green (see Decisions). The E2 playtester run is still outstanding.
 Blockers: none.
+
+Correction to the F168 block: F147 already passes, so F170 is unblocked now that F168 passes.
