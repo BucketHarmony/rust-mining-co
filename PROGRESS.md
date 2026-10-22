@@ -3281,3 +3281,55 @@ Blockers: none.
   - Coal caves render near-black.
   - Flaring starts at 1, so it carries little information.
   - Ignition has no visual. A lone brushed magma cell flows away and freezes to basalt before it can ignite anything.
+
+## 2026-10-21 22:40 — F160 Light: global column pass and lateral iterations; passable transparent; dirty-flag triggered; worldgen initial light — passed
+Done:
+- New `rmc_eco::light` (SAD-P2 §7.7). `LightPass` is a global, single-threaded sweep over a flat (y, z, x) array of the world bounds.
+  - Column pass, y descending: 255 above the world, then `saturating_sub(light_attenuation)` entering each cell. Attenuation comes only from `MaterialDef::light_attenuation()` (air, passable and ice 0, water 32, other solids 255).
+  - Lateral: `eco.light_lateral_iters` double-buffered iterations over transparent cells, `max(light, max_neighbor − light_falloff)`. Each iteration visits only the cells that can change: first the transparent cells below 255, then the transparent neighbors of the cells the last iteration raised. It stops early at a fixed point. The result is the same as the full iteration; a test checks it against a brute-force reference.
+  - Writes each resident chunk's `Light` layer in sorted chunk order. Only chunks whose values changed get a new `eco_revision`.
+- `rmc_world`:
+  - `World` has a world-level light dirty flag. It starts set and is set by `change_material` (used by `apply` and `eco_set`), cell and full deltas, and `insert_chunk`. Layer-only changes do not set it.
+  - New accessors: `light_dirty()` and `eco_clear_light_dirty()`.
+  - `World::eco_put_light(pos, values)` writes a whole chunk's light at once.
+  - `ChunkLayers::replace_u8` reports whether any read changed. All zeros over an absent layer leave it absent, which reads and hashes the same.
+- Tick: light runs after reactions, last in the sub-step (no plants yet), and only when the world is dirty.
+  - New `PassId::Light`, reported every sub-step.
+  - New `TickReport.light_recomputes`. The tick test's expected pass list gains `Light`.
+- Worldgen:
+  - `rmc_worldgen::LightInit` and `Generator::with_light`. `generate_world` runs one full light pass over the generated chunks and materializes `Light` in every chunk, dark ones included.
+  - `generate` and `generate_chunks` cannot light a single chunk, so they leave the layer out.
+  - The app's and the testkit's world builders call `with_light`.
+Tests added:
+- `light::tests::open_column_full_overhang_zero`: open columns are 255 down to the floor. Under a wide roof, beyond the lateral reach, the light is 0; above the roof it is 255.
+- `light::tests::lateral_falloff`:
+  - k cells in under the roof the light is 255 − 32k, for k up to 6, then 0;
+  - light climbs into a notch in the roof (falloff once more);
+  - 8 random worlds of air, stone, water, ice and a passable plant equal the brute-force double-buffered reference, both in the grid and in the written layers.
+- `light::tests::water_attenuates_passable_transparent`:
+  - water loses 32 per cell of depth;
+  - a passable test plant and ice above the pool leave it as lit as open air.
+  - The shipped table has no plants yet, so the test adds a passable row.
+- `light::tests::recomputed_only_when_dirty`:
+  - via `run`: true for a new world, then false; a layer change or a same-material `eco_set` is still false; opening the roof or inserting a chunk is true; an unchanged recompute bumps no `eco_revision`.
+  - via `season_tick` (rain 0, fixed air temperature): `light_recomputes` is 1, then 0, then 1 after an edit.
+- `rmc_worldgen` `light::tests::initial_light_nonzero_at_surface` (64×128×64 world with temperature, water table and magma):
+  - every chunk carries `Light` with `eco_revision` 0;
+  - for every column inside the bedrock walls, the cell above `surface_y` is 255, and a surface cell that lets light in (water) is lit;
+  - recomputing on the assembled world changes nothing;
+  - without `with_light` there is no layer.
+- Also `layers::tests::replace_u8_reports_read_changes` and `world::tests::light_dirty_follows_material_changes` (edit, `SetLayer`, cell and full deltas, insertion).
+- TDD: with the lateral step and the dirty check stubbed out, `lateral_falloff` and `recomputed_only_when_dirty` failed (0 vs 223; recompute on a clean world). The column-only tests pass on the column pass alone, as they should.
+- `rmc_host` `layer_snapshot_sent_for_eco_only_changes` failed on the first version, which materialized all-zero light in a dark fixture and sent three snapshots instead of one. The pass was at fault, not the test. Fixed by the `replace_u8` read rule.
+- Also checked: workspace tests green. E2E `firedamp_vented_by_shaft` still passes in 62.9 s (60 s before).
+Decisions:
+- "max_neighbor" means the six face neighbors, so lateral light also climbs and descends into pockets. Neighbors outside the bounds are ignored, and so is the sky above the top layer, which the column pass already covers.
+- A cell in a non-resident chunk counts as opaque. The host keeps every chunk resident.
+- The dirty flag lives on `World` ("a world-level dirty flag"), not in `Activity`. A new or loaded world is dirty, so its first sub-step recomputes once. That is harmless: light is a pure function of the materials.
+- Opaque cells hold 0, the surface solid included (§7.7 formula). "Initial light non-zero at the surface" is read as: the cell above `surface_y`, where plants stand, is 255, and a transparent surface cell (a pond top) is lit.
+- `PassId::Light` is reported in every sub-step, even when the pass skips, so the observed pass order stays fixed.
+Next:
+- F161 (layer overlay color source in the mesher and editor picker) is now unblocked: F160 and F109 pass.
+- F165 (plants) also needs F142 and F122.
+- Owner: the E2 playtester run is still outstanding.
+Blockers: none.
