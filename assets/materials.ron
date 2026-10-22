@@ -130,4 +130,11 @@
     (id: 28, key: "shrub", phase: Solid, tags: ["plant"],
      hardness: 4, diggable: true, yield_count: 1, color: (66, 98, 44, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8),
+
+    // Loam (F170): a porous soil that holds rain, so a plant's anchor can
+    // meet its moisture need (SAD-P2 §7.3 D, §7.8). Worldgen does not lay
+    // it yet; topsoil, dirt and clay stay impermeable.
+    (id: 29, key: "loam", phase: Solid, tags: ["soil", "porous"],
+     hardness: 10, diggable: true, yield_count: 1, color: (92, 68, 44, 255), emissive: 0.0,
+     conductivity: 64, heat_capacity: 8, permeability: 64, field_capacity: 48, anchor: true),
 ]
