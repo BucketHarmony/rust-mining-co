@@ -48,8 +48,17 @@
 //! reaches `eco.crust_threshold`, it becomes the crust material
 //! ([`World::eco_set`], so the §7.0 rules run).
 //!
-//! The `EmitGas` side is not applied yet: decompose fires and consumes,
-//! and its chokedamp belongs to F155.
+//! `EmitGas(gas, amount)` adds `min(amount, room)` of the gas to the
+//! cell's first air face neighbor in sorted (y, z, x) order, below first,
+//! with room read from the previous state, and books it as `react_in`.
+//! Like a coat it is [`Queued`], since the neighbor may lie in another
+//! chunk. A full first neighbor takes nothing and the gas does not go on
+//! to the next; with no air neighbor nothing is emitted. Either way the
+//! row still fires. When several cells emit into one air cell in the same
+//! pass, their amounts add before the runner's clamp, and what is over 255
+//! is charged to `gas_saturation_loss`. The receiver joins the gas's sweep
+//! (`World::eco_put_layer`). `decompose` emits chokedamp this way, the
+//! only organic decomposition there is (§7.6).
 //!
 //! [`reference::flat_transport`]: crate::reference::flat_transport
 
@@ -208,6 +217,9 @@ const FACES: [[i32; 3]; 6] = [
 const ABOVE: [i32; 3] = [0, 1, 0];
 /// The cell below: a `Coat(Floor, ..)` target.
 const BELOW: [i32; 3] = [0, -1, 0];
+/// The 6 face neighbors in sorted (y, z, x) order, below first: where an
+/// `EmitGas` side looks for its first air neighbor.
+const SORTED_FACES: [[i32; 3]; 6] = [BELOW, [0, 0, -1], [-1, 0, 0], [1, 0, 0], [0, 0, 1], ABOVE];
 
 /// Tags of the materials a coat can turn into a crust (SAD-P2 §7.6), with
 /// air, unless the material is already a crust.
@@ -243,6 +255,8 @@ struct Rule {
     weather_boost: i32,
     /// `Coat(Floor, ..)`.
     coat: Option<Coat>,
+    /// `EmitGas(kind, amount)`: `(gas layer index, amount)`.
+    emit: Option<(u8, i32)>,
 }
 
 /// A `Coat(Floor, crust, x, amount)` side resolved against the tables.
@@ -329,12 +343,22 @@ impl ReactionsPass {
                     }),
                     _ => None,
                 };
+                let emit = match &r.side {
+                    Some(SideEffect::EmitGas(g, amount)) => Some((
+                        tables
+                            .gas_index(g)
+                            .expect("the tables validate reaction gas keys"),
+                        i32::from(*amount),
+                    )),
+                    _ => None,
+                };
                 Rule {
                     consume: consume.into_iter().collect(),
                     net: net.into_iter().collect(),
                     conds,
                     weather_boost,
                     coat,
+                    emit,
                 }
             })
             .collect();
@@ -431,7 +455,8 @@ impl JacobiPass for ReactionsPass {
     /// Per cell, the first rule (table order) whose consumed amounts are
     /// on the cell, whose conditions hold and, for a coating rule, which
     /// has a floor, fires once. Reads the cell, its face neighbors and the
-    /// evaporated set; writes the cell and queues the coat of its floor.
+    /// evaporated set; writes the cell and queues the coat of its floor and
+    /// the gas it emits into an air neighbor.
     fn compute(&self, view: &ChunkView<'_>) -> JacobiOut {
         let mut out = JacobiOut::default();
         let layers = &view.chunk().layers;
@@ -489,6 +514,26 @@ impl JacobiPass for ReactionsPass {
                         .map(|crust| (crust, self.crust_threshold)),
                 });
                 out.ledger.react_delta[usize::from(coat.x)] += i64::from(coat.amount);
+            }
+            if let Some((g, amount)) = rule.emit
+                && let Some(target) = SORTED_FACES
+                    .iter()
+                    .map(|&f| offset(cell, f))
+                    .find(|&n| view.material(n).is_some_and(|n| Self::is(&self.air, n)))
+            {
+                let id = LayerId::Gas(g);
+                let add = amount.min(FULL - view.layer(target, id));
+                if add > 0 {
+                    // Several emitters into one cell add up; the runner
+                    // charges the sum over 255 to `gas_saturation_loss`.
+                    out.queued.push(Queued {
+                        target,
+                        layer: id,
+                        amount: add,
+                        then_set: None,
+                    });
+                    out.ledger.react_in[usize::from(g)] += i64::from(add);
+                }
             }
         }
         out
@@ -2260,6 +2305,226 @@ mod tests {
         );
         assert_eq!(w2.get_cell(target), Some(stone));
         checker.check(&w2, &ledger).unwrap();
+    }
+
+    // ---- Chokedamp from decomposition (F155) ----
+
+    /// `decompose` (SAD-P2 §7.6): a soil cell holding organic carbon turns
+    /// 4 `c` into 1 `n` and its `EmitGas("chokedamp", 2)` side adds
+    /// `min(2, room)` to its first air face neighbor in sorted (y, z, x)
+    /// order, booked as `react_in`. The receiver joins the chokedamp
+    /// sweep. No air neighbor or no room: the row still fires, nothing is
+    /// emitted. Emissions of two chunks into one cell add up; what the
+    /// cell has no room for is `gas_saturation_loss`. In a covered cave a
+    /// whole season's chokedamp stays and settles on the floor.
+    #[test]
+    fn decompose_c_to_n_emits_chokedamp() {
+        use rmc_world::layers::SWEEP_GAS;
+        let t = shipped();
+        let row = t
+            .reactions()
+            .iter()
+            .find(|r| r.id == "decompose")
+            .expect("shipped decompose");
+        let Some(SideEffect::EmitGas(key, emit)) = &row.side else {
+            panic!("decompose emits a gas");
+        };
+        let choke = t.role_gas("chokedamp").unwrap();
+        assert_eq!(t.gas_index(key), Some(choke), "it emits the chokedamp role");
+        let (c, n) = (
+            t.role_substance("organic").unwrap(),
+            t.substance_index("n").unwrap(),
+        );
+        assert_eq!(needs(t, row), BTreeMap::from([(c, 4)]));
+        assert_eq!(nets(t, row), BTreeMap::from([(c, -4), (n, 1)]));
+        let emit = i32::from(*emit);
+        assert_eq!(emit, 2);
+        let soil = tagged(t, "soil");
+        let water = t.role_material("water").unwrap();
+        let gas = LayerId::Gas(choke);
+        let pass = ReactionsPass::new(t);
+        let sweep = SWEEP_GAS + usize::from(choke);
+        let active = |w: &World, cell: CellPos| {
+            let (pos, local) = cell.split();
+            w.chunk(pos).unwrap().active[sweep].contains(local)
+        };
+        // The ledger of one firing that emitted `react_in`, of which
+        // `gas_lost` found no room.
+        let fired = |react_in: i64, gas_lost: i64| {
+            let mut l = SeasonLedger::default();
+            l.react_delta[usize::from(c)] = -4;
+            l.react_delta[usize::from(n)] = 1;
+            l.react_in[usize::from(choke)] = react_in;
+            l.gas_saturation_loss[usize::from(choke)] = gas_lost;
+            l
+        };
+        let s = at();
+        let (west, up, south) = (
+            offset(s, [-1, 0, 0]),
+            offset(s, ABOVE),
+            offset(s, [0, 0, -1]),
+        );
+        // A soil cell with 10 c in filler, air to the west and above.
+        let base = || {
+            let mut w = filled_world(t);
+            let mut ledger = SeasonLedger::default();
+            w.eco_set(s, soil, &mut ledger);
+            w.eco_put_layer(s, layer(c), 10);
+            for a in [west, up] {
+                w.eco_set(a, MaterialId::AIR, &mut ledger);
+            }
+            w
+        };
+        let run = |w: &mut World| {
+            let checker = InvariantChecker::new(w);
+            let ledger = react(w, &pass);
+            checker.check(w, &ledger).unwrap();
+            ledger
+        };
+
+        // West comes before above in sorted order: it takes all 2.
+        let mut w = base();
+        assert!(!active(&w, west));
+        let ledger = run(&mut w);
+        assert_eq!((w.layer(s, layer(c)), w.layer(s, layer(n))), (6, 1));
+        assert_eq!((w.layer(west, gas), w.layer(up, gas)), (emit, 0));
+        assert_eq!(ledger, fired(2, 0));
+        assert!(active(&w, west), "the receiver joins the chokedamp sweep");
+        // Once per cell per pass: the next pass adds 2 more.
+        let ledger = run(&mut w);
+        assert_eq!(w.layer(west, gas), 2 * emit);
+        assert_eq!(ledger, fired(2, 0));
+
+        // An earlier air neighbor (south, −z) wins over west.
+        let mut w = base();
+        w.eco_set(south, MaterialId::AIR, &mut SeasonLedger::default());
+        run(&mut w);
+        assert_eq!(
+            [south, west, up].map(|a| w.layer(a, gas)),
+            [emit, 0, 0],
+            "−z before −x"
+        );
+
+        // Room: 254 takes 1; a full first neighbor takes nothing and the
+        // gas does not go on to the next one, as with emission (§7.4).
+        for (held, got) in [(FULL - 1, 1), (FULL, 0)] {
+            let mut w = base();
+            w.eco_put_layer(west, gas, held);
+            let ledger = run(&mut w);
+            assert_eq!(w.layer(west, gas), held + got);
+            assert_eq!(w.layer(up, gas), 0, "held {held}");
+            assert_eq!(ledger, fired(i64::from(got), 0), "held {held}");
+            assert_eq!(w.layer(s, layer(n)), 1, "the row fired anyway");
+        }
+
+        // No air neighbor (buried, or water only): it fires, emits nothing.
+        for open in [None, Some(water)] {
+            let mut w = filled_world(t);
+            let mut l = SeasonLedger::default();
+            w.eco_set(s, soil, &mut l);
+            w.eco_put_layer(s, layer(c), 10);
+            if let Some(m) = open {
+                w.eco_set(up, m, &mut l);
+                w.eco_put_layer(up, LayerId::Moisture, FULL);
+            }
+            let ledger = run(&mut w);
+            assert_eq!(ledger, fired(0, 0), "{open:?}");
+            let total: i32 = global_order(w.bounds()).map(|p| w.layer(p, gas)).sum();
+            assert_eq!(total, 0, "{open:?}");
+        }
+
+        // Not soil, or 3 c: nothing at all.
+        for (m, amount) in [(filler(t), 10), (soil, 3)] {
+            let mut w = base();
+            w.eco_set(s, m, &mut SeasonLedger::default());
+            w.eco_put_layer(s, layer(c), amount);
+            let hash = w.hash();
+            assert_eq!(run(&mut w), SeasonLedger::default());
+            assert_eq!(w.hash(), hash);
+        }
+
+        // Two chunks side by side (x 0..=31 and 32..=63): soil at x 31 and
+        // x 33 share the air cell x 32 of the second chunk, their first
+        // air neighbor. It holds 252: each side sees room 3 and emits 2,
+        // the sum is clamped at 255, and the 1 over is lost.
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(63, 7, 7));
+        let (a, b) = (ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0));
+        let (left, mid, right) = (
+            CellPos::new(31, 3, 3),
+            CellPos::new(32, 3, 3),
+            CellPos::new(33, 3, 3),
+        );
+        let build = || {
+            let mut w = World::new(Arc::clone(t.materials()), bounds);
+            w.set_eco_rules(t.displacement_rules());
+            for pos in [a, b] {
+                w.insert_chunk(pos, Chunk::uniform(filler(t))).unwrap();
+            }
+            let mut l = SeasonLedger::default();
+            for side in [left, right] {
+                w.eco_set(side, soil, &mut l);
+                w.eco_put_layer(side, layer(c), 20);
+            }
+            w.eco_set(mid, MaterialId::AIR, &mut l);
+            w.eco_put_layer(mid, gas, FULL - 3);
+            w
+        };
+        let mut serial = build();
+        assert_eq!((left.split().0, mid.split().0, right.split().0), (a, b, b));
+        let checker = InvariantChecker::new(&serial);
+        let mut ledger = SeasonLedger::default();
+        run_jacobi(&mut serial, &pass, Exec::Serial, &mut ledger);
+        checker.check(&serial, &ledger).unwrap();
+        assert_eq!(serial.layer(mid, gas), FULL);
+        let mut want = fired(4, 1);
+        want.react_delta[usize::from(c)] = -8;
+        want.react_delta[usize::from(n)] = 2;
+        assert_eq!(ledger, want);
+        let mut parallel = build();
+        let mut l2 = SeasonLedger::default();
+        run_jacobi(&mut parallel, &pass, Exec::Parallel, &mut l2);
+        assert_eq!((parallel.hash(), l2), (serial.hash(), ledger));
+
+        // A covered cave for one season: a topsoil floor (y 1) rich in c
+        // under air (y 2..=3) and a stone roof (y 4). Every soil cell
+        // decomposes in every sub-step and emits above; chokedamp is heavy,
+        // so it stays on the floor, and nothing vents.
+        let dry = dry_spring();
+        let stone = dry.materials().id("stone").unwrap();
+        let mut w = small_world(&dry);
+        let mut l = SeasonLedger::default();
+        let floor: Vec<CellPos> = plane(&w, 1);
+        for &p in &floor {
+            w.eco_set(p, soil, &mut l);
+            w.eco_put_layer(p, layer(c), FULL);
+        }
+        for p in plane(&w, 4) {
+            w.eco_set(p, stone, &mut l);
+        }
+        let substeps = i64::from(dry.seasons().substeps);
+        let ledger = season(&mut w, &dry, &mut |_, _, _| {});
+        let cells = floor.len() as i64;
+        assert_eq!(
+            ledger.react_in[usize::from(choke)],
+            substeps * cells * i64::from(emit)
+        );
+        assert_eq!(ledger.vent_out[usize::from(choke)], 0, "covered");
+        let air_total = |y: i32| -> i64 {
+            plane(&w, y)
+                .into_iter()
+                .map(|p| i64::from(w.layer(p, gas)))
+                .sum()
+        };
+        assert_eq!(
+            air_total(2) + air_total(3),
+            ledger.react_in[usize::from(choke)] - ledger.gas_saturation_loss[usize::from(choke)]
+        );
+        assert!(air_total(2) > air_total(3), "it settles on the floor");
+        assert!(
+            floor
+                .iter()
+                .all(|&p| w.layer(p, layer(n)) >= substeps as i32)
+        );
     }
 
     proptest! {
