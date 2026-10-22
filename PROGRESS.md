@@ -3612,3 +3612,35 @@ Next:
   - The shipped world still starts with no plants and has no soil plants can live on. Decide whether worldgen should lay loam, or whether topsoil should become porous, and give soil some starting `n`.
   - The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-22 10:00 — F171 E2E: tailings_kill_moss — passed
+Done:
+- `tests/e2e/tests/tailings_kill_moss.rs`, on the `tailings_acidify_downslope` layout: `Swale(5)`, plug, ridge and rims, the same damp 2-level `crushed_sulfide` pile over the polluted half, the sump.
+  - Each half's swale has, on its uphill column, a 2-cell loam shelf placed at moisture 8, with a row of 12 moss on it.
+  - A soil divider, one cell, sits in the bottom row next to the shelf. The pool (fill 64) is in the remaining 2 columns.
+  - Seasons: rain `[0, 0, 24, 24, 0, 0]` at 10 °C.
+  - Asserts:
+    - some moss died;
+    - all 12 control moss live, and the control shelf has no acid and no cu;
+    - polluted moss < control moss;
+    - each polluted moss is dead exactly when its anchor's acid is above moss's acid cap (read from `plants.ron`), and has plant state exactly when alive;
+    - some of the polluted swale's water is below pH 4.
+  - Last run: polluted 7 moss, control 12; 5 died in season 4. Polluted anchor acid was 16, 16, 9, 9, 8, 2, then 0s; control 0.
+- Screenshot: `docs/screens/tailings_kill_moss-30.png`.
+Tests added: `e2e:tailings_kill_moss`. TDD: with the shipped moss row, the scenario failed with 12 moss in each swale. Anchor acid reached 16 at most, under the old cap of 32.
+Decisions:
+- **Moss's acid cap is now 4, down from 32 (`assets/plants.ron`; comment added).** Anchor amounts are on the porous scale.
+  - A full loam anchor (`field_capacity` 48) trading water with a pool cell settles at about 48/255 of that cell's acid. §7.6 transport moves amount/fill of the donor's share each way.
+  - The most acid swale water (acid 94 at fill 255) gave anchors 16. A cap of 32 needs water acid of about 170 per full cell, below pH 0. No swale anchor can get there.
+  - 4 is what water near pH 2 leaves in a full loam anchor. This follows the F143 precedent of tuning rows to the porous scale.
+  - Moss is now the most acid-sensitive species, which fits the SAD choosing it as the indicator tailings kill. Grass (24), shrub (48) and fireweed (96) are unchanged and remain out of reach of swale water on the same arithmetic. Owner: consider rescaling every `substance_max` by about 48/255.
+- **Two dry seasons were added after the acidify scenario's four.** The acid reaches the shelf during the first wet season, and death needs `stress_death` = 16 consecutive stressed sub-steps (two seasons). With four seasons no moss can die. The moss died in season 4.
+- **Shelf and divider.** Moss needs a porous anchor, as found in F170. A shelf touching the pool soaked up clean pool water in the dry seasons, and its anchors stayed lower.
+  - A loam drain under the pile was tried and was worse (anchor acid 26 in total). Each porous hop keeps only part of the acid ratio, and rain dilutes the drain.
+  - Copper never reaches the anchors. Per move, `cu · 96 · 8 / 256 / 255` rounds to 0 unless the donor holds ≥ 85 cu.
+- Look and feel (rule 21): no pixel checks. In the shot, moss green is hard to tell from topsoil green. The playtester judges that at E5.
+Next:
+- F172 (benches) is next; it is blocked only by F170, F156 and F134, which pass.
+- E5 is not complete, so no playtester run.
+- Owner: the moss acid cap change (above); the shipped world still starts with no plants (F168, F170); the E2 playtester run is still outstanding.
+Blockers: none.
