@@ -5919,6 +5919,7 @@ dependencies = [
  "bevy",
  "image",
  "rmc_client",
+ "rmc_eco",
  "rmc_protocol",
  "rmc_testkit",
  "rmc_world",
