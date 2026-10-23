@@ -3745,7 +3745,7 @@ Next:
 - E5 is not complete, so no playtester run this session.
 Blockers: none.
 
-## 2026-10-23 05:50 — F175 Playtester report, screenshot gallery, docs/REPORT-P2.md — passed
+## 2026-10-23 01:40 — F175 Playtester report, screenshot gallery, docs/REPORT-P2.md — passed
 Done:
 - `rmc_app::report` renders `docs/REPORT-P2.md`. The `report_p2` binary writes it (it opens no window), and `scripts/report.sh` runs it after `docs/REPORT.md`, which now links it. The report contains:
   - the Phase 2 (F1xx) milestones and feature status;
