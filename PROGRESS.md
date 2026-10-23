@@ -3714,3 +3714,33 @@ Next:
 - E5 is not complete, so no playtester run.
 - Owner: the steady-rain target (above); the aquifer dead band (above).
 Blockers: none.
+
+## 2026-10-23 00:40 — F174 E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence) — passed
+Done:
+- A previous iteration was cut off with F174 uncommitted: `tests/e2e/tests/soak_seasons.rs`, the `rmc_eco` dev-dependency of `rmc_e2e` (for `InvariantChecker` and `ledger::merge`), and its screenshots. The gate was green on it. This session reviewed it, ran `pass-feature.sh F174` (one full soak, about 30 min), and committed.
+- The scenario, for seeds 1, 2 and 3 on the default world at 320 × 180:
+  - Each seed first builds a patch fixture: damp loam with 64 of every substance, a row of each plant species, and a damp crushed-sulfide pile.
+  - Then ChaosBot runs 600 frames, then 20 seasons.
+  - After every season it checks:
+    - the season's invariants against its own ledger;
+    - the invariants since before the fixture, against the merged `between_seasons` and season ledgers;
+    - that `between_seasons` is empty after season 0;
+    - that the replica hash equals the host hash.
+  - At the end it checks that `uptake_sink > 0` and `weather_in > 0`, that nothing failed to render, and saves screenshots after the chaos and after the seasons.
+- `docs/screens/soak_seasons-s{1,2,3}-{chaos-674,seasons-780}.png` come from this session's run. They were copied by hand, not shot with `screens.sh`, which would re-run the 30-minute soak.
+- The per-season record is in `target/e2e/soak_seasons-stats.txt`: sub-step ms, active cells, Jacobi chunks and the ledger since the start.
+Tests added: `e2e:soak_seasons`. It passed on the previous iteration's run and on this session's `pass-feature` run.
+Decisions:
+- **"Sub-step time stabilizes by season 4" is a one-sided no-growth bound.** Seasons come in cycles of 4 table rows. The first cycle from season 4 (seasons 4..8) is the reference. Each later full cycle must cost at most 3/2 of it, measured in wall-clock time.
+  - This run's cycle sums (ms): seed 1: 70019, 73471, 48174, 40316. Seed 2: 71930, 75331, 51030, 41227. Seed 3: 70579, 70774, 45199, 38143.
+  - The later cycles cost less because rain drops off in the later table rows (`rain_in` is 0 by season 19). Only the 8..12 cycle is close to the bound, at 1.00–1.05×.
+  - The reviewer noted that a band (two-sided) check would also catch a collapse. I did not add one: the time follows the season table's rain, not a plateau, and a tighter wall-clock bound would be machine-dependent and flaky.
+- Seed 1 took about 10 min and the whole run about 30 min (dev profile).
+- Reviewer (fresh context): PASS, no SAD violation or bug. The ledger merge neither double-counts nor misses anything. Coverage gaps it noted:
+  - `harvest_out`, gas edits, `plants_born` and ignitions stay 0 in the soak, so those invariants are not exercised.
+  - `render_failure` is checked only at the end.
+  - The post-season shots show little of the seeded patch. One camera (s2) ends inside water.
+Next:
+- F175 (playtester report, gallery, `docs/REPORT-P2.md`) is next. It finishes E5, and its notes call the playtester.
+- E5 is not complete, so no playtester run this session.
+Blockers: none.
