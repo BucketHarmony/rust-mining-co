@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# `report_p2` (docs/REPORT-P2.md) is a second binary; `cargo run -p rmc_app` runs the game.
+default-run = "rmc_app"
 
 [dependencies]
 rmc_client.workspace = true

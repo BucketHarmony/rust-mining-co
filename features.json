@@ -2410,8 +2410,9 @@
       ],
       "e2e": false,
       "review": false,
-      "passes": false,
-      "notes": "Extend scripts/report.sh to include the last soak's ledgers and the overlay screenshots; invoke the playtester subagent; fix anything in Phase 2 scope it calls broken."
+      "passes": true,
+      "notes": "Extend scripts/report.sh to include the last soak's ledgers and the overlay screenshots; invoke the playtester subagent; fix anything in Phase 2 scope it calls broken.",
+      "passedAt": "2026-10-23T05:38:05Z"
     }
   ]
 }

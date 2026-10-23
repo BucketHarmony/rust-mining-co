@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Write docs/REPORT.md (SAD §16.6): features passed/failed with test names,
 # PROGRESS.md decisions and blockers, perf numbers, screenshots inline, and the
-# exact commands to play.
+# exact commands to play. Then docs/REPORT-P2.md (F175): the Phase 2 features,
+# the last soak_seasons run's ledgers (target/e2e/soak_seasons-stats.txt), the
+# layer-view and Phase 2 screenshots, and docs/perf-p2.md.
 set -u
 # jq.exe on Windows ends lines with CRLF; strip CR so ids compare and files stay LF.
 jq() { command jq "$@" | tr -d '\r'; }
@@ -33,7 +35,7 @@ out=docs/REPORT.md
   echo "cargo run --release -p rmc_app -- --seed 42"
   echo '```'
   echo
-  echo "The \`windows-release\` artifact from the latest CI run on main holds \`rust-mining-co.exe\`, \`assets/\` and \`CONTROLS.md\`; run the exe from that folder. Controls: see [docs/CONTROLS.md](CONTROLS.md). Playtester reports: [docs/PLAYTEST.md](PLAYTEST.md)."
+  echo "The \`windows-release\` artifact from the latest CI run on main holds \`rust-mining-co.exe\`, \`assets/\` and \`CONTROLS.md\`; run the exe from that folder. Controls: see [docs/CONTROLS.md](CONTROLS.md). Playtester reports: [docs/PLAYTEST.md](PLAYTEST.md). Phase 2 (ecology): [docs/REPORT-P2.md](REPORT-P2.md)."
   echo
   echo "## Milestones"
   echo
@@ -86,3 +88,5 @@ out=docs/REPORT.md
   echo '```'
 } > "$out"
 echo "wrote $out"
+# The report_p2 binary opens no window (rmc_app::report).
+cargo run -q -p rmc_app --bin report_p2 -- --generated "$(date -u +%FT%TZ)" --commit "$(git rev-parse --short HEAD 2>/dev/null)"

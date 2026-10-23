@@ -5,4 +5,5 @@
 pub mod app;
 pub mod cli;
 pub mod headless;
+pub mod report;
 pub mod session;

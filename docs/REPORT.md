@@ -1,10 +1,10 @@
 # Rust Mining Co — overnight build report
 
-Generated 2026-10-21T18:55:18Z at commit 117bfcd
+Generated 2026-10-23T05:38:08Z at commit fda024b
 
-**113 / 133 features passing, 0 skipped, 20 not passing.**
+**133 / 133 features passing, 0 skipped, 0 not passing.**
 - Phase 1: 73 / 73 passing, 0 skipped
-- Phase 2: 40 / 60 passing, 0 skipped
+- Phase 2: 60 / 60 passing, 0 skipped
 
 ## How to play (Windows)
 
@@ -14,7 +14,7 @@ cd C:\src\rust-mining-co
 cargo run --release -p rmc_app -- --seed 42
 ```
 
-The `windows-release` artifact from the latest CI run on main holds `rust-mining-co.exe`, `assets/` and `CONTROLS.md`; run the exe from that folder. Controls: see [docs/CONTROLS.md](CONTROLS.md). Playtester reports: [docs/PLAYTEST.md](PLAYTEST.md).
+The `windows-release` artifact from the latest CI run on main holds `rust-mining-co.exe`, `assets/` and `CONTROLS.md`; run the exe from that folder. Controls: see [docs/CONTROLS.md](CONTROLS.md). Playtester reports: [docs/PLAYTEST.md](PLAYTEST.md). Phase 2 (ecology): [docs/REPORT-P2.md](REPORT-P2.md).
 
 ## Milestones
 
@@ -35,9 +35,9 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 | E2 | 11 / 11 | 0 |  |
 | E2b | 5 / 5 | 0 |  |
 | E3 | 9 / 9 | 0 |  |
-| E3b | 0 / 6 | 0 | F151, F152, F153, F154, F155, F156 |
-| E4 | 0 / 3 | 0 | F160, F161, F162 |
-| E5 | 0 / 11 | 0 | F165, F166, F167, F168, F169, F170, F171, F172, F173, F174, F175 |
+| E3b | 6 / 6 | 0 |  |
+| E4 | 3 / 3 | 0 |  |
+| E5 | 11 / 11 | 0 |  |
 
 ## Feature status
 
@@ -156,26 +156,26 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 | F147 | E3 | E2E: tailings_acidify_downslope | passed | `e2e:tailings_acidify_downslope` |
 | F148 | E3 | E2E: limestone_channel_clears | passed | `e2e:limestone_channel_clears` |
 | F150 | E2 | Gas concentration layers, gases.ron, active sets per gas; drift and diffusion with room checks | passed | `cargo:rmc_eco:gases::tests::light_gas_collects_at_ceiling`<br>`cargo:rmc_eco:gases::tests::heavy_gas_collects_at_floor`<br>`cargo:rmc_eco:gases::tests::drift_and_diffusion_conserve_with_room_checks` |
-| F151 | E3b | Venting to sky and emission from exposed emitters (coal → firedamp) | **no** | `cargo:rmc_eco:gases::tests::vent_only_sky_open`<br>`cargo:rmc_eco:gases::tests::emission_only_when_exposed_actual_amounts`<br>`cargo:rmc_eco:gases::tests::invariant_per_kind_including_steam_terms_proptest`<br>`cargo:rmc_eco:gases::tests::sealed_pocket_drains_through_shaft` |
-| F152 | E3b | Steam water terms in both invariants; condensation/vent interplay | **no** | `cargo:rmc_eco:gases::tests::boil_all_converts_fill_to_steam_1to1`<br>`cargo:rmc_eco:water::tests::water_invariant_includes_steam_and_vent` |
-| F153 | E3b | Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set | **no** | `cargo:rmc_eco:gases::tests::ignition_clears_diggable_sphere_smoke_by_room_displacement_ledgered`<br>`cargo:rmc_eco:gases::tests::no_ignition_below_min` |
-| F154 | E3b | Gas tint at camera and HUD gas readout with lantern icon | **no** | `cargo:rmc_client:hud::tests::gas_readout_follows_camera_cell` |
-| F155 | E3b | Chokedamp from organic decomposition reaction | **no** | `cargo:rmc_eco:chemistry::tests::decompose_c_to_n_emits_chokedamp` |
-| F156 | E3b | E2E: firedamp_vented_by_shaft | **no** | `e2e:firedamp_vented_by_shaft` |
-| F160 | E4 | Light: global column pass (y descending) and global lateral Jacobi; passable transparent; dirty-flag triggered; worldgen initial light | **no** | `cargo:rmc_eco:light::tests::open_column_full_overhang_zero`<br>`cargo:rmc_eco:light::tests::lateral_falloff`<br>`cargo:rmc_eco:light::tests::water_attenuates_passable_transparent`<br>`cargo:rmc_eco:light::tests::recomputed_only_when_dirty`<br>`cargo:rmc_worldgen:light::tests::initial_light_nonzero_at_surface` |
-| F161 | E4 | Layer overlay color source in the mesher and editor picker | **no** | `cargo:rmc_client:mesher::tests::overlay_colors_from_layer`<br>`cargo:rmc_client:editor::tests::overlay_pick_triggers_remesh` |
-| F162 | E4 | E2E: layer_overlay_renders | **no** | `e2e:layer_overlay_renders` |
-| F165 | E5 | Plant species table, plant cells as passable solids, PlantState map, needs check and growth | **no** | `cargo:rmc_eco:plants::tests::needs_met_grows`<br>`cargo:rmc_eco:plants::tests::stress_death_litter_ledgered_source`<br>`cargo:rmc_client:controller::tests::walks_through_passable_plant` |
-| F166 | E5 | Spread by seeded hash onto passing anchors within radius | **no** | `cargo:rmc_eco:plants::tests::spread_only_onto_passing_anchors`<br>`cargo:rmc_eco:plants::tests::spread_is_seeded_deterministic`<br>`cargo:rmc_eco:plants::tests::no_double_claim_across_chunk_border` |
-| F167 | E5 | Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material | **no** | `cargo:rmc_eco:plants::tests::uptake_invariant_over_life_death_harvest`<br>`cargo:rmc_eco:plants::tests::fireweed_holds_copper_anchor_cu_falls`<br>`cargo:rmc_eco:plants::tests::fireweed_survives_copper_grass_dies`<br>`cargo:rmc_testkit:eco::tests::harvest_yields_copper_dust_and_ledgers` |
-| F168 | E5 | Worldgen surface plants on passing anchors | **no** | `cargo:rmc_worldgen:plants::tests::initial_plants_only_on_passing_anchors` |
-| F169 | E5 | Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout | **no** | `cargo:rmc_client:editor::tests::eco_panel_lists_layers_and_report` |
-| F170 | E5 | E2E: grass_greens_swale and fireweed_takes_copper | **no** | `e2e:grass_greens_swale`<br>`e2e:fireweed_takes_copper` |
-| F171 | E5 | E2E: tailings_kill_moss | **no** | `e2e:tailings_kill_moss` |
-| F172 | E5 | Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world (lib fns + integration test runs each once); docs/perf-p2.md | **no** | `cargo:rmc_eco:benches_run_once` |
-| F173 | E5 | Performance pass against §13; activity tuning | **no** | `cargo:rmc_eco:tick::tests::quiet_world_tick_under_dev_budget`<br>`e2e:season_swale_fills` |
-| F174 | E5 | E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence) | **no** | `e2e:soak_seasons` |
-| F175 | E5 | Playtester report, screenshot gallery, docs/REPORT-P2.md | **no** | `cargo:rmc_app:report::tests::report_p2_includes_ledgers_and_screens` |
+| F151 | E3b | Venting to sky and emission from exposed emitters (coal → firedamp) | passed | `cargo:rmc_eco:gases::tests::vent_only_sky_open`<br>`cargo:rmc_eco:gases::tests::emission_only_when_exposed_actual_amounts`<br>`cargo:rmc_eco:gases::tests::invariant_per_kind_including_steam_terms_proptest`<br>`cargo:rmc_eco:gases::tests::sealed_pocket_drains_through_shaft` |
+| F152 | E3b | Steam water terms in both invariants; condensation/vent interplay | passed | `cargo:rmc_eco:gases::tests::boil_all_converts_fill_to_steam_1to1`<br>`cargo:rmc_eco:water::tests::water_invariant_includes_steam_and_vent` |
+| F153 | E3b | Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set | passed | `cargo:rmc_eco:gases::tests::ignition_clears_diggable_sphere_smoke_by_room_displacement_ledgered`<br>`cargo:rmc_eco:gases::tests::no_ignition_below_min` |
+| F154 | E3b | Gas tint at camera and HUD gas readout with lantern icon | passed | `cargo:rmc_client:hud::tests::gas_readout_follows_camera_cell` |
+| F155 | E3b | Chokedamp from organic decomposition reaction | passed | `cargo:rmc_eco:chemistry::tests::decompose_c_to_n_emits_chokedamp` |
+| F156 | E3b | E2E: firedamp_vented_by_shaft | passed | `e2e:firedamp_vented_by_shaft` |
+| F160 | E4 | Light: global column pass (y descending) and global lateral Jacobi; passable transparent; dirty-flag triggered; worldgen initial light | passed | `cargo:rmc_eco:light::tests::open_column_full_overhang_zero`<br>`cargo:rmc_eco:light::tests::lateral_falloff`<br>`cargo:rmc_eco:light::tests::water_attenuates_passable_transparent`<br>`cargo:rmc_eco:light::tests::recomputed_only_when_dirty`<br>`cargo:rmc_worldgen:light::tests::initial_light_nonzero_at_surface` |
+| F161 | E4 | Layer overlay color source in the mesher and editor picker | passed | `cargo:rmc_client:mesher::tests::overlay_colors_from_layer`<br>`cargo:rmc_client:editor::tests::overlay_pick_triggers_remesh` |
+| F162 | E4 | E2E: layer_overlay_renders | passed | `e2e:layer_overlay_renders` |
+| F165 | E5 | Plant species table, plant cells as passable solids, PlantState map, needs check and growth | passed | `cargo:rmc_eco:plants::tests::needs_met_grows`<br>`cargo:rmc_eco:plants::tests::stress_death_litter_ledgered_source`<br>`cargo:rmc_client:controller::tests::walks_through_passable_plant` |
+| F166 | E5 | Spread by seeded hash onto passing anchors within radius | passed | `cargo:rmc_eco:plants::tests::spread_only_onto_passing_anchors`<br>`cargo:rmc_eco:plants::tests::spread_is_seeded_deterministic`<br>`cargo:rmc_eco:plants::tests::no_double_claim_across_chunk_border` |
+| F167 | E5 | Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material | passed | `cargo:rmc_eco:plants::tests::uptake_invariant_over_life_death_harvest`<br>`cargo:rmc_eco:plants::tests::fireweed_holds_copper_anchor_cu_falls`<br>`cargo:rmc_eco:plants::tests::fireweed_survives_copper_grass_dies`<br>`cargo:rmc_testkit:eco::tests::harvest_yields_copper_dust_and_ledgers` |
+| F168 | E5 | Worldgen surface plants on passing anchors | passed | `cargo:rmc_worldgen:plants::tests::initial_plants_only_on_passing_anchors` |
+| F169 | E5 | Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout | passed | `cargo:rmc_client:editor::tests::eco_panel_lists_layers_and_report` |
+| F170 | E5 | E2E: grass_greens_swale and fireweed_takes_copper | passed | `e2e:grass_greens_swale`<br>`e2e:fireweed_takes_copper` |
+| F171 | E5 | E2E: tailings_kill_moss | passed | `e2e:tailings_kill_moss` |
+| F172 | E5 | Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world (lib fns + integration test runs each once); docs/perf-p2.md | passed | `cargo:rmc_eco:benches_run_once` |
+| F173 | E5 | Performance pass against §13; activity tuning | passed | `cargo:rmc_eco:tick::tests::quiet_world_tick_under_dev_budget`<br>`e2e:season_swale_fills` |
+| F174 | E5 | E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence) | passed | `e2e:soak_seasons` |
+| F175 | E5 | Playtester report, screenshot gallery, docs/REPORT-P2.md | passed | `cargo:rmc_app:report::tests::report_p2_includes_ledgers_and_screens` |
 
 ## Screenshots
 
@@ -190,11 +190,19 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 ![editor_brush_sphere-63.png](screens/editor_brush_sphere-63.png)
 ![emissive_glow-22.png](screens/emissive_glow-22.png)
 ![emissive_glow-off-26.png](screens/emissive_glow-off-26.png)
+![firedamp_vented_by_shaft-sealed-22.png](screens/firedamp_vented_by_shaft-sealed-22.png)
+![firedamp_vented_by_shaft-vented-34.png](screens/firedamp_vented_by_shaft-vented-34.png)
+![fireweed_takes_copper-24.png](screens/fireweed_takes_copper-24.png)
 ![fly_camera-199.png](screens/fly_camera-199.png)
 ![freeze_thaw_weathers_cut-48.png](screens/freeze_thaw_weathers_cut-48.png)
 ![freeze_thaw_weathers_cut-summer-60.png](screens/freeze_thaw_weathers_cut-summer-60.png)
+![gas_tint_shows-clean-41.png](screens/gas_tint_shows-clean-41.png)
+![gas_tint_shows-lantern-67.png](screens/gas_tint_shows-lantern-67.png)
+![gas_tint_shows-smoke-57.png](screens/gas_tint_shows-smoke-57.png)
+![gas_tint_shows-steam-47.png](screens/gas_tint_shows-steam-47.png)
 ![glow_in_cave-18.png](screens/glow_in_cave-18.png)
 ![glow_in_cave-off-22.png](screens/glow_in_cave-off-22.png)
+![grass_greens_swale-34.png](screens/grass_greens_swale-34.png)
 ![hit_feedback_close-after-561.png](screens/hit_feedback_close-after-561.png)
 ![hit_feedback_close-close-break-151.png](screens/hit_feedback_close-close-break-151.png)
 ![hit_feedback_close-close-mid-86.png](screens/hit_feedback_close-close-mid-86.png)
@@ -221,6 +229,8 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 ![lantern_close_wall-topsoil-close-26.png](screens/lantern_close_wall-topsoil-close-26.png)
 ![lantern_close_wall-topsoil-reading-30.png](screens/lantern_close_wall-topsoil-reading-30.png)
 ![latency_dig-65.png](screens/latency_dig-65.png)
+![layer_overlay_renders-27.png](screens/layer_overlay_renders-27.png)
+![layer_overlay_renders-material-14.png](screens/layer_overlay_renders-material-14.png)
 ![limestone_channel_clears-24.png](screens/limestone_channel_clears-24.png)
 ![liquid_pass_pool-14.png](screens/liquid_pass_pool-14.png)
 ![magma_meets_water-20.png](screens/magma_meets_water-20.png)
@@ -235,6 +245,12 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 ![season_swale_fills-dry-30.png](screens/season_swale_fills-dry-30.png)
 ![soak_chaos-3672.png](screens/soak_chaos-3672.png)
 ![soak_chaos-66.png](screens/soak_chaos-66.png)
+![soak_seasons-s1-chaos-674.png](screens/soak_seasons-s1-chaos-674.png)
+![soak_seasons-s1-seasons-780.png](screens/soak_seasons-s1-seasons-780.png)
+![soak_seasons-s2-chaos-674.png](screens/soak_seasons-s2-chaos-674.png)
+![soak_seasons-s2-seasons-780.png](screens/soak_seasons-s2-seasons-780.png)
+![soak_seasons-s3-chaos-674.png](screens/soak_seasons-s3-chaos-674.png)
+![soak_seasons-s3-seasons-780.png](screens/soak_seasons-s3-seasons-780.png)
 ![spoil_indicator_shows-44.png](screens/spoil_indicator_shows-44.png)
 ![spoil_indicator_shows-clear-49.png](screens/spoil_indicator_shows-clear-49.png)
 ![step_up-595.png](screens/step_up-595.png)
@@ -244,6 +260,7 @@ The `windows-release` artifact from the latest CI run on main holds `rust-mining
 ![surface_variation-topsoil-field-39.png](screens/surface_variation-topsoil-field-39.png)
 ![surface_variation-tunnel-44.png](screens/surface_variation-tunnel-44.png)
 ![tailings_acidify_downslope-24.png](screens/tailings_acidify_downslope-24.png)
+![tailings_kill_moss-30.png](screens/tailings_kill_moss-30.png)
 ![walk_and_jump-190.png](screens/walk_and_jump-190.png)
 ![water_tint_shows-23.png](screens/water_tint_shows-23.png)
 ![water_tint_shows-clean-14.png](screens/water_tint_shows-clean-14.png)
@@ -1656,9 +1673,266 @@ The initial load ends only when every chunk inside the world's bounds is residen
 - The unlined-half comparison is not in the SAD's assert list. I added it so the pH ≥ 6 check means something: on this lower swale the unlined swale also ends at pH 6 by dilution.
 - No table or rate was changed.
 
+### 2026-10-21 19:10 — F151 Venting to sky and emission from exposed emitters (coal → firedamp) — passed
+
+**Decisions:**
+
+- `test-fix:` commit d1bd5c0. `tick::tests::gas_sweeps_run_after_water` put its firedamp pocket in open air, which now vents. It now picks an air cell under an overhang. The assertions are unchanged.
+- The vent step runs on the visited cell after its own drift and diffusion (§7.4 order 1, 2, 3). Gas that neighbors push into a sky-open cell after its visit vents in the next sweep.
+- Emission scans every chunk whose palette holds an emitter (32³ cells per coal chunk per sub-step). It uses no active set. F173 (performance) can add one if it shows up in the benches.
+- No material emits steam. §7 counts only evaporation and boiling as steam's source, so a steam emitter would break the water invariant. This is not guarded. The invariant proptest asserts `emit_in[steam] == 0` with the shipped tables.
+
+### 2026-10-21 19:30 — F152 Steam water terms in both invariants; condensation/vent interplay — passed
+
+**Decisions:**
+
+- The water invariant keeps the non-SAD term `water_saturation_loss`, introduced earlier. Its source is fill that cannot fit as steam when a boil finds steam already on the cell, plus pass-caused steam loss. The SAD's §7 water invariant has no such term, but without it those paths would break conservation. The new tests include it.
+- A boiled cell open to the sky does not always vent its whole fill in one steam sweep. Steam diffuses back down into it after its visit and vents in a later sweep (the F151 decision). The fixture asserts only that venting happened and that the books balance.
+- The transitions pass does not read a row's `effect`. Any pass-caused water → air goes through `eco_set`'s boiling exception, as §7.0.1 says ("for the (from, to) pair"). Not changed.
+
+### 2026-10-21 20:00 — F153 Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set — passed
+
+**Decisions:**
+
+- Water in a blast sphere boils to steam (`boil_to_steam`), because `World::eco_set` applies the boiling exception to every pass-caused water → air (§7.0.1, "for the (from, to) pair"). §7.0 lists ignition under "moisture stays on the cell". Following that would need a second pass-side cell-write path, and hard rule 2 allows only `eco_set`. This answers the question the F152 session raised.
+- Step 5 runs after vent (the SAD numbering), so a sky-open cell vents and never ignites. Ignition uses the concentration left after the cell's own drift and diffusion moves.
+- Heat means the material, not the temperature: the `heat_source` field or the `magma` role. Hot stone does not ignite gas (§7.4 wording).
+- A flammable row needs an `air` role to ignite. Without a `smoke` role the gas still burns but makes no smoke.
+
+### 2026-10-21 20:20 — F154 Gas tint at camera and HUD gas readout with lantern icon — passed
+
+**Decisions:**
+
+- "Camera samples its own cell" means the `GameCamera`'s `Transform`, not the player's feet. The temperature readout stays on the feet cell (F144).
+- SAD-P2 §10 names no color source for gases, and rule 5 bars per-key code. So the tint is a data section, `eco.gas_tint`, mirroring the water `tint`. Only `visible` gases (§7.4) may have rows, and the loader enforces it.
+- Lantern icon state: the SAD gives no states. I used the safety-lamp reading: Steady with no flammable gas, Flaring below `ignite_min`, Danger at or above it. The icon only reports. Lantern ignition and gas harm stay out (§16, §17).
+- Rule 21: semantic assertions are on `HudState`, the overlay node's `BackgroundColor`/`Visibility`/size and the icon color. The only capture check is "frames differ". No pixel thresholds. In the steam shot the haze washes the view out to pale gray; the playtester judges the strength (the `strength`/`full` data in `eco.ron`).
+
+### 2026-10-21 20:45 — F155 Chokedamp from organic decomposition reaction — passed
+
+**Decisions:**
+
+- With no air neighbor, or a full first one, the reaction still fires (consume and produce) and emits nothing. The SAD's `where` for decompose is `Tag("soil")` only. This differs from `Coat`, which needs a floor to fire (F142/F146).
+- Room is read from the previous state (Jacobi). When two cells emit into one air cell in the same pass, the queued sum is clamped by the runner and the excess is booked as `gas_saturation_loss`. So in that rare case `react_in` overstates the actual by that excess, but the gas invariant stays exact. The alternative, a per-source booking in the runner's queue, was not worth a new `Queued` field.
+- I tried refusing a reaction that emits the steam role at load: steam counts as water, and the water invariant has no `react_in` term. I reverted it, because the existing `tables_hash_is_stable` fixture maps every gas role to one gas and has an `EmitGas` row. No shipped row emits steam. Such a row would need a water-ledger term first.
+
+### 2026-10-21 21:12 — F156 E2E: firedamp_vented_by_shaft — passed
+
+**Decisions:**
+
+- A seam under the floor alone cannot reach the threshold at the shipped rates. Coal emits 2 per sub-step (§8), over 8 sub-steps × 3 seasons, so each column gains at most 48, below `ignite_min` 64, whatever the cave's shape.
+  - A scratch simulation confirmed it: an 8×4×8 cave over a coal floor reaches a ceiling mean of 18 (30 after 6 seasons). A roof chimney did not concentrate the gas enough either.
+  - So the cave is cut *into* the seam: it lies on coal, and its walls and roof are coal too. It is two cells high so the ceiling mean clears 64 with margin (73). With all coal and the full 4-row cave, the mean is 57.
+  - No rate was tuned (rule 19).
+- The "shaft" is as wide as the cave (8×8 cells, 4 m × 4 m), so every cave cell is sky-open and vents by §7.4 step 3. This acts as a skylight. It does not prove venting up a narrow shaft, which is diffusion-limited (F151: a one-cell shaft needs about 7 seasons).
+  - In simulation, 2×2, 4×4 and 6×6 shafts left the ceiling at 79, 50 and 17 of 73 after one season, because the coal roof under the ledge keeps emitting.
+  - The reviewer accepted this as a defensible reading.
+- "Ceiling" means the cave's top row. Both checks use its sum (mean). The per-cell minimum after 3 seasons is about 58, so "every ceiling cell ≥ 64" would not hold. The lantern check uses the hottest ceiling cell.
+- Dry seasons (rain 0) keep water off the seam in the open shaft, so the scenario measures gas only.
+
+### 2026-10-21 22:40 — F160 Light: global column pass and lateral iterations; passable transparent; dirty-flag triggered; worldgen initial light — passed
+
+**Decisions:**
+
+- "max_neighbor" means the six face neighbors, so lateral light also climbs and descends into pockets. Neighbors outside the bounds are ignored, and so is the sky above the top layer, which the column pass already covers.
+- A cell in a non-resident chunk counts as opaque. The host keeps every chunk resident.
+- The dirty flag lives on `World` ("a world-level dirty flag"), not in `Activity`. A new or loaded world is dirty, so its first sub-step recomputes once. That is harmless: light is a pure function of the materials.
+- Opaque cells hold 0, the surface solid included (§7.7 formula). "Initial light non-zero at the surface" is read as: the cell above `surface_y`, where plants stand, is 255, and a transparent surface cell (a pond top) is lit.
+- `PassId::Light` is reported in every sub-step, even when the pass skips, so the observed pass order stays fixed.
+
+### 2026-10-21 23:55 — F161 Layer overlay color source in the mesher and editor picker — passed
+
+**Decisions:**
+
+- Colormaps are client presentation constants in `mesher.rs`, like `FACE_SHADES`; they are not ecology rates, so they are not in `eco.ron`. The value ranges are:
+  - temperature −200..1000;
+  - u8 layers 0..255.
+- Light and gas live in open cells, so a face shows the value of the cell in front of it. All other layers show the solid cell's own value.
+- The overlay drops emissive glow and the water dissolved tint, so the colors read as data.
+- The SAD-P2 §10 "egui picker" is an editor key action (F7) here. A combo box in the panel is left to F169, which owns panel work. The overlay persists when the editor closes.
+- "Remeshes resident chunks under the existing budget" is read as: the in-flight job budget as usual, plus the initial-load upload burst while recoloring, so the switch does not trickle at 1 upload per frame.
+- While the overlay is on, layer changes remesh the affected chunk and its neighbours (their borders sample it). This costs nothing with the overlay off.
+
+### 2026-10-22 03:40 — F162 E2E: layer_overlay_renders — passed
+
+**Decisions:**
+
+- Rule 21 substitution: the SAD-P2 §12 check "mean blue over the pool region higher" is a pixel threshold, so it is asserted semantically:
+  - every pool water cell's replica moisture is above every ground cell's in the ring around the pool;
+  - the moisture colormap's blue rises with the value (`high[2] > low[2]`);
+  - the full pool maps to the colormap's wet end, and the ground maps to a less blue color.
+  The capture check is only "the frames differ". The playtester judges the screenshots.
+- The uploaded meshes live in the render world, so the scenario compares the colors the pipeline meshes from the replica, the same way `water_tint_shows` does. The unit test `editor::tests::overlay_pick_triggers_remesh` covers that these are the uploaded meshes.
+- Milestone E4 (F160–F162) is now complete. E4 is not on the playtester list.
+
+### 2026-10-22 00:03 — F165 Plant species table, plant cells as passable solids, PlantState map, needs check and growth — passed
+
+**Decisions:**
+
+- §7.8 step 3's "Else" is read literally as the else of the death check: every plant that does not die grows and takes up, stressed or not. The reviewer flagged an earlier draft that stopped stressed plants.
+- Age increases once per season, at the end of `season_tick`. A plant that reaches its lifespan dies in the next season's first growth pass.
+- Holds uptake is capped by `held`'s u8 room so that conservation is exact. What doesn't fit stays in the anchor. The SAD has no cap.
+- Death sets the cell to air through `eco_set`. Its §7.0 displacement removes the plant state, returns `held` (with `min` against room, and `saturation_loss` for the rest) and removes a tall top. Litter is a queued delta on the anchor, booked as `litter_in`; the runner's clamp charges any overflow to `saturation_loss`.
+- The anchor and the tall top may lie in a neighbouring chunk, so they are written as `Queued` changes applied after all chunks, in sorted order. Only one plant sits on an anchor, so the deltas never compete.
+- These plant cells are skipped:
+  - a cell whose material isn't its species' material;
+  - a plant whose anchor is itself a plant (a tall top has no state anyway).
+- `anchor_tags` isn't read by growth. Anchor loss is handled by displacement (`kill_plant_above`). Spread (F166) must use `anchor_tags`.
+- `tall_growth` (192 in the SAD text) is an eco.ron param under rule 19.
+- Only the controller treats passable solids as air. The mesher and raycast still draw and target plants like any solid, so they can be seen and dug.
+
+### 2026-10-22 05:00 — F166 Spread by seeded hash onto passing anchors within radius — passed
+
+**Decisions:**
+
+- "Within `spread_radius` horizontally" is read as a square (Chebyshev) reach, `|dx|, |dz| ≤ radius`. "First in sorted order" uses the sweep's global order key `(y, cz, cx, lz, lx)`.
+- The spread active set holds the mature plants. Growth is a Jacobi pass and does not touch active sets, so each spread run first adds the mature plants from the chunks' plant maps. That costs one pass over the plants, not the world. A visited cell that is no longer a mature plant leaves the set. Newborns (growth 0) are not activated.
+- The spread sweep adds no `active_cells_per_sweep` entry, like transport. Only flow and gas sweeps report there, and the host report layout stays as it is.
+- The parent keeps its growth at 255 after spreading. The SAD gives no cost, so a mature plant can roll again every sub-step.
+- `age_seasons`, `stress` and `held` of a newborn all start at 0. The air cell had growth 0 (§7.0 zeroes it on Solid→Air).
+
+### 2026-10-22 06:00 — F167 Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material — passed
+
+**Decisions:**
+
+- The SAD gives no way to put a plant into the world except worldgen (F168) and spread. The test kit and the F170 scenario ("fireweed and grass planted") need one, so a brush edit of a plant material plants it. This also lets a player replant a harvested plant with `Place`. The anchor is not checked when planting: growth doesn't read `anchor_tags` (F165), and the brush is a debug tool.
+- The rmc_world edit-test fixture `eco_rules` sets `plant_materials: Vec::new()`. That is a new field added to a struct literal; the fixture's behaviour does not change, so its existing tests do not see brush planting.
+
+### 2026-10-22 07:00 — F168 Worldgen surface plants on passing anchors — passed
+
+**Decisions:**
+
+- "Passing needs at season 0" is read literally: the needs are checked against the worldgen layers (season-0 temperature, initial light, water-table moisture, no substances). No plant is seeded that would start under stress.
+- Consequence: the shipped world currently starts with **no plants**. `topsoil` is not porous, so it holds no moisture; moss needs 8. The water table (64) lies far below the surface (86..106). Worldgen lays down no `n`, which grass needs. The mechanism works, as the test fixture shows. Making the shipped world green is data tuning (porous soil, or initial surface moisture or nutrients), which changes water behaviour across scenarios. I did not do it in this feature.
+- The species worldgen seeds come from data (`worldgen_chance` in `plants.ron`), not from code that names moss and grass (rule 18).
+- Each species has its own roll (layer `LAYER_PLANTS + species`, 0x0800+). The first species in row order wins.
+
+### 2026-10-22 08:00 — F169 Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout — passed
+
+**Decisions:**
+
+- "Stage" means the cell's `growth` layer, plus age and stress from `PlantState`. The SAD defines no named stages. A plant at 255 is marked mature, because that is when it spreads (§7.8).
+- Steam moves appear in the summary's Water line (rain, vented, lost), not as a gas. The client doesn't know the steam role, and the per-gas arrays don't carry steam's emit/vent (they mirror the water terms).
+- Gas names in the overlay picker get ` (gas)` so a gas and a substance never share a label. The cell readout's gas line is unchanged.
+- The material picker and `,` / `.` share `brush_materials`, so liquids are in both. Paint with a liquid turns a solid into that liquid. The brush is a debug tool, and the host applies its normal §7.0 rules.
+
+### 2026-10-22 09:00 — F170 E2E: grass_greens_swale and fireweed_takes_copper — passed
+
+**Decisions:**
+
+- **Porous soil is needed.** With the shipped tables no soil is porous, so a plant's anchor moisture is always 0. Every species needs moisture 8–24 and dies after `stress_death` = 16 sub-steps (2 seasons). Neither scenario could pass.
+  - I added a separate porous soil, `loam`, rather than making topsoil porous. Porous topsoil would change water and chemistry in every fixture-based scenario and in worldgen (the F168 decision left that to the owner).
+  - The scenarios lay loam with edits (test code names it; rules 5 and 18 hold).
+- **Nitrogen.** Grass needs `n` ≥ 2 and nothing in the shipped world supplies it (only `decompose` of litter). Both scenarios fertilize evenly: the whole swale site, and both patches. Copper, or water, is then the only difference between the compared regions.
+- **Drought for the swale.** In the SAD-P2 model a porous cell never dries: there is no evaporation from porous solids, and seepage only sheds above `field_capacity · seep_num / 256`. So rain would wet the whole loam slope and grass would live everywhere.
+  - The scenario therefore fills the swale with brush water and runs six seasons with rain 0. The swale's water is the only water on the site. `season_swale_fills` already shows that rain fills a swale.
+- The swale's water count drops in winter (season 3: 2 cells) because the pool freezes to ice. It is water again in spring.
+- **Look and feel (rule 21).** No pixel checks. The fireweed shot is taken from high above, so the control grass, the fireweed and the bare patch are in frame. After autumn rain, thin rain sheets cover the impermeable topsoil around the patches; that is honest water, not an overlay.
+- Reviewer (F170): no SAD or rule violations. I addressed its gaps: the rest-of-site comparison, the "green where wet" anchor check, the swale still holding water, copper conservation, and the screenshot framing.
+
+### 2026-10-22 10:00 — F171 E2E: tailings_kill_moss — passed
+
+**Decisions:**
+
+- **Moss's acid cap is now 4, down from 32 (`assets/plants.ron`; comment added).** Anchor amounts are on the porous scale.
+  - A full loam anchor (`field_capacity` 48) trading water with a pool cell settles at about 48/255 of that cell's acid. §7.6 transport moves amount/fill of the donor's share each way.
+  - The most acid swale water (acid 94 at fill 255) gave anchors 16. A cap of 32 needs water acid of about 170 per full cell, below pH 0. No swale anchor can get there.
+  - 4 is what water near pH 2 leaves in a full loam anchor. This follows the F143 precedent of tuning rows to the porous scale.
+  - Moss is now the most acid-sensitive species, which fits the SAD choosing it as the indicator tailings kill. Grass (24), shrub (48) and fireweed (96) are unchanged and remain out of reach of swale water on the same arithmetic. Owner: consider rescaling every `substance_max` by about 48/255.
+- **Two dry seasons were added after the acidify scenario's four.** The acid reaches the shelf during the first wet season, and death needs `stress_death` = 16 consecutive stressed sub-steps (two seasons). With four seasons no moss can die. The moss died in season 4.
+- **Shelf and divider.** Moss needs a porous anchor, as found in F170. A shelf touching the pool soaked up clean pool water in the dry seasons, and its anchors stayed lower.
+  - A loam drain under the pile was tried and was worse (anchor acid 26 in total). Each porous hop keeps only part of the acid ratio, and rain dilutes the drain.
+  - Copper never reaches the anchors. Per move, `cu · 96 · 8 / 256 / 255` rounds to 0 unless the donor holds ≥ 85 cu.
+- Look and feel (rule 21): no pixel checks. In the shot, moss green is hard to tell from topsoil green. The playtester judges that at E5.
+
+### 2026-10-22 11:00 — F172 Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world; docs/perf-p2.md — passed
+
+**Decisions:**
+
+- **`rmc_eco` dev-depends on `rmc_worldgen`, which depends on `rmc_eco`.** Cargo allows this cycle for dev-dependencies. Integration tests and benches link the same `rmc_eco` library that worldgen does. Unit tests inside `rmc_eco` must not use worldgen types with `rmc_eco` types, because there they would be two copies of the crate. The library itself still cannot generate worlds, so the callers hand the world in.
+- A "quiescent world" (§13: rain 0, constant `air_temp`) is the season table with every row set to rain 0 and row 0's `air_temp` (the temperature worldgen lays the surface at), after 2 quiet settling seasons. The timed iterations go on ticking the same world, with the activity carried over as the host keeps it.
+- `water_sweep_world` times one flow sweep (iteration 0) over a freshly installed world. `chem_transport_world` replays one sub-step's flow-sweep moves after season 0 rain, with 64 of every substance in every cell. Worldgen lays no substances, so this is a deliberate worst case. `add_substances` uses `SetLayer` edits, one per chunk and substance, because one edit covers at most 32 768 cells.
+- Each batched routine returns the world, so copying and dropping it stay outside the timed region.
+Results (release, i9-12900KF): `tick_first` 10.9 s (target < 5 s, **missed**); `tick_quiet` 6.48 s (target < 1 s, **missed**); `water_sweep_world` 86.9 ms; `chem_transport_world` 861 ms.
+
+### 2026-10-22 06:25 — F173 Performance pass against §13; activity tuning — passed
+
+**Decisions:**
+
+- **Settling is the §7.9 activity for the water sweep.** It is an exactness-preserving skip, not a tolerance: results stay bit-identical (the tests above), the active sets keep their §3 meaning (every holder is active), and settled is a separate per-chunk set. It is not saved or sent; a loaded or received chunk starts unsettled.
+- **The quiet tick target is met only once the world has settled.** The `tick_quiet` bench ticks the same world each iteration. Its samples fell from 1.22 s (the third quiet season after `install`) to 0.73–0.79 s from about the fifth on. Criterion's slope (751 ms) weights the later samples. The doc records both numbers.
+- **CPU throttling from about 04:00 to 06:10.** In that window the machine throttled every process this session started to about 4% of one core, while otherwise idle (load 9–11%, bench threads "Ready", a plain PowerShell loop got 3 s CPU in 80 s). One full `cargo bench -p rmc_eco` and one `tick_quiet` run were stopped, and the gate took about 30 minutes. The recorded benches were re-run on the final code after it ended.
+- **Steady rain + 50 edits (< 3 s) is missed.** Measured with a throwaway release probe (deleted): rain overridden to 128, 2 rainy seasons, 50 single-cell digs in chunk (1, 1, 1), then one timed season, about 3.6–4.4 s.
+  - Flow is about 2 s of it: about 394 k air↔water material changes a season through the general `World::eco_set` displacement path (Effects maps, column updates).
+  - A cheap result-identical fast path for those conversions is the next lever. I did not attempt it, because that path carries displacement rules (boiling, gas push, plant kill).
+- **Jacobi quiet skipping never engages on the generated world.** The generated limestone aquifer never goes quiet. Cells at moisture 21–24 (threshold 20, capacity 24) trade seepage sideways, about 7.8 k moves per flow sweep, so every chunk changes every pass. All 32 chunks are computed by every Jacobi pass. That is the SAD's seepage model working as written. Owner: worldgen could lay aquifer moisture at or below the threshold, or `seep_num` could leave a dead band, if quiet chunks matter.
+- Snapshots + remesh < 1.5 s (host and client) was not measured.
+- Reviewer (fresh context): no correctness bug in settling. It confirmed every write path wakes, the visit reads only 7 cells, `settle_key` covers the constants, there are no rule 19 literals, and no `PosMap` order reaches output. It flagged the missed or unmeasured §13 rows (recorded above) and asked for a season-level on/off test and a `begin` test (added).
+
+### 2026-10-23 00:40 — F174 E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence) — passed
+
+**Decisions:**
+
+- **"Sub-step time stabilizes by season 4" is a one-sided no-growth bound.** Seasons come in cycles of 4 table rows. The first cycle from season 4 (seasons 4..8) is the reference. Each later full cycle must cost at most 3/2 of it, measured in wall-clock time.
+  - This run's cycle sums (ms): seed 1: 70019, 73471, 48174, 40316. Seed 2: 71930, 75331, 51030, 41227. Seed 3: 70579, 70774, 45199, 38143.
+  - The later cycles cost less because rain drops off in the later table rows (`rain_in` is 0 by season 19). Only the 8..12 cycle is close to the bound, at 1.00–1.05×.
+  - The reviewer noted that a band (two-sided) check would also catch a collapse. I did not add one: the time follows the season table's rain, not a plateau, and a tighter wall-clock bound would be machine-dependent and flaky.
+- Seed 1 took about 10 min and the whole run about 30 min (dev profile).
+- Reviewer (fresh context): PASS, no SAD violation or bug. The ledger merge neither double-counts nor misses anything. Coverage gaps it noted:
+  - `harvest_out`, gas edits, `plants_born` and ignitions stay 0 in the soak, so those invariants are not exercised.
+  - `render_failure` is checked only at the end.
+  - The post-season shots show little of the seeded patch. One camera (s2) ends inside water.
+
 ## Commits
 
 ```
+fda024b chore(F174): progress
+08ba534 feat(F174): E2E: soak_seasons (chaos + 20 seasons × 3, conservation and equivalence)
+a409a80 chore(F173): progress
+5f90751 feat(F173): Performance pass against §13; activity tuning
+1c83083 chore(F172): progress
+59c4da7 feat(F172): Benches: tick_quiet, tick_first, water_sweep_world, chem_transport_world; docs/perf-p2.md
+446cd9b chore(F171): progress
+d72583d feat(F171): E2E: tailings_kill_moss
+87d75d4 chore(F170): progress
+b643425 feat(F170): E2E: grass_greens_swale and fireweed_takes_copper
+728e702 chore(F169): progress
+d638145 feat(F169): Editor eco panel: layer picker, season report summary, place water/ice/magma/crushed_sulfide, cell readout
+5c62d64 test-fix: brush cycle test reads the brush material list
+9a491c8 chore(F168): progress correction
+ec9975b chore(F168): progress
+51090bd feat(F168): Worldgen surface plants on passing anchors
+3752d31 chore(F167): progress
+92b018e feat(F167): Uptake and held substances; fireweed hyperaccumulation; harvest yields substance material
+950ada7 chore(F166): progress
+6bee4f7 feat(F166): Spread by seeded hash onto passing anchors within radius
+c00f533 chore(F165): progress
+b73c5e3 feat(F165): Plant species table, plant cells as passable solids, PlantState map, needs check and growth
+8ca699f test-fix: fixtures tolerate shipped plant materials
+59b20d5 chore(F162): progress
+2c79693 feat(F162): E2E: layer_overlay_renders
+e9dee0d chore(F161): progress
+b43ae74 feat(F161): Layer overlay color source in the mesher and editor picker
+356c875 chore(F160): progress
+fc3eb4a feat(F160): Light: global column pass (y descending) and global lateral Jacobi; passable transparent; dirty-flag triggered; worldgen initial light
+fcd8c92 chore(F156): note E3b playtest findings
+643c8de chore(E3b): playtester report
+fc8cfb5 chore(F156): progress
+0fd9b78 feat(F156): E2E: firedamp_vented_by_shaft
+aba9e7d chore(F155): progress
+8f6c0ff feat(F155): Chokedamp from organic decomposition reaction
+76f6571 chore(F154): progress
+ca57618 feat(F154): Gas tint at camera and HUD gas readout with lantern icon
+9fb6848 chore(F153): progress
+14e964c feat(F153): Ignition by magma/heat source: gas to smoke, diggable cells of the sphere to air via World::eco_set
+4f8d1a0 chore(F152): progress
+ed9fb52 feat(F152): Steam water terms in both invariants; condensation/vent interplay
+1e7b94a chore(F151): progress
+94d4098 feat(F151): Venting to sky and emission from exposed emitters (coal → firedamp)
+d1bd5c0 test-fix: gas_sweeps_run_after_water picks a covered air cell
+84f96e6 chore: drop the Deep Rock Galactic comparison from README and SAD
+1a76892 chore: README and MIT/Apache-2.0 license files
+fda4261 chore: overnight report
 117bfcd chore(F148): progress
 5b3be20 feat(F148): E2E: limestone_channel_clears
 da2c770 chore(F147): progress
@@ -1672,51 +1946,4 @@ b438ed1 chore(F144): progress
 46f0d8d test-fix: replica equivalence checks each season snapshot's kind, not one LayerSnapshot per season
 21747a7 chore(F143): progress
 89969d3 feat(F143): Oxidation, neutralization, carbonate dissolution, copper mobility under acid
-699ea7a chore(F142): progress
-1dd0029 feat(F142): pH derivation and reactions runner (table order, first match, where-conditions)
-285b738 chore(F141): progress
-1ae2352 feat(F141): Chemistry transport replaying the MoveLog by mobility and pH
-6fe2c58 chore(F134): progress
-4f1d953 feat(F134): E2E: magma_meets_water
-d2fa178 chore(F133): progress
-a4f249d feat(F133): Materials: magma, obsidian, basalt colors; HUD temperature at player
-b6bd461 test-fix: fixtures add magma/obsidian rows only when the table lacks them; host equivalence edits skip heat sources (F133)
-13e640f chore(F131): progress
-c1a217d feat(F131): Transitions: magma→basalt on cooling, stone→magma near a core; contact boiling in the water sweep → obsidian + steam
-c03f2d4 chore(F129): progress
-ca29cb2 feat(F129): E2E: pit_becomes_pond
-410e462 chore(F114): progress
-1acd239 feat(F114): E2E: freeze_thaw_weathers_cut
-e80f23b chore(F128): progress
-48798b2 feat(F128): E2E: season_swale_fills
-3c16718 chore(F124): progress
-85ee7c9 feat(F124): Whole-tick invariants on random worlds and sweep oracle on multi-chunk worlds
-560206a chore(F123): progress
-03ab8ba feat(F123): Condensation (start of pass), evaporation to steam (actual amounts), rain at surface_y+1 or into the anchor under a plant
-3fd90a6 test-fix: advance_season_applies_both_snapshot_kinds classifies snapshots by host revisions (F123)
-0a46f06 test-fix: season-tick tests that assume no rain run with rain 0 (F123)
-d185d8c chore(F150): progress
-a350df7 feat(F150): Gas concentration layers, gases.ron, active sets per gas; drift and diffusion with room checks
-74738c5 chore(F140): progress
-5d48983 feat(F140): Substance layers, composition, substances.ron with yield materials; sulfide_ore, limestone (porous, carbonate), crushed_sulfide, copper_dust
-db133c6 test-fix: Phase 1 tests read shipped porous and yield rows (F140)
-27ce5fe test-fix: yields_match_table expects yield_material for shipped rows
-f640f8b test-fix: rename material key copper_ore to sulfide_ore (F140)
-4de12d6 chore(F132): progress
-bbe2658 feat(F132): Worldgen magma chambers with cores, never touching bedrock
-259bef7 chore(F130): progress
-349f57c feat(F130): Magma as whole-cell liquid: viscosity-gated swaps with air carrying temperature; magma count ledger
-9993c45 chore(F127): progress
-3632b41 feat(F127): Liquid mesh pass: fill-height top faces, translucency, substance tint hook
-e69b689 chore(F126): progress
-507705d feat(F126): Worldgen water table and flooded caves
-8f8caa1 chore(F113): progress
-b9cef4f feat(F113): Regolith halves pickaxe hardness; yield_material
-9180eeb chore(F112): progress
-aee5495 feat(F112): Gradual composition release during weathering; conversion at 255
-bf58812 test-fix: F111 weathering fixture materials drop weathers_to
-1668e72 chore(F111): progress
-bf3b9e9 feat(F111): Weathering pass: regolith growth when exposed and moist, freeze-thaw doubling
-deba576 chore(F110): progress
-2a7e204 feat(F110): Freeze-thaw season bitset
 ```

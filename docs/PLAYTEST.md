@@ -293,3 +293,50 @@ Top 3 fixes within Phase 1 scope (E3b):
 3. Make ignition and venting visible: a one-frame flash or smoke puff and a brief tint at the blast, visible haze at the shaft mouth; re-shoot `magma_meets_water` (stale committed shot, no sign of steam, obsidian or magma in view). Put a line in CONTROLS.md or the design notes that a lone magma cell flows away without igniting.
 
 Files created or changed by this playtest: `tests/e2e/tests/playtest_20261021.rs` (new, untracked) and this section of `docs/PLAYTEST.md`. Nothing under `docs/screens/` changed.
+
+## Playtest 2026-10-23 at fda024b (milestone E5 and Phase 2 report; F165-F175)
+
+Method: headless rmc_testkit on a software adapter, run by name. `grass_greens_swale` (57 s), `fireweed_takes_copper` (82 s), `tailings_kill_moss` (59 s) and `layer_overlay_renders` (57 s) all pass, and their PNGs are byte-identical to the committed `docs/screens/` ones. Not run, per the machine limits: `screens.sh`, `soak.sh`, the whole e2e suite and `soak_seasons` (I used its record in `target/e2e/soak_seasons-stats.txt` and the committed `soak_seasons-*.png`). I also built `rmc_app` in release and ran `--headless --seasons 8` (14.6 s) and `--seasons 20` (27 s) with `--save` under `target/pt23/`. `report.json` is written, `invariants_ok` is true, and no season has violations. My scenario is `tests/e2e/tests/playtest_20261023.rs` (about 3.2 min for the main stage, about 1.6 min for `PT_STAGE=world`; fmt and clippy clean). The main stage builds a loam swale meadow (grass, moss, shrub, N and P at 96 per loam cell), a copper patch with a checkerboard of fireweed and grass, and runs 6 seasons of the shipped weather. It then takes overlay shots, spawns a real player and harvests a fireweed with the pickaxe. The world stage uses a generated 64x128x64 world with no fixtures. Shots and notes are in `target/e2e/playtest_20261023-*.png` and `target/e2e/playtest_20261023.log`. Nothing was copied into `docs/screens`.
+
+What works:
+- The plant mechanics do what the SAD says and are conserved. A fireweed on copper grew to 96 growth at season 1 and 255 at season 3, and held cu 96 by season 6. Its anchor cu fell 120 -> 24 by season 6, which is the amount held. N and P uptake are ledgered. Grass on the same copper dies, as designed.
+- Harvest with the real pickaxe works. Holding the swing on a mature fireweed broke it in 2 frames. The inventory went to 12 copper_dust and 1 fireweed, both shown in the HUD, and the crosshair label names the plant ("fireweed").
+- Growth and Copper overlays are readable where there is something to show (`playtest_20261023-overlay-growth-s2-*.png`, `overlay-copper-s2-*.png`): the copper patch is easy to find in the overlay.
+- `grass_greens_swale-34.png` reads in one frame: a green strip on the swale lip, bare terraces around it, a clear pool. (It is a drought override, not the shipped weather.)
+- Ledgers are honest. A 20-season headless run has no violations. The report's 59/60 count is right and its links and commands resolve.
+
+(A) BROKEN
+A1. Rain never drains: the default world floods and freezes into a water/ice layer cake that buries the terrain and the plants. This is the biggest finding.
+  - Generated e2e world (64x128x64, shipped worldgen), no edits. Mean liquid above ground per column is 4.07 cells at season 2, 13.52 at season 4 and 26.09 at season 8 (max 34). There are 60,463 ice cells at season 8.
+  - Column (32,32) reads `wwwww` at season 2, `wwwwwwIIIIIIIIw` at season 4 and `wwwwwwIIIIIIIIwwwwwIIIIIIIIw` at season 8. The replica matches the host, so this is what a player sees.
+  - Shots: `playtest_20261023-world-overview-s2-20.png` (the world under a blue sheet), `-s4-32.png` (a white ice slab), `-s8-48.png` (camera inside ice, frame dark grey). My meadow shots at seasons 4 and 6 also have the camera inside ice.
+  - The soak record shows the same on the default world. Seed 1 ledger: `water -> ice` 1.23 M against `ice -> water` 0.13 M. `rain_in` is 0 in seasons 14-19 on all three seeds. Evaporation and vent are about 2% of rain. The headless 8- and 20-season runs plateau at about 40.9 M water with `rain_in` 0 from season 11.
+  - The committed shots `fireweed_takes_copper-24.png`, `season_swale_fills-20.png` and `soak_seasons-s*` are affected.
+  - Likely cause, not confirmed in code: `Rain::target` gives no rain to ice at surface+1 and nothing removes water, so the column fills to the sky. All conservation tests pass because water is conserved: right bookkeeping, wrong ecology.
+A2. The shipped world has no plants and cannot grow any.
+  - The generated world holds 0 plants (my log, STAGE0), and the 20-season headless run shows born 0 and died 0. REPORT-P2's soak shows `plants_born` 0 on all seeds and `plants_died` 63 on all seeds, which is only the fixture patch.
+  - F168 passes, but worldgen plants need moisture and nitrogen, and neither exists at generation time. No UI adds nitrogen (the brush has only Set, Remove and Paint), so a player cannot grow a meadow.
+  - Even on a fertilized meadow under default weather, grass fell 792 -> 441 and shrub 20 -> 0 over 6 seasons (19 born, 385 died). Nitrogen was exhausted by season 6 and spread is negligible. Part of this is A1.
+A3. `docs/REPORT-P2.md` embeds the stale `docs/screens/magma_meets_water-20.png`. It lacks the F154 lantern icon (the scenario now writes `-22`), and it shows no magma, steam or obsidian. This was already reported on 2026-10-21 and is still open.
+A4. REPORT-P2 soak section:
+  - No units. `rain_in` 270M is moisture units (255 per full cell), roughly 1/255 of that in cells.
+  - Unexplained: the "Cycle sums" line, `water_saturation_loss` varying 201k to 1.17M, and `plants_born` 0 everywhere. The section does not say the soak never exercises spread or harvest.
+  - Per-season ms (9-21 s) is unlabeled and looks contradictory to the perf section.
+  - The numbers come from the untracked `target/e2e/soak_seasons-stats.txt`, so a clean checkout cannot regenerate them.
+  - The soak PNGs are 320x180 with no captions. The ten layer-view shots appear twice (once under the layer views, once in the scenario gallery). Some scenarios have no "Features:" line.
+A5. The headline hides the misses: "50 edits" at 3.6-4.4 s against the 3 s target is **missed** and "snapshots + remesh" is unmeasured (both per PROGRESS and `docs/perf-p2.md`), yet F173 is passed and the summary says only 59/60.
+A6. Testkit: `gen_params` does not call `fit_to`, so a 64-high `TestConfig` world is solid to the ceiling (surface_y 63, `rain_in` 0). Any E2E on a short world silently tests a solid block. I lost one run to it.
+A7. The editor panel cannot be judged from screenshots. `editor-panel-on-plant-*.png` equals `pov-fireweed-*.png`, because the testkit never renders egui. F169's panel is tested only as strings.
+
+(B) Look and feel, missing features
+B1. Plants are flat, opaque, uniform 1-cell cubes that look the same at growth 0 and 255, and healthy or stressed. Grass on loam is an indistinguishable green carpet (`closeup-bank-s0-21.png`, `closeup-bank-s2-79.png`). Moss barely differs from the ground, and the moss/terrain contrast in `tailings_kill_moss-30.png` is invisible. Fireweed (pink) is readable.
+B2. Moisture overlay is low contrast. No overlay has a legend or an on-screen name, and the overlay stays on after the editor closes.
+B3. A player cannot tell what a season did. F6 and F7 work only with the editor open, and the HUD shows no season, weather or plant info. `season_lines` has no plant census, standing-water or ice totals, or evaporation, so it could not show a flood building. The HUD plant label gives no growth or held copper.
+B4. No before/after pair or caption exists for any plant scenario, so the playtester judges one frame each, and in `fireweed_takes_copper-24.png` the flood hides the dead grass, the control and the fireweed.
+
+Are plants visible and readable? Only fireweed, and only in fixtures. Grass and moss are green on green. Can a player tell what the season did? Only by the world changing, mostly by flooding.
+
+Top 3 fixes within Phase 2 scope
+1. Give water somewhere to go (A1): runoff or a sink at the world edge or bottom, rain that lands on or melts ice, and a ledger term for it. Add a soak or invariant check that mean standing-liquid depth stays bounded over 20 seasons on the default world. Then re-shoot the E5 scenes.
+2. Put plants into the shipped game (A2, B1): seed moisture and nitrogen (or loam) at worldgen so F168 plants exist, give the editor a way to add nutrients (SetLayer in the brush), and make plants legible (scale with growth, tint on stress, brown loam).
+3. Fix the report and legibility (A3-A5, A7, B2-B4): refresh the stale magma shot, add units and "what this proves / does not prove" for the soak, put the perf misses in the headline, de-duplicate the gallery, add captions and before/after pairs, show the active overlay's name on the HUD, add a one-line season summary after F6, and make the testkit capture the egui panel.
