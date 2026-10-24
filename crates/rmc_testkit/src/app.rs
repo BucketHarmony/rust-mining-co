@@ -184,6 +184,20 @@ impl TestApp {
         panic!("no Saved answer within {MAX_SAVE_STEPS} steps");
     }
 
+    /// Like [`TestApp::new`], but the host starts with `world`, built
+    /// elsewhere (a game world, an edited level), and `host_config`.
+    /// `config.world_bounds` must be the world's bounds; `config.seed` is
+    /// not used to generate anything.
+    pub fn from_world(config: TestConfig, world: CellWorld, host_config: HostConfig) -> Self {
+        assert_eq!(
+            config.world_bounds,
+            world.bounds(),
+            "TestConfig bounds differ from the world's"
+        );
+        let eco = load_eco(world.materials());
+        Self::with_world(config, world, eco, host_config, None)
+    }
+
     /// The host and client app for `world`, booted (see [`TestApp::new`]).
     fn with_world(
         config: TestConfig,

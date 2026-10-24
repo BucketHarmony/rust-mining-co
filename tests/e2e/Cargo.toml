@@ -14,3 +14,4 @@ rmc_protocol.workspace = true
 bevy.workspace = true
 image.workspace = true
 rmc_world.workspace = true
+rmc_app.workspace = true

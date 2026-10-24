@@ -5918,6 +5918,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "image",
+ "rmc_app",
  "rmc_client",
  "rmc_eco",
  "rmc_protocol",

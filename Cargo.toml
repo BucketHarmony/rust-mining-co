@@ -57,6 +57,7 @@ rmc_protocol = { path = "crates/rmc_protocol" }
 rmc_host = { path = "crates/rmc_host" }
 rmc_client = { path = "crates/rmc_client" }
 rmc_testkit = { path = "crates/rmc_testkit" }
+rmc_app = { path = "crates/rmc_app" }
 
 # Debug info is the bulk of link memory and of target/ (each test binary links all of Bevy):
 # line tables keep file:line in backtraces for our crates; dependencies get none.

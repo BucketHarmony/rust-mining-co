@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod castle;
 pub mod cli;
 pub mod headless;
 pub mod report;
