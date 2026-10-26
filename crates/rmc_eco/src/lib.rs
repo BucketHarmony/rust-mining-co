@@ -31,7 +31,7 @@ pub use runner::{
 };
 pub use tables::{EcoTableError, EcoTables, SeasonOverride, ToxKind};
 pub use temperature::{Profile, TemperaturePass};
-pub use tick::{Observer, PassId, TickReport, season_tick, season_tick_observed};
+pub use tick::{Observer, PassId, SeasonRun, TickReport, season_tick, season_tick_observed};
 pub use transitions::TransitionsPass;
 pub use water::{Condensation, Evaporation, Rain, WaterPass, rain_pattern};
 pub use weathering::WeatheringPass;

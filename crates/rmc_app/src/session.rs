@@ -321,6 +321,12 @@ impl GameHost {
         })
     }
 
+    /// Runs `job` on the host thread. Returns false if the host has
+    /// stopped.
+    pub fn submit(&self, job: impl FnOnce(&mut Host) + Send + 'static) -> bool {
+        self.handle.as_ref().is_some_and(|h| h.submit(job))
+    }
+
     /// Stops the host and saves, once; later calls do nothing.
     pub fn quit_save(&mut self) -> Option<anyhow::Result<usize>> {
         self.handle.take().map(quit_save)

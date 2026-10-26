@@ -146,49 +146,144 @@ pub fn season_tick_observed(
     exec: Exec,
     observe: &mut Observer<'_>,
 ) -> TickReport {
-    debug_assert!(
-        *world.eco_rules() == tables.displacement_rules(),
-        "world lacks the tables' displacement rules"
-    );
-    let mut passes = Passes {
-        temperature: TemperaturePass::new(tables, season),
-        transitions: TransitionsPass::new(tables),
-        condensation: Condensation::new(tables),
-        water: WaterPass::new(tables),
-        evaporation: Evaporation::new(tables),
-        rain: Rain::new(tables, season, seed),
-        gases: GasPass::all(tables),
-        emission: Emission::new(tables),
-        weathering: WeatheringPass::new(tables),
-        transport: Transport::new(tables),
-        reactions: ReactionsPass::new(tables),
-        light: LightPass::new(tables),
-        growth: GrowthPass::new(tables),
-        spread: SpreadPass::new(tables, season, seed),
-    };
-    let mut report = TickReport::default();
-    world.eco_clear_freeze_thaw();
-    activity.season_boundary(world);
-    for i in 0..tables.seasons().substeps {
+    let mut run = SeasonRun::start(world, tables, season, seed, activity);
+    while !run.is_done() {
+        run.substep_observed(world, activity, exec, observe);
+    }
+    run.finish(world)
+}
+
+/// A season tick run one sub-step at a time (the SAD-P2 §17 wall-clock
+/// seasons: the host runs a sub-step per interval, with edits applied
+/// between sub-steps). [`SeasonRun::start`], then [`SeasonRun::substep`]
+/// until [`SeasonRun::is_done`], then [`SeasonRun::finish`] is exactly
+/// [`season_tick`] when nothing edits the world in between.
+pub struct SeasonRun {
+    season: u32,
+    passes: Passes,
+    report: TickReport,
+    next: u8,
+    substeps: u8,
+}
+
+impl SeasonRun {
+    /// Builds the season's passes, clears the freeze-thaw bits (SAD-P2
+    /// §7.5) and marks the season boundary in `activity`.
+    /// `world` must carry the tables' displacement rules
+    /// ([`EcoTables::displacement_rules`]).
+    pub fn start(
+        world: &mut World,
+        tables: &EcoTables,
+        season: u32,
+        seed: u64,
+        activity: &mut Activity,
+    ) -> Self {
+        debug_assert!(
+            *world.eco_rules() == tables.displacement_rules(),
+            "world lacks the tables' displacement rules"
+        );
+        let passes = Passes {
+            temperature: TemperaturePass::new(tables, season),
+            transitions: TransitionsPass::new(tables),
+            condensation: Condensation::new(tables),
+            water: WaterPass::new(tables),
+            evaporation: Evaporation::new(tables),
+            rain: Rain::new(tables, season, seed),
+            gases: GasPass::all(tables),
+            emission: Emission::new(tables),
+            weathering: WeatheringPass::new(tables),
+            transport: Transport::new(tables),
+            reactions: ReactionsPass::new(tables),
+            light: LightPass::new(tables),
+            growth: GrowthPass::new(tables),
+            spread: SpreadPass::new(tables, season, seed),
+        };
+        world.eco_clear_freeze_thaw();
+        activity.season_boundary(world);
+        Self {
+            season,
+            passes,
+            report: TickReport::default(),
+            next: 0,
+            substeps: tables.seasons().substeps,
+        }
+    }
+
+    /// The season this run ticks.
+    pub fn season(&self) -> u32 {
+        self.season
+    }
+
+    /// Sub-steps run so far, and the season's total.
+    pub fn progress(&self) -> (u8, u8) {
+        (self.next, self.substeps)
+    }
+
+    /// Whether every sub-step has run.
+    pub fn is_done(&self) -> bool {
+        self.next >= self.substeps
+    }
+
+    /// The season's report so far.
+    pub fn report(&self) -> &TickReport {
+        &self.report
+    }
+
+    /// Runs the next sub-step; nothing once [`SeasonRun::is_done`].
+    pub fn substep(&mut self, world: &mut World, activity: &mut Activity, exec: Exec) {
+        self.substep_observed(world, activity, exec, &mut |_, _, _, _| {});
+    }
+
+    /// [`SeasonRun::substep`], calling `observe` after every pass.
+    pub fn substep_observed(
+        &mut self,
+        world: &mut World,
+        activity: &mut Activity,
+        exec: Exec,
+        observe: &mut Observer<'_>,
+    ) {
+        if self.is_done() {
+            return;
+        }
+        let i = self.next;
         let start = Instant::now();
-        passes.spread.set_substep(i);
+        self.passes.spread.set_substep(i);
         let mut after =
             |pass: PassId, world: &World, ledger: &SeasonLedger| observe(i, pass, world, ledger);
-        substep(world, &mut passes, activity, exec, &mut report, &mut after);
+        substep(
+            world,
+            &mut self.passes,
+            activity,
+            exec,
+            &mut self.report,
+            &mut after,
+        );
         let ms = start.elapsed().as_millis();
-        report
+        self.report
             .substep_ms
             .push(u32::try_from(ms).unwrap_or(u32::MAX));
+        self.next += 1;
     }
-    // §7.8: a season has passed for every plant.
-    age_plants(world);
-    tracing::info!(
-        season,
-        substeps = report.substep_ms.len(),
-        ms = report.substep_ms.iter().map(|&m| u64::from(m)).sum::<u64>(),
-        "season tick done"
-    );
-    report
+
+    /// Ends the season: every plant ages a season (§7.8). Call it once
+    /// [`SeasonRun::is_done`].
+    pub fn finish(mut self, world: &mut World) -> TickReport {
+        debug_assert!(self.is_done(), "season finished before its sub-steps");
+        // §7.8: a season has passed for every plant.
+        age_plants(world);
+        tracing::info!(
+            season = self.season,
+            substeps = self.report.substep_ms.len(),
+            ms = self
+                .report
+                .substep_ms
+                .iter()
+                .map(|&m| u64::from(m))
+                .sum::<u64>(),
+            "season tick done"
+        );
+        std::mem::take(&mut self.report)
+    }
 }
 
 /// One sub-step: the passes in SAD-P2 §3 order. The water pass runs its
@@ -410,6 +505,33 @@ mod tests {
             })
             .collect();
         (w, reports)
+    }
+
+    #[test]
+    fn season_run_by_substeps_equals_season_tick() {
+        let t = tables();
+        let seed = 7;
+        let mut whole = random_world(&t, seed);
+        let mut stepped = whole.clone();
+        let (mut a1, mut a2) = (
+            Activity::new(t.params().quiet_skip),
+            Activity::new(t.params().quiet_skip),
+        );
+        let mut expected = season_tick(&mut whole, &t, 2, seed, &mut a1, Exec::Parallel);
+        let mut run = SeasonRun::start(&mut stepped, &t, 2, seed, &mut a2);
+        let substeps = t.seasons().substeps;
+        for i in 0..substeps {
+            assert_eq!(run.progress(), (i, substeps));
+            assert!(!run.is_done());
+            run.substep(&mut stepped, &mut a2, Exec::Parallel);
+        }
+        assert!(run.is_done());
+        assert_eq!(run.season(), 2);
+        let mut got = run.finish(&mut stepped);
+        expected.substep_ms.clear();
+        got.substep_ms.clear();
+        assert_eq!(got, expected);
+        assert_eq!(stepped.hash(), whole.hash());
     }
 
     #[test]

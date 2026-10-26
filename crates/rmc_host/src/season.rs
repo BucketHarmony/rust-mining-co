@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use rmc_eco::ledger::merge;
 use rmc_eco::runner::activate_holders;
-use rmc_eco::{Activity, EcoTables, Exec, GasPass, WaterPass, season_tick};
+use rmc_eco::{Activity, EcoTables, Exec, GasPass, SeasonRun, WaterPass};
 use rmc_protocol::{SeasonReport, ServerMsg};
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::PlayerId;
@@ -43,6 +43,9 @@ pub(crate) struct Seasons {
     next: u32,
     /// Ledger terms of the edits applied since the last tick.
     between_seasons: SeasonLedger,
+    /// The season being run a sub-step at a time ([`Host::eco_substep`]),
+    /// and the snapshots sent for it so far.
+    run: Option<(SeasonRun, u32)>,
 }
 
 impl Seasons {
@@ -52,6 +55,7 @@ impl Seasons {
             tables,
             next: 0,
             between_seasons: SeasonLedger::default(),
+            run: None,
         }
     }
 
@@ -72,6 +76,8 @@ impl Seasons {
         }
         self.activity = Activity::new(self.tables.params().quiet_skip);
         self.between_seasons = SeasonLedger::default();
+        // A season part-run on the old world is dropped; the count stays.
+        self.run = None;
     }
 
     /// Merges an applied edit's ledger terms into the between-seasons
@@ -129,31 +135,85 @@ impl Host {
 
     /// Runs the next season tick and sends every joined player
     /// `SeasonStarted`, the snapshots of the changed chunks and
-    /// `SeasonDone` (see the module docs). Returns the season's report;
-    /// `None`, with nothing run or sent, without the Phase 2 tables.
+    /// `SeasonDone` (see the module docs). If a season is part-run by
+    /// [`Host::eco_substep`], finishes that one instead. Returns the
+    /// season's report; `None`, with nothing run or sent, without the
+    /// Phase 2 tables.
     pub fn advance_season(&mut self) -> Option<SeasonReport> {
+        self.eco_steps(u8::MAX)
+    }
+
+    /// Runs one sub-step of the season ticking now, starting the next
+    /// season (and sending `SeasonStarted`) if none is, then sends the
+    /// snapshots of the chunks the sub-step changed. After the season's
+    /// last sub-step it sends `SeasonDone` and returns the report. Edits
+    /// handled between two calls apply between sub-steps (SAD-P2 §17,
+    /// wall-clock seasons), and their ledger terms go to the
+    /// between-seasons ledger the `SeasonDone` reports. `None` until the
+    /// season is done, and always without the Phase 2 tables.
+    pub fn eco_substep(&mut self) -> Option<SeasonReport> {
+        self.eco_steps(1)
+    }
+
+    /// The season part-run by [`Host::eco_substep`], with its sub-steps
+    /// run and total; `None` between seasons.
+    pub fn season_progress(&self) -> Option<(u32, u8, u8)> {
+        let (run, _) = self.eco.as_ref()?.run.as_ref()?;
+        let (done, total) = run.progress();
+        Some((run.season(), done, total))
+    }
+
+    /// Runs up to `n` sub-steps of the current (or next) season, sends
+    /// their snapshots, and ends the season if it is done.
+    fn eco_steps(&mut self, n: u8) -> Option<SeasonReport> {
         let seed = self.config().seed;
         let Some(eco) = self.eco.as_mut() else {
-            warn!("AdvanceSeason ignored: the host has no Phase 2 tables");
+            warn!("season tick ignored: the host has no Phase 2 tables");
             return None;
         };
-        let season = eco.next;
         let to: Vec<PlayerId> = self.joined.iter().copied().collect();
         let transport = self.transport.as_mut();
-        broadcast(transport, &to, &ServerMsg::SeasonStarted { season });
+        let (mut run, mut sent) = match eco.run.take() {
+            Some(run) => run,
+            None => {
+                let season = eco.next;
+                broadcast(transport, &to, &ServerMsg::SeasonStarted { season });
+                let run = SeasonRun::start(
+                    &mut self.world,
+                    &eco.tables,
+                    season,
+                    seed,
+                    &mut eco.activity,
+                );
+                (run, 0)
+            }
+        };
         let before = revisions(&self.world);
-        let tick = season_tick(
-            &mut self.world,
-            &eco.tables,
-            season,
-            seed,
-            &mut eco.activity,
-            Exec::Parallel,
-        );
+        for _ in 0..n {
+            if run.is_done() {
+                break;
+            }
+            run.substep(&mut self.world, &mut eco.activity, Exec::Parallel);
+        }
+        if !run.is_done() {
+            let snapshots = season_snapshots(&self.world, &before);
+            for msg in &snapshots {
+                broadcast(transport, &to, msg);
+            }
+            sent = sent.saturating_add(u32::try_from(snapshots.len()).unwrap_or(u32::MAX));
+            eco.run = Some((run, sent));
+            return None;
+        }
+        let season = run.season();
+        // Ageing plants changes layers: its chunks go out with the last
+        // sub-step's, one snapshot per chunk.
+        let tick = run.finish(&mut self.world);
         let snapshots = season_snapshots(&self.world, &before);
         for msg in &snapshots {
             broadcast(transport, &to, msg);
         }
+        let changed_chunks =
+            sent.saturating_add(u32::try_from(snapshots.len()).unwrap_or(u32::MAX));
         let report = SeasonReport {
             ledger: tick.ledger,
             between_seasons: std::mem::take(&mut eco.between_seasons),
@@ -161,7 +221,6 @@ impl Host {
             active_cells_per_sweep: tick.active_cells_per_sweep,
             active_chunks_per_jacobi: tick.active_chunks_per_jacobi,
         };
-        let changed_chunks = u32::try_from(snapshots.len()).unwrap_or(u32::MAX);
         broadcast(
             transport,
             &to,
@@ -327,6 +386,64 @@ mod tests {
             ServerMsg::ChunkSnapshot { pos, .. } | ServerMsg::LayerSnapshot { pos, .. } => *pos,
             other => panic!("expected a snapshot, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn eco_substep_runs_a_season_in_steps_with_edits_between() {
+        let t = tables();
+        let substeps = t.seasons().substeps;
+        let (mut host, eps) = host_with(world(&t, true), 1);
+        let a = &eps[0];
+        let mut replica = Replica::new(t.materials().clone());
+        a.send(replica.hello()).unwrap();
+        host.tick();
+        for msg in a.drain() {
+            replica.handle(msg).unwrap();
+        }
+        let stone = t.materials().id("stone").unwrap();
+        let mut msgs = Vec::new();
+        for i in 0..substeps {
+            assert_eq!(host.season_progress().map(|p| p.1), (i > 0).then_some(i));
+            let report = host.eco_substep();
+            assert_eq!(report.is_some(), i + 1 == substeps, "sub-step {i}");
+            // An edit between two sub-steps applies there.
+            if i == 2 {
+                a.send(edit(
+                    a,
+                    0,
+                    EditOp::Set(stone),
+                    Shape::Cell(CellPos::new(3, 40, 5)),
+                ))
+                .unwrap();
+                host.tick();
+            }
+            msgs.extend(a.drain());
+        }
+        assert_eq!(host.season_progress(), None);
+        assert_eq!(host.season(), Some(1));
+        assert!(matches!(msgs[0], ServerMsg::SeasonStarted { season: 0 }));
+        let Some(ServerMsg::SeasonDone {
+            season: 0, report, ..
+        }) = msgs.last()
+        else {
+            panic!("expected SeasonDone last");
+        };
+        assert_eq!(report.substep_ms.len(), usize::from(substeps));
+        assert!(
+            msgs.iter().any(|m| matches!(m, ServerMsg::Applied(_))),
+            "the edit applied mid-season"
+        );
+        for msg in msgs {
+            replica.handle(msg).unwrap();
+        }
+        assert_eq!(replica.world().unwrap().hash(), host.world().hash());
+
+        // AdvanceSeason in the middle of a stepped season finishes it.
+        host.eco_substep();
+        assert_eq!(host.season_progress(), Some((1, 1, substeps)));
+        let report = host.advance_season().expect("the season finishes");
+        assert_eq!(report.substep_ms.len(), usize::from(substeps));
+        assert_eq!(host.season(), Some(2));
     }
 
     #[test]

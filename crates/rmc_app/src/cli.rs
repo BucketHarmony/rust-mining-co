@@ -19,7 +19,7 @@ pub const DEFAULT_WORLD_SIZE: WorldSize = WorldSize {
 };
 
 /// `rmc_app [--seed N] [--save DIR] [--world-size WxHxD]
-/// [--headless --seasons N]`.
+/// [--headless --seasons N] [--eco-tick-ms MS]`.
 #[derive(Parser, Clone, Debug, PartialEq, Eq)]
 #[command(name = "rmc_app", version, about = "Rust Mining Co")]
 pub struct Cli {
@@ -44,6 +44,10 @@ pub struct Cli {
     /// Seasons a `--headless` run advances.
     #[arg(long, value_name = "N", requires = "headless")]
     pub seasons: Option<u32>,
+    /// Milliseconds of real time between ecology sub-steps while playing
+    /// (a season is 8 sub-steps); 0 turns the ecology clock off.
+    #[arg(long, value_name = "MS", default_value_t = 1000)]
+    pub eco_tick_ms: u64,
 }
 
 /// A world's extent in cells, from the origin. Each side is a positive

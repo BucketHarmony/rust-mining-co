@@ -2,11 +2,14 @@
 //! runs seasons headless (`--headless --seasons N`).
 #![deny(unsafe_code)]
 
+use std::time::Duration;
+
 use anyhow::Context;
 use bevy::prelude::AppExit;
 use clap::Parser;
 use rmc_app::app::{GameConfig, build_game_app};
 use rmc_app::cli::Cli;
+use rmc_app::eco_clock::EcoClock;
 use rmc_app::headless::{REPORT_FILE, run_headless};
 
 fn main() -> anyhow::Result<()> {
@@ -32,7 +35,9 @@ fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    match build_game_app(config, true)?.run() {
+    let mut app = build_game_app(config, true)?;
+    app.insert_resource(EcoClock::new(Some(Duration::from_millis(cli.eco_tick_ms))));
+    match app.run() {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => anyhow::bail!("the game exited with code {code}"),
     }

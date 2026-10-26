@@ -26,6 +26,8 @@ use rmc_client::{
     NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin,
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
+
+use crate::eco_clock::EcoClockPlugin;
 use rmc_protocol::ServerMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellAabb, CellPos};
 use rmc_world::save;
@@ -121,6 +123,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             SavePlugin,
             SessionPlugin,
             SpawnPlugin,
+            EcoClockPlugin,
         ));
     if windowed {
         app.add_plugins((EditorPanelPlugin, CursorPlugin));
