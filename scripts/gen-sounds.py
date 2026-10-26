@@ -175,6 +175,14 @@ def season_chime():
     return normalize(out, 0.35)
 
 
+def tick():
+    """A soft wooden tick: a short damped knock."""
+    tt = t(0.08)
+    knock = np.sin(2 * np.pi * 1400 * tt) * env(len(tt), 0.0005, 0.008)
+    tap = lowpass(highpass(noise(0.08), 800), 4000) * env(len(tt), 0.0003, 0.004)
+    return normalize(knock + 0.4 * tap, 0.5)
+
+
 def wind(seconds=12.0):
     n = noise(seconds)
     # Gusts: noise low-passed at a cutoff that drifts, and a slow swell.
@@ -209,6 +217,7 @@ SOUNDS = {
     "place": place,
     "step": step,
     "season": season_chime,
+    "tick": tick,
     "wind": wind,
 }
 

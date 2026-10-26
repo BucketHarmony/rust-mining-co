@@ -6,7 +6,8 @@
     step: (file: "step.ogg", volume: 0.3),
     // Metres walked on the ground between footsteps.
     step_m: 0.75,
-    season: (file: "season.ogg", volume: 0.6),
+    // Every finished season: a very soft tick (season.ogg is the old chime).
+    season: (file: "tick.ogg", volume: 0.08),
     // The wind loop, and its volume with solid cells overhead.
     wind: (file: "wind.ogg", volume: 0.3),
     wind_covered: 0.04,
