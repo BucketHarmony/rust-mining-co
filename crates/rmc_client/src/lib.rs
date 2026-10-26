@@ -19,6 +19,7 @@ pub mod render;
 pub mod replica;
 pub mod save;
 pub mod sound;
+pub mod tiles;
 pub mod viewmodel;
 
 pub use controller::{

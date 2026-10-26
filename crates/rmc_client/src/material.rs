@@ -10,6 +10,12 @@
 //! faces read as rock rather than flat paint. Everything else is shaded as
 //! by the StandardMaterial.
 //!
+//! Faces of materials with a tile ([`crate::tiles`]) take their surface color
+//! from the tile texture instead: the mesher writes each vertex's material
+//! id in its first UV, and the shader looks up the material's tile layer for
+//! the face direction and scales the texel by the vertex color's face shade
+//! × AO.
+//!
 //! [`EmissiveMaterialPlugin`] registers the material and creates the shared
 //! [`EmissiveChunkMaterial`]. `GameRenderPlugin` adds it when the app
 //! renders (`PbrPlugin` is present) and then gives chunk meshes this
@@ -23,6 +29,7 @@ use bevy::shader::ShaderRef;
 use rmc_world::coords::CELL_SIZE_M;
 
 use crate::render::chunk_material;
+use crate::tiles::{TileLookup, TilesPlugin};
 
 /// Where the extension's fragment shader is embedded.
 pub const EMISSIVE_SHADER_PATH: &str = "embedded://rmc_client/emissive.wesl";
@@ -107,6 +114,13 @@ pub struct EmissiveFromAlpha {
     /// [`CELL_JITTER_INSET_M`].
     #[uniform(103)]
     pub jitter_inset_m: f32,
+    /// The tile textures ([`crate::tiles`]); `None` until a tile set loads.
+    #[texture(104, dimension = "2d_array")]
+    #[sampler(105)]
+    pub tiles: Option<Handle<Image>>,
+    /// Which tile layer each material's faces use, and its linear color.
+    #[uniform(106)]
+    pub tile_lookup: TileLookup,
 }
 
 impl Default for EmissiveFromAlpha {
@@ -116,6 +130,8 @@ impl Default for EmissiveFromAlpha {
             jitter_amplitude: CELL_JITTER_AMPLITUDE,
             jitter_cell_size_m: CELL_SIZE_M,
             jitter_inset_m: CELL_JITTER_INSET_M,
+            tiles: None,
+            tile_lookup: TileLookup::default(),
         }
     }
 }
@@ -134,14 +150,18 @@ pub type ChunkEmissiveMaterial = ExtendedMaterial<StandardMaterial, EmissiveFrom
 #[derive(Resource, Clone, Debug)]
 pub struct EmissiveChunkMaterial(pub Handle<ChunkEmissiveMaterial>);
 
-/// Registers [`ChunkEmissiveMaterial`] and creates [`EmissiveChunkMaterial`].
+/// Registers [`ChunkEmissiveMaterial`], creates [`EmissiveChunkMaterial`] and
+/// adds the [`TilesPlugin`] that gives it its tiles.
 pub struct EmissiveMaterialPlugin;
 
 impl Plugin for EmissiveMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "emissive.wesl");
-        app.add_plugins(MaterialPlugin::<ChunkEmissiveMaterial>::default())
-            .add_systems(Startup, create_emissive_chunk_material);
+        app.add_plugins((
+            MaterialPlugin::<ChunkEmissiveMaterial>::default(),
+            TilesPlugin,
+        ))
+        .add_systems(Startup, create_emissive_chunk_material);
     }
 }
 

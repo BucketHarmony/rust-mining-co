@@ -5903,6 +5903,7 @@ dependencies = [
  "bevy_egui",
  "criterion",
  "crossbeam-channel",
+ "image",
  "proptest",
  "rmc_protocol",
  "rmc_world",

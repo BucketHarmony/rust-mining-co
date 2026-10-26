@@ -1,0 +1,38 @@
+// Tile textures for chunk faces (rmc_client::tiles). Client only: not part
+// of the material table or its hash, so tiles change without breaking saves.
+//
+// `size` is the edge length every tile is resized to, a power of two. Files
+// are PNGs in assets/tiles/, seamless (they repeat cell to cell). Each
+// material gives `all`, or `top` / `side` / `bottom`; `bottom` falls back to
+// `all`, then `side`. Materials not listed, and files that are missing, keep
+// their flat color. In the game, F1 then F7 reloads this file and the images.
+//
+// The tiles here come from scripts/comfy-tiles.py (ComfyUI, SDXL).
+(
+    size: 128,
+    materials: {
+        "topsoil": (top: "topsoil_top.png", side: "topsoil_side.png", bottom: "dirt.png"),
+        "dirt": (all: "dirt.png"),
+        "clay": (all: "clay.png"),
+        "stone": (all: "stone.png"),
+        "granite": (all: "granite.png"),
+        "basalt": (all: "basalt.png"),
+        "limestone": (all: "limestone.png"),
+        "coal_seam": (all: "coal_seam.png"),
+        "sulfide_ore": (all: "sulfide_ore.png"),
+        "iron_ore": (all: "iron_ore.png"),
+        "bedrock": (all: "bedrock.png"),
+        "glowcrystal": (all: "glowcrystal.png"),
+        "brass_plate": (all: "brass_plate.png"),
+        "ice": (all: "ice.png"),
+        "obsidian": (all: "obsidian.png"),
+        "crushed_sulfide": (all: "crushed_sulfide.png"),
+        "copper_dust": (all: "copper_dust.png"),
+        "iron_dust": (all: "iron_dust.png"),
+        "salt_dust": (all: "salt_dust.png"),
+        "ochre_crust": (all: "ochre_crust.png"),
+        "salt_crust": (all: "salt_crust.png"),
+        "magma": (all: "magma.png"),
+        "magma_source": (all: "magma.png"),
+    },
+)

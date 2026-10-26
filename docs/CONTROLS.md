@@ -84,6 +84,7 @@ settings.
 | `F5` | Save the world |
 | `F6` | Advance one season |
 | `F7` | Next layer overlay (after the last: none) |
+| `F10` | Reload the tile textures |
 | `F8` | Regenerate the world from the seed |
 | `F9` | Load the saved world |
 

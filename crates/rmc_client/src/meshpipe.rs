@@ -735,11 +735,12 @@ fn remove_mesh(commands: &mut Commands, queue: &mut MeshQueue, pos: ChunkPos) {
 
 /// Vertex and index bytes of a mesh.
 fn mesh_bytes(data: &MeshData) -> u64 {
-    let vertex = size_of::<[f32; 3]>() * 2 + size_of::<[f32; 4]>();
+    let vertex = size_of::<[f32; 3]>() * 2 + size_of::<[f32; 4]>() + size_of::<[f32; 2]>();
     (data.positions.len() * vertex + data.indices.len() * size_of::<u32>()) as u64
 }
 
-/// A render-world-only triangle list with positions, normals and colors.
+/// A render-world-only triangle list with positions, normals, colors and
+/// the material ids in the first UV.
 fn mesh_asset(data: MeshData) -> Mesh {
     Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -748,6 +749,7 @@ fn mesh_asset(data: MeshData) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, data.positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, data.normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, data.colors)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs)
     .with_inserted_indices(Indices::U32(data.indices))
 }
 
@@ -770,6 +772,9 @@ mod tests {
 
     const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
     const PLAYER: PlayerId = PlayerId(5);
+    /// Bytes per vertex: position and normal (`[f32; 3]` each), color
+    /// (`[f32; 4]`) and the material-id UV (`[f32; 2]`).
+    const VERTEX_BYTES: usize = 48;
     /// How long a test waits for jobs on the shared task pool.
     const WAIT: Duration = Duration::from_secs(20);
 
@@ -1506,7 +1511,7 @@ mod tests {
         assert_eq!(s.quads, quads);
         let bytes: u64 = expected
             .values()
-            .map(|m| (m.positions.len() * 40 + m.indices.len() * 4) as u64)
+            .map(|m| (m.positions.len() * VERTEX_BYTES + m.indices.len() * 4) as u64)
             .sum();
         assert_eq!(s.mesh_bytes, bytes);
         assert_eq!((s.queued, s.in_flight, s.awaiting_upload), (0, 0, 0));
@@ -1755,7 +1760,7 @@ mod tests {
         );
         assert_eq!(
             s.mesh_bytes,
-            bytes + (want.positions.len() * 40 + want.indices.len() * 4) as u64,
+            bytes + (want.positions.len() * VERTEX_BYTES + want.indices.len() * 4) as u64,
             "both passes count"
         );
         let found = liquids(&mut f);

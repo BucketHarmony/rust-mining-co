@@ -13,6 +13,8 @@ bevy.workspace = true
 bevy_egui.workspace = true
 bevy-inspector-egui.workspace = true
 crossbeam-channel.workspace = true
+# Tile textures (`tiles.rs`): decode, resize and mipmap PNGs; `tiles.ron`.
+image.workspace = true
 ron.workspace = true
 serde.workspace = true
 thiserror.workspace = true

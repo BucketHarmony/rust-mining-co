@@ -219,6 +219,9 @@ pub struct EditorState {
     /// [`MeshColorSource`] in step with it, and it stays when the editor
     /// closes.
     pub overlay: Option<LayerId>,
+    /// Set by the Reload-tiles action; [`crate::tiles`] takes it and reloads
+    /// `assets/tiles.ron` and its images.
+    pub tiles_reload_requested: bool,
 }
 
 impl Default for EditorState {
@@ -236,6 +239,7 @@ impl Default for EditorState {
             regenerate_requested: false,
             season_requested: false,
             overlay: None,
+            tiles_reload_requested: false,
         }
     }
 }
@@ -271,6 +275,7 @@ impl EditorState {
             EditorAction::Regenerate => self.regenerate_requested = true,
             EditorAction::AdvanceSeason => self.season_requested = true,
             EditorAction::NextOverlay => self.overlay = next_overlay(self.overlay),
+            EditorAction::ReloadTiles => self.tiles_reload_requested = true,
         }
     }
 }
@@ -293,6 +298,7 @@ pub enum EditorAction {
     Regenerate,
     AdvanceSeason,
     NextOverlay,
+    ReloadTiles,
 }
 
 impl EditorAction {
@@ -318,6 +324,7 @@ impl EditorAction {
             EditorAction::Regenerate => "Regenerate the world from the seed",
             EditorAction::AdvanceSeason => "Advance one season",
             EditorAction::NextOverlay => "Next layer overlay (after the last: none)",
+            EditorAction::ReloadTiles => "Reload the tile textures",
         }
     }
 }
@@ -341,6 +348,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F5, EditorAction::Save),
     (KeyCode::F6, EditorAction::AdvanceSeason),
     (KeyCode::F7, EditorAction::NextOverlay),
+    (KeyCode::F10, EditorAction::ReloadTiles),
     (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
@@ -489,6 +497,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F7 => "F7",
         KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
+        KeyCode::F10 => "F10",
         KeyCode::Digit1 => "1",
         KeyCode::Digit2 => "2",
         KeyCode::Digit3 => "3",

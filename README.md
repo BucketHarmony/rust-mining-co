@@ -62,6 +62,7 @@ Full list: [docs/CONTROLS.md](docs/CONTROLS.md).
 | `crates/rmc_app` | The game binary |
 | `tests/e2e` | End-to-end scenarios that drive the real game headlessly |
 | `assets/*.ron` | Materials, tools, worldgen, seasons and ecology tables; behavior is data |
+| `assets/tiles.ron`, `assets/tiles/` | Tile textures for chunk faces, read by the client only ([docs/TILES.md](docs/TILES.md)) |
 
 The world crates (`rmc_world`, `rmc_worldgen`, `rmc_eco`, `rmc_protocol`, `rmc_host`) do not depend on Bevy.
 
@@ -73,6 +74,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 scripts/e2e.sh <scenario>                    # one end-to-end scenario, headless on a software rasterizer
 scripts/screens.sh <scenario>                # screenshots into docs/screens/
 ```
+
+Tile art: [docs/TILES.md](docs/TILES.md) explains the format and how to make tiles (in ComfyUI or by hand). In the game, `F1` then `F7` reloads them without restarting.
 
 Design documents: [docs/SAD.md](docs/SAD.md) (Phase 1) and [docs/SAD-P2.md](docs/SAD-P2.md) (Phase 2).
 
