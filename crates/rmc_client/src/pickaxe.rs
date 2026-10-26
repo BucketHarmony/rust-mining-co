@@ -42,7 +42,7 @@ use rmc_world::coords::CellPos;
 use rmc_world::edit::{EditCommand, EditOp};
 use rmc_world::shape::Shape;
 use rmc_world::world::World;
-use rmc_world::{Hit, ToolProfile, raycast};
+use rmc_world::{Hit, ToolProfile, raycast_solid};
 
 use crate::controller::{ControllerSystems, Player};
 use crate::cursor::{CursorGrab, look_allowed, swing_allowed};
@@ -111,9 +111,10 @@ pub enum PickaxeSystems {
 }
 
 /// The first solid cell along `player`'s view ray from the eye, at most
-/// `reach_m` meters away.
+/// `reach_m` meters away. The ray passes through liquids: the pickaxe does
+/// not dig water or magma, and places on whatever solid lies beyond them.
 pub fn target(world: &World, player: &Player, reach_m: f32) -> Option<Hit> {
-    raycast(
+    raycast_solid(
         world,
         player.eye(),
         player.rotation() * Vec3::NEG_Z,

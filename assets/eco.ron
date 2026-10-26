@@ -19,7 +19,7 @@
         condense_temp: 900,
         // evaporation per sub-step by temperature bucket; bucket = T / evap_bucket,
         // T < 0 uses bucket 0, past the end uses the last entry
-        evap_table: [1, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32],
+        evap_table: [3, 6, 9, 12, 16, 20, 24, 28, 32, 32, 32],
         evap_bucket: 100,
         // §7.4 gases
         drift_shift: 2,

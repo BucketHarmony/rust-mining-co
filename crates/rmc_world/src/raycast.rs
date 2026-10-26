@@ -33,6 +33,23 @@ pub struct Hit {
 /// - A zero or non-finite `dir`, a non-finite `origin`, or a negative or NaN
 ///   `max_dist` hits nothing.
 pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Hit> {
+    raycast_where(world, origin, dir, max_dist, World::is_solid_or_liquid)
+}
+
+/// [`raycast`], but hits only `Solid` cells ([`World::is_solid`]): the ray
+/// passes through liquids, as the pickaxe's does.
+pub fn raycast_solid(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Hit> {
+    raycast_where(world, origin, dir, max_dist, World::is_solid)
+}
+
+/// [`raycast`] with the cells it stops at chosen by `hits`.
+fn raycast_where(
+    world: &World,
+    origin: Vec3,
+    dir: Vec3,
+    max_dist: f32,
+    hits: impl Fn(&World, CellPos) -> bool,
+) -> Option<Hit> {
     let o = origin.as_dvec3();
     let d = dir.as_dvec3().try_normalize()?;
     let max_dist = f64::from(max_dist);
@@ -99,7 +116,7 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
     loop {
         if cell.cmpge(min).all() && cell.cmple(max).all() {
             let pos = CellPos(cell.as_ivec3());
-            if world.is_solid_or_liquid(pos) {
+            if hits(world, pos) {
                 return Some(Hit {
                     cell: pos,
                     face_normal: normal,
@@ -235,6 +252,24 @@ mod tests {
             target,
             IVec3::NEG_X,
             1.75,
+        );
+
+        // `raycast_solid` passes through the liquid to the stone behind it.
+        let behind = c(22, 16, 16);
+        let (cpos, local) = behind.split();
+        let mut chunk = w.chunk(cpos).unwrap().clone();
+        chunk.storage.set(local, id(w.materials(), "stone"));
+        w.insert_chunk(cpos, chunk).unwrap();
+        assert_hit(
+            raycast_solid(&w, c(16, 16, 16).center_m(), Vec3::X, 10.0),
+            behind,
+            IVec3::NEG_X,
+            2.75,
+        );
+        assert_eq!(
+            raycast_solid(&w, c(16, 16, 16).center_m(), Vec3::X, 2.5),
+            None,
+            "the liquid alone is not a hit"
         );
     }
 

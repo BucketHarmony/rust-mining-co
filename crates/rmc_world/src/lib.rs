@@ -23,5 +23,5 @@ pub mod world;
 pub use displace::EcoRules;
 pub use inventory::Inventory;
 pub use ledger::SeasonLedger;
-pub use raycast::{Hit, raycast};
+pub use raycast::{Hit, raycast, raycast_solid};
 pub use tools::{ToolProfile, ToolShape, ToolTable};

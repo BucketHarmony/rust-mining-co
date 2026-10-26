@@ -46,6 +46,13 @@
 //!   standing box is free; under a low ceiling it stays crouched. The host
 //!   still keeps `Set` cells out of the standing box, so placing over a
 //!   crouching player's head is refused.
+//! - In a liquid (the cell at the middle of the box is `Liquid`) the player
+//!   swims: gravity is [`ControllerConfig::swim_gravity_mps2`] and the sink
+//!   is at most [`ControllerConfig::swim_sink_mps`], Space rises at
+//!   [`ControllerConfig::swim_up_mps`], and the walk is
+//!   [`ControllerConfig::swim_speed_mps`] with no sprint. Holding Space
+//!   against a wall (a bank) while the feet are in the liquid gives a
+//!   jump's lift, so the player climbs out.
 //! - The mouse turns: yaw right for motion right, pitch clamped to
 //!   ±[`MAX_PITCH_DEG`]. With a [`CursorGrab`] (the windowed game), only
 //!   while the cursor is grabbed.
@@ -58,6 +65,7 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use rmc_protocol::ClientMsg;
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
+use rmc_world::materials::Phase;
 use rmc_world::world::World;
 
 use crate::cursor::{CursorGrab, look_allowed};
@@ -103,6 +111,14 @@ pub struct ControllerConfig {
     pub sprint_speed_mps: f32,
     /// Speed while crouching, m/s.
     pub crouch_speed_mps: f32,
+    /// Speed while swimming, m/s.
+    pub swim_speed_mps: f32,
+    /// Downward acceleration while swimming, m/s².
+    pub swim_gravity_mps2: f32,
+    /// Fastest sink while swimming, m/s.
+    pub swim_sink_mps: f32,
+    /// Upward speed while swimming with Space held, m/s.
+    pub swim_up_mps: f32,
     /// Downward acceleration, m/s².
     pub gravity_mps2: f32,
     /// Fastest fall, m/s.
@@ -119,6 +135,10 @@ impl Default for ControllerConfig {
             walk_speed_mps: 4.3,
             sprint_speed_mps: 6.5,
             crouch_speed_mps: 1.9,
+            swim_speed_mps: 2.6,
+            swim_gravity_mps2: 4.0,
+            swim_sink_mps: 1.5,
+            swim_up_mps: 3.0,
             gravity_mps2: 20.0,
             max_fall_mps: 40.0,
             jump_speed_mps: 7.0,
@@ -147,6 +167,8 @@ pub struct Player {
     /// Visual eye offset in meters (zero or negative) easing toward the
     /// crouch eye height while crouching, and back to zero after.
     pub crouch_offset_m: f32,
+    /// In a liquid at the start of the last step (see [`in_liquid`]).
+    pub swimming: bool,
 }
 
 impl Player {
@@ -161,6 +183,7 @@ impl Player {
             step_offset_m: 0.0,
             crouching: false,
             crouch_offset_m: 0.0,
+            swimming: false,
         }
     }
 
@@ -261,6 +284,17 @@ pub fn blocks(world: &World, cell: CellPos) -> bool {
     world.get_cell(cell).is_none() || collides(world, cell)
 }
 
+/// Whether the cell at the middle of a box `height` meters tall with its
+/// feet at `feet` holds a `Liquid` material: the player swims. With a
+/// `height` of 0, whether the feet are in a liquid.
+pub fn in_liquid(world: &World, feet: Vec3, height: f32) -> bool {
+    let waist = CellPos::from_meters(feet + Vec3::Y * (height / 2.0));
+    world
+        .get_cell(waist)
+        .and_then(|id| world.materials().get(id))
+        .is_some_and(|d| d.phase == Phase::Liquid)
+}
+
 /// Whether `cell` holds a `Solid`, non-`passable` material.
 fn collides(world: &World, cell: CellPos) -> bool {
     world
@@ -285,6 +319,11 @@ fn collides(world: &World, cell: CellPos) -> bool {
 /// player grounded. A player grounded before and after the vertical move
 /// that is blocked horizontally climbs one cell if that gets it further (see
 /// [`step_up`]), at most once per step.
+///
+/// A player [`in_liquid`] swims instead: swim speed, swim gravity and sink
+/// cap, Space rises at the swim-up speed, and Space held while blocked
+/// horizontally with the feet still in the liquid starts the next step
+/// rising at the jump speed.
 pub fn step(
     world: &World,
     player: &mut Player,
@@ -298,7 +337,11 @@ pub fn step(
     let wish = (yaw * Vec3::NEG_Z * input.forward + yaw * Vec3::X * input.right)
         .with_y(0.0)
         .clamp_length_max(1.0);
-    let speed = if player.crouching {
+    player.swimming = in_liquid(world, player.feet, player.height());
+    let wading = player.swimming || in_liquid(world, player.feet, 0.0);
+    let speed = if player.swimming {
+        config.swim_speed_mps
+    } else if player.crouching {
         config.crouch_speed_mps
     } else if input.sprint {
         config.sprint_speed_mps
@@ -307,10 +350,19 @@ pub fn step(
     };
     player.velocity.x = wish.x * speed;
     player.velocity.z = wish.z * speed;
-    if input.jump && player.grounded {
-        player.velocity.y = config.jump_speed_mps;
+    if player.swimming {
+        if input.jump {
+            player.velocity.y = player.velocity.y.max(config.swim_up_mps);
+        }
+        player.velocity.y =
+            (player.velocity.y - config.swim_gravity_mps2 * dt).max(-config.swim_sink_mps);
+    } else {
+        if input.jump && player.grounded {
+            player.velocity.y = config.jump_speed_mps;
+        }
+        player.velocity.y =
+            (player.velocity.y - config.gravity_mps2 * dt).max(-config.max_fall_mps);
     }
-    player.velocity.y = (player.velocity.y - config.gravity_mps2 * dt).max(-config.max_fall_mps);
     player.step_offset_m = (player.step_offset_m + CELL_SIZE_M / STEP_SMOOTH_S * dt).min(0.0);
 
     let delta = player.velocity * dt;
@@ -319,6 +371,7 @@ pub fn step(
     let was_grounded = player.grounded;
     player.grounded = false;
     let mut stepped = false;
+    let mut walled = false;
     for axis in [1, 0, 2] {
         let d = delta[axis];
         if d == 0.0 {
@@ -345,9 +398,14 @@ pub fn step(
                 if axis == 1 && d < 0.0 {
                     player.grounded = true;
                 }
+                walled |= axis != 1;
             }
             None => player.feet[axis] += d,
         }
+    }
+    // Climbing out of a liquid onto a bank.
+    if wading && walled && input.jump {
+        player.velocity.y = player.velocity.y.max(config.jump_speed_mps);
     }
 }
 
@@ -1547,6 +1605,53 @@ mod tests {
         // Standing, it walks off.
         run(&world, &mut player, FORWARD, 60);
         assert!(player.feet.y < 1.0, "did not fall: {:?}", player.feet);
+    }
+
+    /// [`floor_world`] with water over cell rows y 4..=11 (2 m to 6 m) and a
+    /// stone bank over cell rows z <= 10 (z < 5.5 m) up to y 12 (6.5 m).
+    fn pool_world() -> World {
+        let mut world = floor_world();
+        let water = world.materials().id("water").unwrap();
+        let id = stone(&world);
+        fill(&mut world, (0, 4, 11), (63, 11, 63), water);
+        fill(&mut world, (0, 4, 0), (63, 12, 10), id);
+        world
+    }
+
+    #[test]
+    fn swimming_sinks_slowly_rises_on_space_and_climbs_out() {
+        let world = pool_world();
+        let config = ControllerConfig::default();
+
+        // Idle in deep water: sinks no faster than the swim cap.
+        let mut player = Player::at(Vec3::new(16.0, 4.0, 16.0));
+        run(&world, &mut player, MoveInput::default(), 30);
+        assert!(player.swimming);
+        assert!(player.velocity.y >= -config.swim_sink_mps - 1e-4);
+        assert!(player.feet.y > 4.0 - config.swim_sink_mps * 0.5 - 0.01);
+
+        // Space rises from the bottom to the surface.
+        let up = MoveInput {
+            jump: true,
+            ..MoveInput::default()
+        };
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 16.0));
+        run(&world, &mut player, up, 120);
+        assert!(player.feet.y > 4.0, "did not rise: {:?}", player.feet);
+
+        // Space and forward (-Z) toward the bank: out of the water onto it.
+        let out = MoveInput {
+            jump: true,
+            ..FORWARD
+        };
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 8.0));
+        run(&world, &mut player, out, 300);
+        assert!(
+            player.feet.z < 5.5 && player.feet.y > 6.49,
+            "not on the bank: {:?}",
+            player.feet
+        );
+        assert!(!player.swimming);
     }
 
     #[test]

@@ -3802,3 +3802,21 @@ Decisions:
 - The material id rides in UV_0 rather than a custom vertex attribute, so the StandardMaterial vertex shader passes it through without a custom vertex stage. Lookup in the shader, rather than in the mesher, keeps tile changes from re-meshing chunks.
 Next: real tile art (ComfyUI, `docs/TILES.md`). Later: normal/roughness maps, per-cell tile variants.
 Blockers: none.
+
+## 2026-10-26 — Owner: swimming, pickaxe through water, rain balance (A1) — passed
+Done:
+- Season chime replaced by a very soft tick (`assets/sounds/tick.ogg`, volume 0.08; separate commit).
+- `rmc_world::raycast_solid`: `raycast` that hits only `Solid` cells. `raycast` (Solid or Liquid, SAD-P2 §5) is unchanged and the editor brush still uses it. `pickaxe::target` uses `raycast_solid`, so the pickaxe neither digs nor targets water or magma; it hits (and places against) the solid beyond.
+- Swimming (`controller`): when the cell at the middle of the box is `Liquid`, the player swims. Swim gravity is 4 m/s², the sink is capped at 1.5 m/s, `Space` rises at 3 m/s, and the swim speed is 2.6 m/s. `Space` held against a wall while the feet are in liquid gives jump speed, so the player climbs out onto a bank. `Player::swimming` records the state.
+- A1 flooding, a data change only:
+  - `seasons.ron` rain goes from 128/64/160/48 to 8/6/10/0.
+  - `eco.ron` `evap_table` goes from `[1,1,2,3,4,6,8,12,16,24,32]` to `[3,6,9,12,16,20,24,28,32,32,32]`.
+  - Headless seed 1, 16 seasons, water total: before, it went from 16.7 M to 39.8 M in 8 seasons. Now it reads 8.90 M → 8.92 M at year ends (8.81, 8.84, 8.87, 8.92 M); growth is +0.4 %/year and slowing.
+Tests added: `raycast::tests::liquid_cells_are_hit` extended with `raycast_solid` (passes through the liquid, and the liquid alone is not a hit); `controller::tests::swimming_sinks_slowly_rises_on_space_and_climbs_out`.
+Decisions:
+- **No new sink.** A runoff or edge drain would need a new ledger term and a change to the SAD-P2 invariant. Instead, rain is balanced against the existing sink: evaporation, then steam venting to the sky.
+- **Dry winters.** Winter rain lands on ice, which stays into spring and stops ponds evaporating. With winter rain at 4 the total still grew about 10 % a year.
+- **Rain floor.** Spring and summer rain stay at 8 and 6 or above, so plant anchors keep the moisture plants need. With rain at 3/2/4/2, `fireweed_takes_copper` failed: the anchor's moisture was 0 and the plants died. It passes at 8/6/10/0.
+- `season_swale_fills` and the tailings scenarios set their own rain, so they are unaffected.
+Next: owner playtest of the water look ("the water is weird"). A real sink (runoff or springs) is still Phase 3 design work.
+Blockers: none.

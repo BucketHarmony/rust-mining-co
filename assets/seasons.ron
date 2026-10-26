@@ -1,12 +1,16 @@
 // Season cycle (SAD-P2 §3, §7). Season n uses row n % len; worldgen uses row 0.
 // air_temp: clamp for surface and sky-open air, water and ice, in 0.1 °C.
-// rain: per-column amount scaled by the seeded pattern (/256).
+// rain: per-column amount each sub-step, scaled by the seeded pattern (/256),
+// so a column gets about (rain - 1) / 2 per sub-step (1 or less: none). Kept
+// near what ponds evaporate and vent (eco.ron evap_table), so the world does
+// not flood over the seasons (playtest A1: rain 64-160 flooded it). Winter is
+// dry: rain on ice stays ice into spring and keeps the ponds from drying.
 (
     substeps: 8,
     seasons: [
-        (key: "spring", air_temp: 100, rain: 128),
-        (key: "summer", air_temp: 220, rain: 64),
-        (key: "autumn", air_temp: 80, rain: 160),
-        (key: "winter", air_temp: -80, rain: 48),
+        (key: "spring", air_temp: 100, rain: 8),
+        (key: "summer", air_temp: 220, rain: 6),
+        (key: "autumn", air_temp: 80, rain: 10),
+        (key: "winter", air_temp: -80, rain: 0),
     ],
 )
