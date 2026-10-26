@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bevy::prelude::*;
+use rmc_client::Toast;
 use rmc_host::Host;
 
 use crate::session::GameHost;
@@ -72,10 +73,21 @@ impl Plugin for EcoClockPlugin {
     }
 }
 
-fn toggle_pause(keys: Option<Res<ButtonInput<KeyCode>>>, mut clock: ResMut<EcoClock>) {
+fn toggle_pause(
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mut clock: ResMut<EcoClock>,
+    toasts: Option<ResMut<Messages<Toast>>>,
+) {
     if keys.is_some_and(|k| k.just_pressed(KeyCode::KeyP)) && clock.interval.is_some() {
         clock.paused = !clock.paused;
         info!(paused = clock.paused, "ecology clock");
+        if let Some(mut toasts) = toasts {
+            toasts.write(Toast::info(if clock.paused {
+                "Seasons paused (P)"
+            } else {
+                "Seasons running"
+            }));
+        }
     }
 }
 

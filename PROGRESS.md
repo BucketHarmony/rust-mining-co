@@ -3820,3 +3820,33 @@ Decisions:
 - `season_swale_fills` and the tailings scenarios set their own rain, so they are unaffected.
 Next: owner playtest of the water look ("the water is weird"). A real sink (runoff or springs) is still Phase 3 design work.
 Blockers: none.
+
+## 2026-10-26 — Owner: UI kit (theme, scaling, layers, menus, toasts) — passed
+Done:
+- Research on professional game UI. The findings and sources are in `docs/UI.md`: XAG 101/102 sizes and contrast, player UI scale, resolution-relative scaling, safe area, design tokens, visible focus, a minimal HUD and short motion.
+- `rmc_client::ui` (`UiKitPlugin`):
+  - **Theme:** design tokens in `assets/ui.ron` (`UiTheme`); Atkinson Hyperlegible fonts (OFL) in `assets/fonts/`.
+  - **Scale:** `UiScale` = viewport height / 1080 × the player's `UiSettings::scale`, clamped.
+  - **Layers:** layer roots at z 10/100/200 (HUD, menus, toasts); the HUD is inset by a safe area and has nine `HudAnchor`s that `HudSlot` elements move into.
+  - **Widgets:** text, panel, and buttons on Bevy's headless `ui_widgets::Button`, with hover, press and focus-ring styling.
+  - **Screens:** a `UiScreens` stack holds the game menu (Resume, Settings, Save and quit) and Settings (UI scale). Each screen is a modal tab group: Tab and Up/Down move the focus, Enter and Space press, and the first button gets `AutoFocus`.
+  - **Toasts:** fade in, hold, fade out, at most 3.
+- Cursor: an open screen frees the cursor like the editor does. Releasing the cursor during play (Escape, focus loss) opens the game menu, except while the editor is open.
+- `rmc_app` adds the kit when `ui.ron` loads; `P` (ecology pause) writes a toast. `rmc_testkit` gains `TestConfig::ui`.
+- `docs/UI.md` (research, architecture, tokens, extending, a migration plan for `hud.rs`); `docs/CONTROLS.md` gains a Menus section.
+Tests added:
+- `ui::theme::tests::*` (4): hex parsing, WCAG ratio, shipped theme contrast over black and white with caption ≥ 18 px, a bad color names its token.
+- `ui::scale::tests::scale_follows_height_and_setting_within_clamp`.
+- `ui::widgets::tests::button_states_differ_and_focus_shows_a_ring`.
+- `ui::tests::*` (6): layers and anchors, HUD slots, the Escape/menu/settings/back/resume flow, quit writes `AppExit`, arrow focus wraps, toast fade and cap.
+- `cursor::tests::an_open_menu_screen_frees_the_cursor`.
+- `e2e:ui_menu_renders`: semantic asserts (layers, font loaded, `UiScale` at 720p, menu drawn, Resume focused with accent fill and focus ring, the settings readout, the toast) plus screenshots `docs/screens/ui_menu_renders-{play,menu,settings,toast}-*.png`.
+Decisions:
+- **Own kit on the headless widgets, not `bevy_feathers`.** Feathers is Bevy's editor look; the game needs its own tokens, and the headless widgets give input and accessibility without a look.
+- **The existing HUD is not migrated in this change** (plan in `docs/UI.md`). HUD layout and its tests stay unchanged. The kit's layers draw above it (z ≥ 10).
+- **The world keeps running under the menu** (multiplayer-shaped host). Pausing the ecology clock stays on `P`.
+- **`UiSettings` is not persisted yet.**
+- **Fix, separate commit:** 7a496be set winter rain to 0, which failed `rmc_testkit` `eco::tests::set_season_params_overrides_rain` (it needs every base season to have rain > 0, so the override to 0 shows). Winter rain is now 1. `1 · pattern / 256` is 0 for every pattern, so no rain lands and the water balance is unchanged; the test is untouched.
+- Screenshots were copied from the passing `scripts/e2e.sh ui_menu_renders` run by hand, which is what `screens.sh` does, so the 3.5-minute scenario did not run twice.
+Next: migrate `hud.rs` onto anchors and tokens; persist `UiSettings`; gamepad navigation; remappable controls; colorblind-safe status icons.
+Blockers: none.

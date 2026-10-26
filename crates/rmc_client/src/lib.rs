@@ -20,6 +20,7 @@ pub mod replica;
 pub mod save;
 pub mod sound;
 pub mod tiles;
+pub mod ui;
 pub mod viewmodel;
 
 pub use controller::{
@@ -84,4 +85,8 @@ pub use save::{
     AUTOSAVE_INTERVAL, Autosave, SaveCause, SaveOutcome, SavePlugin, SaveStatus, SaveSystems,
 };
 pub use sound::{SoundConfig, SoundCue, SoundPlugin, SoundSystems, WindLevel};
+pub use ui::{
+    HudAnchor, HudSlot, Screen, Toast, UiAction, UiKitPlugin, UiLayer, UiScreens, UiSettings,
+    UiSystems, UiTheme,
+};
 pub use viewmodel::{ViewModel, ViewModelPlugin, ViewModelSystems};

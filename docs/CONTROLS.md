@@ -38,11 +38,31 @@ and only then does the mouse turn the view.
 
 | Input | Action |
 |---|---|
-| `Escape` | Release the cursor |
-| `Left mouse` | In the window, with the cursor released: grab it again (that click does not swing) |
+| `Escape` | Release the cursor and open the game menu |
+| `Left mouse` | In the window, with the cursor released and no menu open: grab it again (that click does not swing) |
 
 Opening the editor (F1) releases the cursor for its panel, and closing it
-grabs the cursor again. Switching to another window releases it too.
+grabs the cursor again. Switching to another window releases it too and
+opens the game menu. With the editor open, Escape releases the cursor
+without opening the menu.
+
+## Menus
+
+The game menu (Resume, Settings, Save and quit) opens when the cursor is
+released during play. While a menu is open the cursor stays free and the
+mouse does not turn the view; the world keeps running.
+
+| Input | Action |
+|---|---|
+| `Escape` | Close the top menu (from Settings: back to the game menu; from the game menu: back to play) |
+| `Tab` / `Shift+Tab` | Move the focus to the next / previous button |
+| `Down` / `Up` | The same as `Tab` / `Shift+Tab` |
+| `Enter` / `Space` | Press the focused button |
+| `Left mouse` | Press a button |
+
+Settings has the UI scale: Larger and Smaller step it by 10 % (75 % to
+200 %), Default size resets it. The UI also scales with the window height,
+so it is the same size relative to the screen at any resolution.
 
 ## Fly camera
 

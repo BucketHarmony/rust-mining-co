@@ -1,0 +1,55 @@
+// The UI kit's design tokens (rmc_client::ui, docs/UI.md). Every color,
+// size, gap and duration the game UI uses comes from here; widgets name a
+// token, never a literal. Sizes are logical pixels at `reference_height`;
+// the kit scales them with the window and the player's UI scale.
+(
+    // The window height the sizes below are designed for.
+    reference_height: 1080.0,
+    // The player's UI scale setting: its default, range and step.
+    scale: (default: 1.0, min: 0.75, max: 2.0, step: 0.1),
+    // The effective scale (window factor x player scale) is kept in here.
+    clamp: (0.6, 3.0),
+    // Kept clear at every screen edge, as a fraction of the shorter side
+    // (TVs crop the edges; corners stay readable on ultrawides).
+    safe_area: 0.035,
+    fonts: (
+        regular: "fonts/AtkinsonHyperlegible-Regular.ttf",
+        bold: "fonts/AtkinsonHyperlegible-Bold.ttf",
+    ),
+    // The type ramp. The smallest size is 18 px at 1080p, the Xbox
+    // Accessibility Guidelines' (XAG 101) minimum for PC.
+    text: (caption: 18.0, body: 20.0, label: 22.0, title: 32.0, display: 48.0),
+    // A 4 px spacing grid.
+    space: (xs: 4.0, sm: 8.0, md: 12.0, lg: 20.0, xl: 32.0),
+    radius: (sm: 4.0, md: 8.0),
+    border: 1.5,
+    // The keyboard focus ring's width and its gap from the widget.
+    focus_ring: (width: 3.0, offset: 2.0),
+    button: (width: 320.0, height: 52.0),
+    panel_width: 420.0,
+    // Colors: sRGB hex, #RRGGBB or #RRGGBBAA. Warm darks and a lantern
+    // amber. Text pairs keep a 4.5:1 contrast (XAG 102; checked by a test).
+    colors: (
+        text: "#F4EFE4",
+        text_dim: "#BDB4A2",
+        text_on_accent: "#1B1408",
+        surface: "#17130EEB",
+        surface_raised: "#2A241BF2",
+        surface_hover: "#3A3226F2",
+        scrim: "#0A0806A6",
+        border: "#5E523E",
+        accent: "#F2B33D",
+        accent_hover: "#FFC75E",
+        accent_pressed: "#CF9324",
+        focus: "#FFFFFF",
+        info: "#7FC0FF",
+        ok: "#86DB98",
+        warning: "#F5C542",
+        danger: "#FF6A4D",
+        shadow: "#00000099",
+    ),
+    // Seconds. `toast` is how long a notice stays before it fades.
+    motion: (fast: 0.12, normal: 0.22, toast: 3.0),
+    // Notices on screen at once; older ones leave first.
+    toast_max: 3,
+)

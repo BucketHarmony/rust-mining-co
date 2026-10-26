@@ -13,7 +13,8 @@
 //!   button is let go.
 //! - Opening the editor (F1, or anything that sets `EditorState::open`)
 //!   releases the cursor for the egui panel, and clicks then belong to the
-//!   brush; closing it grabs again.
+//!   brush; closing it grabs again. An open menu screen
+//!   ([`crate::ui::UiScreens`]) does the same.
 //!
 //! Mouse look (the player's and the fly camera's) applies only while the
 //! cursor is grabbed. An app without [`CursorPlugin`] (tests, the headless
@@ -24,6 +25,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::editor::EditorState;
+use crate::ui::UiScreens;
 
 /// Releases the cursor.
 pub const RELEASE_KEY: KeyCode = KeyCode::Escape;
@@ -117,13 +119,15 @@ fn update_grab(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     editor: Option<Res<EditorState>>,
+    screens: Option<Res<UiScreens>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut grab: ResMut<CursorGrab>,
 ) {
     let held = buttons.as_ref().is_some_and(|b| b.pressed(GRAB_BUTTON));
     let clicked = buttons.is_some_and(|b| b.just_pressed(GRAB_BUTTON));
     let escape = keys.is_some_and(|k| k.just_pressed(RELEASE_KEY));
-    let editor_open = editor.is_some_and(|e| e.open);
+    // An open menu screen frees the cursor like the editor does.
+    let editor_open = editor.is_some_and(|e| e.open) || screens.is_some_and(|s| s.blocks_play());
     let focused = windows.iter().next().is_none_or(|w| w.focused);
     let mut next = *grab;
     if !held {
@@ -516,5 +520,33 @@ mod tests {
             turned,
             "fly camera does not turn while released"
         );
+    }
+
+    #[test]
+    fn an_open_menu_screen_frees_the_cursor() {
+        let mut rig = Rig::new();
+        rig.app.init_resource::<UiScreens>();
+        rig.frame();
+        rig.assert_grabbed(true);
+
+        rig.app
+            .world_mut()
+            .resource_mut::<UiScreens>()
+            .push(crate::ui::Screen::Menu);
+        rig.frame();
+        rig.assert_grabbed(false);
+        assert_eq!(rig.turn(), 0.0, "no mouse look under a menu");
+        // A click belongs to the menu: it does not grab.
+        rig.button(true);
+        rig.frame();
+        rig.button(false);
+        rig.frame();
+        rig.assert_grabbed(false);
+
+        // Closing the last screen grabs again.
+        rig.app.world_mut().resource_mut::<UiScreens>().clear();
+        rig.frame();
+        rig.assert_grabbed(true);
+        assert!(rig.turn() < 0.0);
     }
 }

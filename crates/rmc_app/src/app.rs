@@ -25,7 +25,7 @@ use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
     FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
     NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin, SoundConfig,
-    SoundPlugin, ViewModelPlugin,
+    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin,
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
 
@@ -140,6 +140,17 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
                 });
             }
             Err(e) => warn!("no sound: {e}"),
+        }
+        // The UI kit (game menu, settings, toasts); without its theme the
+        // game runs with the HUD alone.
+        match UiTheme::load(dir.join("ui.ron")) {
+            Ok(theme) => {
+                app.add_plugins(UiKitPlugin {
+                    theme,
+                    assets_dir: Some(dir),
+                });
+            }
+            Err(e) => warn!("no ui kit: {e}"),
         }
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))

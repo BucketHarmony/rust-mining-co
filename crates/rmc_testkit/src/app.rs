@@ -66,6 +66,9 @@ pub struct TestConfig {
     /// (`rmc_client::tiles`). Off by default, so scenarios written before
     /// tiles see the flat material colors they were written against.
     pub tiles: bool,
+    /// Add the UI kit (`rmc_client::ui`: menus, toasts) with the shipped
+    /// `assets/ui.ron` and fonts, as the windowed game does. Off by default.
+    pub ui: bool,
 }
 
 impl Default for TestConfig {
@@ -76,6 +79,7 @@ impl Default for TestConfig {
             render: true,
             size: (640, 360),
             tiles: false,
+            ui: false,
         }
     }
 }
@@ -249,6 +253,14 @@ impl TestApp {
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
         if config.tiles {
             app.insert_resource(rmc_client::tiles::TileDir(asset_path("")));
+        }
+        if config.ui {
+            let theme =
+                rmc_client::UiTheme::load(asset_path("ui.ron")).expect("assets/ui.ron loads");
+            app.add_plugins(rmc_client::UiKitPlugin {
+                theme,
+                assets_dir: Some(asset_path("")),
+            });
         }
 
         // What App::run does before its first update; we never call run.
