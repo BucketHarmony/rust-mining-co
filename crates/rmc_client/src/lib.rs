@@ -18,6 +18,8 @@ pub mod pickaxe;
 pub mod render;
 pub mod replica;
 pub mod save;
+pub mod sound;
+pub mod viewmodel;
 
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
@@ -43,12 +45,13 @@ pub use gizmo::{
     EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
 };
 pub use hud::{
-    BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, ClientInventory,
-    CrackOverlay, DamageEstimate, DamageProgress, GasTintOverlay, HUD_GIZMO_DEPTH_BIAS, HudGas,
-    HudGizmos, HudItem, HudPlugin, HudRoot, HudState, HudSystems, LANTERN_DANGER_COLOR,
-    LANTERN_FLARING_COLOR, LANTERN_ICON_SIZE, LANTERN_STEADY_COLOR, LanternIcon, LanternState,
-    NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK, SPOIL_COLOR, SPOIL_LABEL, SelectedMaterial,
-    SpoilIndicator, crack_color, flash_scale, gas_overlay, lantern_state, step_selection,
+    BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, CellBroke,
+    ClientInventory, CrackOverlay, DamageEstimate, DamageProgress, GasTintOverlay,
+    HUD_GIZMO_DEPTH_BIAS, HudGas, HudGizmos, HudItem, HudPlugin, HudRoot, HudState, HudSystems,
+    LANTERN_DANGER_COLOR, LANTERN_FLARING_COLOR, LANTERN_ICON_SIZE, LANTERN_STEADY_COLOR,
+    LanternIcon, LanternState, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK, SPOIL_COLOR,
+    SPOIL_LABEL, SelectedMaterial, SpoilIndicator, crack_color, flash_scale, gas_overlay,
+    lantern_state, step_selection,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{
@@ -79,3 +82,5 @@ pub use replica::{Replica, ReplicaError, ReplicaPlugin};
 pub use save::{
     AUTOSAVE_INTERVAL, Autosave, SaveCause, SaveOutcome, SavePlugin, SaveStatus, SaveSystems,
 };
+pub use sound::{SoundConfig, SoundCue, SoundPlugin, SoundSystems, WindLevel};
+pub use viewmodel::{ViewModel, ViewModelPlugin, ViewModelSystems};

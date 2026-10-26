@@ -76,7 +76,7 @@ pub struct PickTarget(pub Option<Hit>);
 pub struct SwingState {
     /// Fixed-step time since the last swing; `None` before the first.
     since_swing: Option<Duration>,
-    swings: u64,
+    pub(crate) swings: u64,
 }
 
 impl SwingState {
@@ -91,7 +91,7 @@ impl SwingState {
 pub struct PlaceState {
     /// Fixed-step time since the last place; `None` before the first.
     since_place: Option<Duration>,
-    places: u64,
+    pub(crate) places: u64,
 }
 
 impl PlaceState {

@@ -459,6 +459,15 @@ impl DamageEstimate {
     }
 }
 
+/// A cell the player saw break (the break feedback above), as a message
+/// for whatever else reacts to it ([`crate::sound`]).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct CellBroke {
+    pub cell: CellPos,
+    /// The material the cell held.
+    pub material: MaterialId,
+}
+
 /// When the last swing and the last break happened, in `Time` elapsed.
 #[derive(Resource, Debug, Default)]
 struct Feedback {
@@ -547,6 +556,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<FromHost>()
             .add_message::<ToHost>()
+            .add_message::<CellBroke>()
             .init_resource::<HudState>()
             .init_resource::<ClientInventory>()
             .init_resource::<DamageEstimate>()
@@ -612,6 +622,7 @@ fn track_host(
     mut estimate: ResMut<DamageEstimate>,
     mut feedback: ResMut<Feedback>,
     mut selected: ResMut<SelectedMaterial>,
+    mut broken: MessageWriter<CellBroke>,
 ) {
     let world = replica.as_deref().map(Replica::world);
     let solid = |id: Option<MaterialId>| {
@@ -657,6 +668,7 @@ fn track_host(
                 }
                 if let Some((cell, material)) = broke {
                     feedback.broke = Some((cell, material, time.elapsed()));
+                    broken.write(CellBroke { cell, material });
                 }
             }
             ServerMsg::Rejected { .. }

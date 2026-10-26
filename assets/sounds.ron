@@ -1,0 +1,39 @@
+// Which sound plays when (rmc_client::sound). The files are in
+// assets/sounds/, made by scripts/gen-sounds.py. Volumes are linear, 0..1.
+(
+    swing: (file: "swing.ogg", volume: 0.45),
+    place: (file: "place.ogg", volume: 0.7),
+    step: (file: "step.ogg", volume: 0.3),
+    // Metres walked on the ground between footsteps.
+    step_m: 0.75,
+    season: (file: "season.ogg", volume: 0.6),
+    // The wind loop, and its volume with solid cells overhead.
+    wind: (file: "wind.ogg", volume: 0.3),
+    wind_covered: 0.04,
+    // How many cells above the eye are searched for a roof.
+    roof_cells: 24,
+    // What a swing at, and the break of, a cell sounds like. The first row
+    // that matches wins: a row matches a material of its phase (if set) or
+    // with any of its tags. Materials no row matches use `default`.
+    materials: [
+        (phase: Some(Liquid), tags: [],
+            hit: (file: "hit_liquid.ogg", volume: 0.6),
+            broken: (file: "hit_liquid.ogg", volume: 0.8)),
+        (tags: ["crystal"],
+            hit: (file: "hit_crystal.ogg", volume: 0.55),
+            broken: (file: "break_crystal.ogg", volume: 0.8)),
+        (tags: ["ore"],
+            hit: (file: "hit_ore.ogg", volume: 0.65),
+            broken: (file: "break_ore.ogg", volume: 0.85)),
+        (tags: ["plant"],
+            hit: (file: "hit_plant.ogg", volume: 0.6),
+            broken: (file: "break_plant.ogg", volume: 0.8)),
+        (tags: ["soil", "crust", "porous", "placeable"],
+            hit: (file: "hit_soil.ogg", volume: 0.6),
+            broken: (file: "break_soil.ogg", volume: 0.8)),
+    ],
+    default: (
+        hit: (file: "hit_stone.ogg", volume: 0.55),
+        broken: (file: "break_stone.ogg", volume: 0.85),
+    ),
+)

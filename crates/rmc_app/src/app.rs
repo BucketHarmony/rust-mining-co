@@ -23,7 +23,8 @@ use rmc_client::controller::Player;
 use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
     FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
-    NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin,
+    NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin, SoundConfig,
+    SoundPlugin, ViewModelPlugin,
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
 
@@ -124,9 +125,21 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             SessionPlugin,
             SpawnPlugin,
             EcoClockPlugin,
+            ViewModelPlugin,
         ));
     if windowed {
         app.add_plugins((EditorPanelPlugin, CursorPlugin));
+        // Sound is a nicety: without its config the game runs silent.
+        let dir = crate::session::assets_dir();
+        match SoundConfig::load(dir.join("sounds.ron")) {
+            Ok(config) => {
+                app.add_plugins(SoundPlugin {
+                    config,
+                    dir: dir.join("sounds"),
+                });
+            }
+            Err(e) => warn!("no sound: {e}"),
+        }
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))
         .insert_resource(client_eco(&assets.eco))
