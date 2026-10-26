@@ -3076,3 +3076,28 @@ Next:
   - If the SAD's "a channel neutralizes the water that passes through it" should hold more strongly, the levers are data: the dissolve threshold or amount in `reactions.ron`, or limestone's `weathering_rate`.
 - Ready next: F151, F152, F154, F155, F160. The E2 playtester run is still outstanding.
 Blockers: none.
+
+## 2026-10-21 23:20 — Owner: tile textures for chunk faces — passed
+Done:
+- `rmc_client::tiles`:
+  - `assets/tiles.ron` maps material keys to PNGs in `assets/tiles/` (`all`, or `top` / `side` / `bottom`).
+  - `TileSet` decodes the PNGs, resizes them to `size` (128), builds their mips and stacks them into one 2D array texture: sRGB, linear filtering, repeat addressing, 8× anisotropy.
+  - `TileLookup` is a uniform with each material id's layer per face and its linear color.
+  - `TilesPlugin` loads the set from `TileDir` at startup and on the new editor action Reload tiles (`F7`), then applies it to the shared chunk material.
+- Client only: the material table, its hash, saves and the host are untouched.
+- Mesher: every opaque vertex carries its material id in `ATTRIBUTE_UV_0`; liquid vertices carry 0.
+- `emissive.wesl`:
+  - A face whose material has a tile for its direction takes the texel times the vertex color's face shade × AO. That factor is recovered as the vertex color's largest channel over the material color's.
+  - Tile coordinates are world position in cells, so greedy-merged faces repeat the tile per cell. Side tiles keep their top edge up.
+  - Faces without a tile are unchanged. Jitter, emission and lighting apply as before.
+- `rmc_app` sets `TileDir` to `assets_dir()`. `rmc_testkit` has `TestConfig::tiles` (default false, so existing scenarios see flat colors as written).
+- Placeholder tiles for 11 materials from `scripts/placeholder-tiles.py` (seamless periodic noise on each material's color; never overwrites existing files). `scripts/tile-preview.py` writes 3 × 3 repeats for seam checks. `docs/TILES.md` is the tile and ComfyUI guide.
+Tests added:
+- `tiles::tests::*` (6): face fallbacks, build/resize/mips/shared layers, power-of-two size, lookup by key, shipped tiles load, no `tiles.ron` means no tiles.
+- `e2e:tiles_render`: the chunk material holds the tile array and the loaded set's lookup, every listed face points at its layer, F7 reloads. Screenshots `docs/screens/tiles_render-*.png`.
+- `boot_renders` and `glow_in_cave` still pass.
+Decisions:
+- Test change (in the same commit, since neither commit alone passes the gate): `meshpipe::tests::mesh_stats_count_meshed_chunks` and `liquid_mesh_uploads_on_its_own_entity` hard-coded 40 bytes per vertex. Vertices now carry a `[f32; 2]` UV, so a named `VERTEX_BYTES = 48` replaces the literal. What the tests check is unchanged.
+- The material id rides in UV_0 rather than a custom vertex attribute, so the StandardMaterial vertex shader passes it through without a custom vertex stage. Lookup in the shader, rather than in the mesher, keeps tile changes from re-meshing chunks.
+Next: real tile art (ComfyUI, `docs/TILES.md`). Later: normal/roughness maps, per-cell tile variants.
+Blockers: none.

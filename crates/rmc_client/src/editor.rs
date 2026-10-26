@@ -129,6 +129,9 @@ pub struct EditorState {
     /// Set by the Advance-season action; the editor takes it and sends the
     /// host one `AdvanceSeason` (SAD-P2 §10).
     pub season_requested: bool,
+    /// Set by the Reload-tiles action; [`crate::tiles`] takes it and reloads
+    /// `assets/tiles.ron` and its images.
+    pub tiles_reload_requested: bool,
 }
 
 impl Default for EditorState {
@@ -145,6 +148,7 @@ impl Default for EditorState {
             seed: 0,
             regenerate_requested: false,
             season_requested: false,
+            tiles_reload_requested: false,
         }
     }
 }
@@ -179,6 +183,7 @@ impl EditorState {
             EditorAction::Load => self.load_requested = true,
             EditorAction::Regenerate => self.regenerate_requested = true,
             EditorAction::AdvanceSeason => self.season_requested = true,
+            EditorAction::ReloadTiles => self.tiles_reload_requested = true,
         }
     }
 }
@@ -200,6 +205,7 @@ pub enum EditorAction {
     Load,
     Regenerate,
     AdvanceSeason,
+    ReloadTiles,
 }
 
 impl EditorAction {
@@ -224,6 +230,7 @@ impl EditorAction {
             EditorAction::Load => "Load the saved world",
             EditorAction::Regenerate => "Regenerate the world from the seed",
             EditorAction::AdvanceSeason => "Advance one season",
+            EditorAction::ReloadTiles => "Reload the tile textures",
         }
     }
 }
@@ -246,6 +253,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F4, EditorAction::ToggleMeshQueue),
     (KeyCode::F5, EditorAction::Save),
     (KeyCode::F6, EditorAction::AdvanceSeason),
+    (KeyCode::F7, EditorAction::ReloadTiles),
     (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
@@ -386,6 +394,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F4 => "F4",
         KeyCode::F5 => "F5",
         KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
         KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
         KeyCode::Digit1 => "1",

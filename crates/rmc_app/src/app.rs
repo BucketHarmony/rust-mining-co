@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::window::{ExitCondition, WindowPlugin};
 use rmc_client::controller::Player;
+use rmc_client::tiles::TileDir;
 use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
     FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
@@ -129,6 +130,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
         .insert_resource(client_eco(&assets.eco))
         .insert_resource(Pickaxe(assets.tools.pickaxe))
         .insert_resource(HostConnection::new(EndpointLink(endpoint)))
+        .insert_resource(TileDir(assets_dir()))
         .insert_resource(GameHost::new(handle, Arc::new(assets), save_dir));
     Ok(app)
 }

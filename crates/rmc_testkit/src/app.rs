@@ -59,6 +59,10 @@ pub struct TestConfig {
     pub world_bounds: CellAabb,
     pub render: bool,
     pub size: (u32, u32),
+    /// Draw chunk faces with the tile textures of `assets/tiles.ron`
+    /// (`rmc_client::tiles`). Off by default, so scenarios written before
+    /// tiles see the flat material colors they were written against.
+    pub tiles: bool,
 }
 
 impl Default for TestConfig {
@@ -68,6 +72,7 @@ impl Default for TestConfig {
             world_bounds: CellAabb::PHASE1_DEFAULT,
             render: true,
             size: (640, 360),
+            tiles: false,
         }
     }
 }
@@ -225,6 +230,9 @@ impl TestApp {
             .insert_resource(crate::eco::client_eco(&eco))
             .insert_resource(Pickaxe(tools.pickaxe))
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
+        if config.tiles {
+            app.insert_resource(rmc_client::tiles::TileDir(asset_path("")));
+        }
 
         // What App::run does before its first update; we never call run.
         while app.plugins_state() == PluginsState::Adding {

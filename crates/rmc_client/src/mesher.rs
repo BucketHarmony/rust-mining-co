@@ -325,6 +325,9 @@ pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub colors: Vec<[f32; 4]>,
+    /// Per vertex, `[material id, 0]`: the chunk shader looks up the
+    /// material's tile ([`crate::tiles`]). The liquid pass writes 0 (air).
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub quad_count: u32,
 }
@@ -429,7 +432,7 @@ impl ChunkMesher for GreedyMesher {
                             .get(usize::from(key.material.0))
                             .copied()
                             .unwrap_or_default();
-                        push_quad(&mut out, corners, n, base, key.ao, positive);
+                        push_quad(&mut out, corners, n, key.material, base, key.ao, positive);
                     });
                 }
             }
@@ -632,6 +635,7 @@ fn push_liquid_quad(
     for c in corners {
         out.positions.push((c * CELL_SIZE_M).to_array());
         out.normals.push(normal.as_vec3().to_array());
+        out.uvs.push([0.0; 2]);
         out.colors.push([
             color[0] * shade,
             color[1] * shade,
@@ -681,12 +685,14 @@ fn liquid_tint(input: &MeshInput, p: IVec3, base: [f32; 4]) -> [f32; 4] {
     color
 }
 
-/// Appends one quad. `corners` are in cells, in (u, v) order; `positive`
-/// says whether the normal points along +d, which fixes the winding.
+/// Appends one quad of `material`. `corners` are in cells, in (u, v) order;
+/// `positive` says whether the normal points along +d, which fixes the
+/// winding.
 fn push_quad(
     out: &mut MeshData,
     corners: [IVec3; 4],
     normal: IVec3,
+    material: MaterialId,
     base: [f32; 4],
     ao: [u8; 4],
     positive: bool,
@@ -696,6 +702,7 @@ fn push_quad(
     for (c, level) in corners.iter().zip(ao) {
         out.positions.push((c.as_vec3() * CELL_SIZE_M).to_array());
         out.normals.push(normal.as_vec3().to_array());
+        out.uvs.push([f32::from(material.0), 0.0]);
         let f = AO_FACTORS[usize::from(level)];
         out.colors.push([
             base[0] * shade * f,

@@ -18,6 +18,7 @@ pub mod pickaxe;
 pub mod render;
 pub mod replica;
 pub mod save;
+pub mod tiles;
 
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
