@@ -13,8 +13,10 @@ test kit. Keys are named by their position on a US layout.
 | `A` / `D` | Strafe left / right |
 | `Shift` | Sprint while held |
 | `Space` | Jump (held: jump again on landing) |
+| `Ctrl` | Crouch while held: fits 3-cell gaps, slower, no stepping off ledges; stands when there is headroom |
 | `Left mouse` | Swing the pickaxe at the targeted cell (hold to keep swinging) |
 | `Right mouse` | Place the selected material against the targeted face (hold to keep placing) |
+| `P` | Pause / resume the ecology clock (one season sub-step per second by default, `--eco-tick-ms`) |
 | `Mouse wheel` | Select the next (down) / previous (up) material in the inventory |
 | `E` / `Q` | Select the next / previous material in the inventory |
 

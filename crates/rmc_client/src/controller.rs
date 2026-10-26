@@ -36,6 +36,16 @@
 //! - W / S walk forward and back along the yaw, D / A strafe, opposite keys
 //!   cancel and diagonals are as fast as one axis. Shift sprints. Space
 //!   jumps when grounded (held, it jumps again on landing).
+//! - Ctrl crouches while held: the box is [`CROUCH_HEIGHT_M`] tall, so it
+//!   fits a three-cell gap, the eye eases down to [`CROUCH_EYE_HEIGHT_M`]
+//!   over [`CROUCH_SMOOTH_S`], the walk is
+//!   [`ControllerConfig::crouch_speed_mps`] with no sprint, and a grounded
+//!   crouching player does not walk off a ledge: a horizontal move that
+//!   would leave no ground under the box is refused on that axis, so it
+//!   slides along the edge. Released, the player stands only when the
+//!   standing box is free; under a low ceiling it stays crouched. The host
+//!   still keeps `Set` cells out of the standing box, so placing over a
+//!   crouching player's head is refused.
 //! - The mouse turns: yaw right for motion right, pitch clamped to
 //!   ±[`MAX_PITCH_DEG`]. With a [`CursorGrab`] (the windowed game), only
 //!   while the cursor is grabbed.
@@ -63,6 +73,13 @@ use crate::replica::Replica;
 pub use rmc_protocol::{PLAYER_HEIGHT_M, PLAYER_WIDTH_M};
 /// Eye height above the feet, in meters.
 pub const EYE_HEIGHT_M: f32 = 1.55;
+/// The crouching player's box height, in meters: under three cells.
+pub const CROUCH_HEIGHT_M: f32 = 1.4;
+/// The crouching player's eye height above the feet, in meters.
+pub const CROUCH_EYE_HEIGHT_M: f32 = 1.15;
+/// Seconds the eye takes to go down into or up out of a crouch.
+pub const CROUCH_SMOOTH_S: f32 = 0.12;
+const _: () = assert!(CROUCH_HEIGHT_M < 3.0 * CELL_SIZE_M);
 /// Gap left between the box and a blocking cell after a blocked move. Far
 /// larger than `f32` rounding at world coordinates, so a stopped box never
 /// rounds into the cell it stopped at.
@@ -84,6 +101,8 @@ pub struct ControllerConfig {
     pub walk_speed_mps: f32,
     /// Speed while Shift is held, m/s.
     pub sprint_speed_mps: f32,
+    /// Speed while crouching, m/s.
+    pub crouch_speed_mps: f32,
     /// Downward acceleration, m/s².
     pub gravity_mps2: f32,
     /// Fastest fall, m/s.
@@ -99,6 +118,7 @@ impl Default for ControllerConfig {
         Self {
             walk_speed_mps: 4.3,
             sprint_speed_mps: 6.5,
+            crouch_speed_mps: 1.9,
             gravity_mps2: 20.0,
             max_fall_mps: 40.0,
             jump_speed_mps: 7.0,
@@ -122,6 +142,11 @@ pub struct Player {
     pub grounded: bool,
     /// Visual eye offset in meters (zero or negative) left by a step-up.
     pub step_offset_m: f32,
+    /// Crouching: the box is [`CROUCH_HEIGHT_M`] tall.
+    pub crouching: bool,
+    /// Visual eye offset in meters (zero or negative) easing toward the
+    /// crouch eye height while crouching, and back to zero after.
+    pub crouch_offset_m: f32,
 }
 
 impl Player {
@@ -134,17 +159,29 @@ impl Player {
             pitch: 0.0,
             grounded: false,
             step_offset_m: 0.0,
+            crouching: false,
+            crouch_offset_m: 0.0,
+        }
+    }
+
+    /// The box's height: standing or crouching.
+    pub fn height(&self) -> f32 {
+        if self.crouching {
+            CROUCH_HEIGHT_M
+        } else {
+            PLAYER_HEIGHT_M
         }
     }
 
     /// The player's box.
     pub fn aabb(&self) -> Aabb {
-        Aabb::of_feet(self.feet)
+        Aabb::of_feet_height(self.feet, self.height())
     }
 
-    /// The eye position, lowered by any step-up still being smoothed.
+    /// The eye position, lowered by any step-up still being smoothed and by
+    /// the crouch.
     pub fn eye(&self) -> Vec3 {
-        self.feet + Vec3::Y * (EYE_HEIGHT_M + self.step_offset_m)
+        self.feet + Vec3::Y * (EYE_HEIGHT_M + self.step_offset_m + self.crouch_offset_m)
     }
 
     /// The view rotation: yaw about world Y, then pitch, no roll.
@@ -163,10 +200,15 @@ pub struct Aabb {
 impl Aabb {
     /// The player's box for feet at `feet`.
     pub fn of_feet(feet: Vec3) -> Self {
+        Self::of_feet_height(feet, PLAYER_HEIGHT_M)
+    }
+
+    /// The box of a player `height` meters tall with its feet at `feet`.
+    pub fn of_feet_height(feet: Vec3, height: f32) -> Self {
         let half = PLAYER_WIDTH_M / 2.0;
         Self {
             min: feet - Vec3::new(half, 0.0, half),
-            max: feet + Vec3::new(half, PLAYER_HEIGHT_M, half),
+            max: feet + Vec3::new(half, height, half),
         }
     }
 
@@ -188,6 +230,7 @@ pub struct MoveInput {
     pub right: f32,
     pub sprint: bool,
     pub jump: bool,
+    pub crouch: bool,
 }
 
 impl MoveInput {
@@ -201,6 +244,7 @@ impl MoveInput {
             right: axis(KeyCode::KeyD, KeyCode::KeyA),
             sprint: keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
             jump: keys.pressed(KeyCode::Space),
+            crouch: keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
         }
     }
 }
@@ -249,11 +293,14 @@ pub fn step(
     dt: f32,
 ) {
     push_out(world, player);
+    crouch(world, player, input.crouch, dt);
     let yaw = Quat::from_rotation_y(player.yaw);
     let wish = (yaw * Vec3::NEG_Z * input.forward + yaw * Vec3::X * input.right)
         .with_y(0.0)
         .clamp_length_max(1.0);
-    let speed = if input.sprint {
+    let speed = if player.crouching {
+        config.crouch_speed_mps
+    } else if input.sprint {
         config.sprint_speed_mps
     } else {
         config.walk_speed_mps
@@ -277,6 +324,15 @@ pub fn step(
         if d == 0.0 {
             continue;
         }
+        // A crouching player on the ground keeps to it.
+        if axis != 1 && player.crouching && was_grounded && player.grounded {
+            let mut moved = player.feet;
+            moved[axis] += d;
+            if !has_ground(world, Aabb::of_feet_height(moved, player.height())) {
+                player.velocity[axis] = 0.0;
+                continue;
+            }
+        }
         match sweep(world, player.aabb(), axis, d) {
             Some(stop) => {
                 let can_step = axis != 1 && was_grounded && player.grounded && !stepped;
@@ -293,6 +349,44 @@ pub fn step(
             None => player.feet[axis] += d,
         }
     }
+}
+
+/// Crouches while `want`; otherwise stands up when the standing box is
+/// free. Eases the eye toward the height it goes to.
+fn crouch(world: &World, player: &mut Player, want: bool, dt: f32) {
+    if want {
+        player.crouching = true;
+    } else if player.crouching && !overlaps_blocking(world, Aabb::of_feet(player.feet)) {
+        player.crouching = false;
+    }
+    let target = if player.crouching {
+        CROUCH_EYE_HEIGHT_M - EYE_HEIGHT_M
+    } else {
+        0.0
+    };
+    let rate = (EYE_HEIGHT_M - CROUCH_EYE_HEIGHT_M) / CROUCH_SMOOTH_S * dt;
+    let gap = target - player.crouch_offset_m;
+    player.crouch_offset_m += gap.clamp(-rate, rate);
+}
+
+/// Whether a blocking cell lies right under `aabb` (within twice
+/// [`SKIN_M`]).
+fn has_ground(world: &World, aabb: Aabb) -> bool {
+    sweep(world, aabb, 1, -2.0 * SKIN_M).is_some()
+}
+
+/// Whether `aabb` shares volume with a cell that [`blocks`].
+fn overlaps_blocking(world: &World, aabb: Aabb) -> bool {
+    let lo = (aabb.min / CELL_SIZE_M).floor().as_ivec3();
+    let hi = (aabb.max / CELL_SIZE_M).ceil().as_ivec3() - IVec3::ONE;
+    (lo.y..=hi.y).any(|y| {
+        (lo.z..=hi.z).any(|z| {
+            (lo.x..=hi.x).any(|x| {
+                let cell = CellPos::new(x, y, z);
+                blocks(world, cell) && aabb.overlaps_cell(cell)
+            })
+        })
+    })
 }
 
 /// Moves a player whose box overlaps a `Solid` cell to the nearest spot
@@ -340,13 +434,18 @@ fn step_up(world: &World, player: &mut Player, axis: usize, d: f32, stop: f32) -
         return false;
     }
     let mut lifted = player.feet + Vec3::Y * s;
-    let reach = sweep(world, Aabb::of_feet(lifted), axis, d);
+    let reach = sweep(
+        world,
+        Aabb::of_feet_height(lifted, player.height()),
+        axis,
+        d,
+    );
     let to = reach.unwrap_or(lifted[axis] + d);
     if (to - stop) * d.signum() <= 0.0 {
         return false;
     }
     lifted[axis] = to;
-    let landed = sweep(world, Aabb::of_feet(lifted), 1, -s);
+    let landed = sweep(world, Aabb::of_feet_height(lifted, player.height()), 1, -s);
     lifted.y = landed.unwrap_or(lifted.y - s);
     player.step_offset_m -= lifted.y - player.feet.y;
     player.feet = lifted;
@@ -657,6 +756,7 @@ mod tests {
         right: 0.0,
         sprint: false,
         jump: false,
+        crouch: false,
     };
 
     #[test]
@@ -878,6 +978,7 @@ mod tests {
         right: 0.0,
         sprint: false,
         jump: true,
+        crouch: false,
     };
 
     #[test]
@@ -1358,6 +1459,96 @@ mod tests {
         assert!(player.grounded && (player.feet.y - 2.0).abs() <= 2.0 * SKIN_M);
     }
 
+    const CROUCH: MoveInput = MoveInput {
+        crouch: true,
+        ..FORWARD
+    };
+
+    /// [`floor_world`] with a stone ceiling over cell rows z <= 24 (z < 12.5
+    /// m) whose underside is three cells (1.5 m) above the floor.
+    fn tunnel_world() -> World {
+        let mut world = floor_world();
+        let id = stone(&world);
+        fill(&mut world, (0, 7, 0), (63, 9, 24), id);
+        world
+    }
+
+    #[test]
+    fn crouching_fits_a_three_cell_tunnel_and_stands_only_with_headroom() {
+        let world = tunnel_world();
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 16.0));
+        // Standing, the ceiling stops the box at the mouth.
+        run(&world, &mut player, FORWARD, 120);
+        assert!(player.feet.z > 12.5, "standing went in: {:?}", player.feet);
+        assert!(!player.crouching);
+
+        // Crouched, it goes in, slower, with the eye lowered.
+        let start = player.feet.z;
+        run(&world, &mut player, CROUCH, 60);
+        let config = ControllerConfig::default();
+        let walked = start - player.feet.z;
+        assert!(
+            (walked - config.crouch_speed_mps).abs() < 0.05,
+            "crouched {walked} m in 1 s"
+        );
+        run(&world, &mut player, CROUCH, 60);
+        assert!(player.feet.z < 12.0, "crouched in: {:?}", player.feet);
+        assert!(player.crouching);
+        assert!((player.crouch_offset_m - (CROUCH_EYE_HEIGHT_M - EYE_HEIGHT_M)).abs() < 1e-5);
+        assert!((player.eye().y - (2.0 + CROUCH_EYE_HEIGHT_M)).abs() < 1e-3);
+
+        // Released under the ceiling, it stays crouched.
+        run(&world, &mut player, MoveInput::default(), 30);
+        assert!(player.crouching, "stood up under the ceiling");
+
+        // Out in the open it stands, and the eye comes back up.
+        let back = MoveInput {
+            forward: -1.0,
+            ..FORWARD
+        };
+        run(&world, &mut player, back, 240);
+        assert!(player.feet.z > 12.5 + PLAYER_WIDTH_M / 2.0);
+        assert!(!player.crouching);
+        assert_eq!(player.crouch_offset_m, 0.0);
+        assert!(player.grounded);
+    }
+
+    #[test]
+    fn crouching_does_not_walk_off_a_ledge() {
+        // Floor only over cell rows z >= 20: its edge is at z = 10 m.
+        let mut world = air_world(64);
+        let id = stone(&world);
+        fill(&mut world, (0, 0, 20), (63, 3, 63), id);
+        let mut player = Player::at(Vec3::new(16.0, 2.0, 12.0));
+        run(&world, &mut player, CROUCH, 240);
+        assert!(player.grounded);
+        assert!(
+            (player.feet.y - 2.0).abs() < 0.01,
+            "fell: {:?}",
+            player.feet
+        );
+        assert!(
+            player.feet.z > 10.0 - PLAYER_WIDTH_M / 2.0,
+            "{:?}",
+            player.feet
+        );
+        // Sliding along the edge still works.
+        let along = MoveInput {
+            forward: 1.0,
+            right: 1.0,
+            crouch: true,
+            ..MoveInput::default()
+        };
+        let x = player.feet.x;
+        run(&world, &mut player, along, 30);
+        assert!(player.feet.x > x + 0.5, "slid {:?}", player.feet);
+        assert!((player.feet.y - 2.0).abs() < 0.01);
+
+        // Standing, it walks off.
+        run(&world, &mut player, FORWARD, 60);
+        assert!(player.feet.y < 1.0, "did not fall: {:?}", player.feet);
+    }
+
     #[test]
     fn embedded_player_is_pushed_out() {
         let config = ControllerConfig::default();
@@ -1506,7 +1697,7 @@ mod tests {
                     // A kick in any direction, faster than walking.
                     player.velocity.y = 12.0;
                 }
-                let input = MoveInput { forward: forward as f32, right: right as f32, sprint, jump: launch };
+                let input = MoveInput { forward: forward as f32, right: right as f32, sprint, jump: launch, crouch: false };
                 for _ in 0..frames {
                     step(&world, &mut player, input, &config, DT);
                     prop_assert!(player.feet.is_finite());
