@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::window::{ExitCondition, WindowPlugin};
 use rmc_client::controller::Player;
+use rmc_client::surfaces::SurfacesPlugin;
 use rmc_client::tiles::TileDir;
 use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
@@ -129,7 +130,12 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             ViewModelPlugin,
         ));
     if windowed {
-        app.add_plugins((EditorPanelPlugin, CursorPlugin, WeatherPlugin));
+        app.add_plugins((
+            EditorPanelPlugin,
+            SurfacesPlugin,
+            CursorPlugin,
+            WeatherPlugin,
+        ));
         // Sound is a nicety: without its config the game runs silent.
         let dir = crate::session::assets_dir();
         match SoundConfig::load(dir.join("sounds.ron")) {

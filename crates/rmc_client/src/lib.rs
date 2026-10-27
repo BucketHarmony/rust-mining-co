@@ -19,6 +19,7 @@ pub mod render;
 pub mod replica;
 pub mod save;
 pub mod sound;
+pub mod surfaces;
 pub mod tiles;
 pub mod ui;
 pub mod viewmodel;

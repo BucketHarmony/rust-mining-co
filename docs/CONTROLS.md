@@ -112,6 +112,7 @@ settings.
 | `F6` | Advance one season |
 | `F7` | Next layer overlay (after the last: none) |
 | `F10` | Reload the tile textures |
+| `F11` | Open / close the Surfaces window (noise tiles) |
 | `F8` | Regenerate the world from the seed |
 | `F9` | Load the saved world |
 
@@ -129,6 +130,8 @@ settings.
 - The panel's Season section shows the last season's report: chunks
   changed, rain and vented water, the net change of each substance and gas,
   plants born and died, transitions, and what the edits before it moved.
+- F10 reloads both `assets/tiles.ron` and `assets/surfaces.ron` from disk. F11's
+  Surfaces window edits the noise tiles live; see `docs/TILES.md`.
 - The panel's Cell section reads the cell under the crosshair, including a
   plant's species, growth (255 is mature), age, stress and held substances.
 

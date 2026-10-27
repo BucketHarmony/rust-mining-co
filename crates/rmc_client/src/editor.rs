@@ -222,6 +222,9 @@ pub struct EditorState {
     /// Set by the Reload-tiles action; [`crate::tiles`] takes it and reloads
     /// `assets/tiles.ron` and its images.
     pub tiles_reload_requested: bool,
+    /// Set by the Surfaces action; [`crate::surfaces`] takes it and opens or
+    /// closes its window.
+    pub surfaces_toggle_requested: bool,
 }
 
 impl Default for EditorState {
@@ -240,6 +243,7 @@ impl Default for EditorState {
             season_requested: false,
             overlay: None,
             tiles_reload_requested: false,
+            surfaces_toggle_requested: false,
         }
     }
 }
@@ -276,6 +280,7 @@ impl EditorState {
             EditorAction::AdvanceSeason => self.season_requested = true,
             EditorAction::NextOverlay => self.overlay = next_overlay(self.overlay),
             EditorAction::ReloadTiles => self.tiles_reload_requested = true,
+            EditorAction::ToggleSurfaces => self.surfaces_toggle_requested = true,
         }
     }
 }
@@ -299,6 +304,7 @@ pub enum EditorAction {
     AdvanceSeason,
     NextOverlay,
     ReloadTiles,
+    ToggleSurfaces,
 }
 
 impl EditorAction {
@@ -325,6 +331,7 @@ impl EditorAction {
             EditorAction::AdvanceSeason => "Advance one season",
             EditorAction::NextOverlay => "Next layer overlay (after the last: none)",
             EditorAction::ReloadTiles => "Reload the tile textures",
+            EditorAction::ToggleSurfaces => "Open / close the Surfaces window (noise tiles)",
         }
     }
 }
@@ -349,6 +356,7 @@ pub const EDITOR_BINDINGS: &[(KeyCode, EditorAction)] = &[
     (KeyCode::F6, EditorAction::AdvanceSeason),
     (KeyCode::F7, EditorAction::NextOverlay),
     (KeyCode::F10, EditorAction::ReloadTiles),
+    (KeyCode::F11, EditorAction::ToggleSurfaces),
     (KeyCode::F8, EditorAction::Regenerate),
     (KeyCode::F9, EditorAction::Load),
 ];
@@ -498,6 +506,7 @@ pub fn key_label(key: KeyCode) -> &'static str {
         KeyCode::F8 => "F8",
         KeyCode::F9 => "F9",
         KeyCode::F10 => "F10",
+        KeyCode::F11 => "F11",
         KeyCode::Digit1 => "1",
         KeyCode::Digit2 => "2",
         KeyCode::Digit3 => "3",

@@ -3866,3 +3866,33 @@ Decisions:
 - Drop density, size and color are look constants in `weather.rs`; the playtester judges them (rule 21).
 Next: depth cue for water (darken submerged faces by depth) if the flat look still bothers; a darker sky while it rains; send the current season on connect.
 Blockers: none.
+
+## 2026-10-26 — Owner: noise block surfaces and the Surfaces window — passed
+Done:
+- `rmc_client::surfaces`: procedural tiles from `assets/surfaces.ron`.
+  - A `NoiseRecipe` holds `colors`, `cells`, `octaves`, `persistence`, `contrast`, `speckle`, `stretch`, `steps`, `seed`, and an optional `fringe` (its own colors along the top edge down to a ragged line).
+  - Faces are `all` or `top`/`side`/`bottom`, with the same fallbacks as `tiles.ron`.
+  - `generate` makes fractal value noise on a lattice that wraps at the tile edges, so tiles are seamless, then maps the value along the colors (blended, or in hard bands).
+- `tiles`: `TileSet::build_with` uses a generated layer (`noise:<key>:<field>`) for each face that has a recipe while `enabled`; other faces keep their PNGs. `TileSources` holds what the set was built from. `install` gives a set to the chunk material. `replace_layer` patches one layer in place. A rebuild copies decoded PNG layers from the previous set instead of decoding them again.
+- The Surfaces window (egui). F11 is a new editor binding, `EditorAction::ToggleSurfaces`, and works while the editor is open:
+  - "Use noise surfaces" toggle; material picker (opaque materials, a dot marks those with a recipe); add, split by face, or remove a recipe.
+  - Color buttons (`+` adds, right-click removes).
+  - Sliders: blob count, octaves, roughness, contrast, speckle, stretch. Seed and Reroll; hard bands; fringe depth, raggedness and colors.
+  - Save, Revert, Export PNGs (to `assets/tiles/noise/`).
+  - Every change regenerates the edited material's layers and swaps the array the same frame. Structural changes rebuild the set.
+- `assets/surfaces.ron`: a starting recipe for all 23 tiled materials. Examples: grass over dirt with a grass fringe on topsoil sides; ore flecks in hard bands on grey host rock; banded limestone; brushed brass. **Shipped enabled**, so the game now shows the noise tiles. Untick "Use noise surfaces" (or set `enabled: false`) for the ComfyUI art.
+- `rmc_app` adds `SurfacesPlugin` to the windowed game. Docs: `docs/TILES.md` "Noise surfaces"; `docs/CONTROLS.md` adds F11.
+Tests added:
+- `surfaces::tests` (13): the F11 action opens the window on the loaded recipes, once per press; noise is seamless (stretch 1, 3, ½); deterministic per seed; hard bands use only the palette; the fringe colors the top rows with a ragged edge; face fallbacks and `enabled`; RON round-trip with bare optionals; the shipped file covers known materials on every face; the tile set uses noise layers only while enabled; edit regenerates in place, then save, disable and revert; export writes one PNG per recipe; the window draws only while open and changes nothing by itself; the window's materials are the opaque ones.
+- `e2e:surfaces_render`:
+  - asserts every listed material's faces point at its noise layers;
+  - asserts a live edit regenerates the layer bytes and rebinds the array;
+  - asserts turning the noise off leaves only image layers.
+  - Shots: `docs/screens/surfaces_render-{across,down,edited,images,sheet}-*.png`. The sheet shows every recipe repeated 2 × 2.
+Decisions:
+- Recipes are client-only, like `tiles.ron`: no table hash or save change.
+- Noise is value noise with smoothstep, not Perlin or simplex. It is simple and easily made periodic, and the look comes from the palette.
+- Shipped enabled because the owner asked to try it; one checkbox restores the art.
+- Rule 21: no pixel thresholds; the playtester judges the look.
+Next: owner tunes the palettes in the game and saves; per-cell variants (two seeds picked by cell hash) would hide repetition on large faces.
+Blockers: none.

@@ -58,6 +58,34 @@ The files shipped now are placeholders from `scripts/placeholder-tiles.py`. That
 | `copper_dust`, `iron_dust`, `salt_dust` | all | heaped powder: green-blue copper, grey-black iron, white salt |
 | `ochre_crust`, `salt_crust` | all | orange-yellow iron-oxide crust; white crystalline salt crust |
 
+## Noise surfaces
+
+`assets/surfaces.ron` (`rmc_client::surfaces`) makes tiles from a recipe instead of an image. While its `enabled` is true, every face with a recipe uses the generated tile; faces without one keep their image from `tiles.ron`. With `enabled: false`, every face uses its image again.
+
+A recipe runs seamless value noise through a list of colors:
+
+| Field | What it does | Window control |
+|---|---|---|
+| `colors` | sRGB colors, low to high. The noise value picks along them. | color buttons; `+` adds, right-click removes |
+| `cells` | Lattice cells across the tile at the first octave. More cells give smaller blobs. | Blob count (1–32) |
+| `octaves` | Layers of detail; each doubles the lattice. | Octaves (1–6) |
+| `persistence` | Strength of each octave over the one before. Higher is rougher. | Roughness (0–1) |
+| `contrast` | Spreads the value about its middle. Below 1 is flatter. | Contrast (0–3) |
+| `speckle` | Share of per-texel white noise (grit). | Speckle (0–1) |
+| `stretch` | Cells down over cells across. Above 1 gives horizontal bands (limestone, brushed brass); below 1 gives streaks. | Stretch (1/8–8) |
+| `steps` | Hard color bands instead of blends (ore flecks, granite grains). | Hard color bands |
+| `seed` | Which noise. | Seed, Reroll |
+| `fringe` | `depth`, `ragged`, `colors`: its own colors along the top edge down to a ragged line. On a side tile that is grass over dirt. | Fringe along the top edge |
+
+Faces use the same fallbacks as `tiles.ron`. The noise wraps at the tile edges, so tiles repeat without seams. Sheet of every shipped recipe, each repeated 2 × 2: `docs/screens/surfaces_render-sheet-0.png`.
+
+**In the game:** open the editor (F1), then press F11 for the Surfaces window.
+- Pick a material. A dot marks the ones with a recipe. "Add a noise recipe" starts one from the material's color.
+- "Separate top, side and bottom" splits the recipe by face.
+- Every change regenerates that material's tiles at once.
+- **Save** writes `assets/surfaces.ron`. **Revert** reads it again. **Export PNGs** writes each recipe's tile to `assets/tiles/noise/<key>_<face>.png`, so a tile you like can become an image tile in `tiles.ron`.
+- Unsaved edits last until the game closes. F10 reloads both files from disk.
+
 ## Later
 
 - Normal and roughness maps per tile (ComfyUI can estimate normals from an image) would let light catch the surface relief. The shader would need two more texture arrays and tangent frames per face. The layout of `tiles.ron` leaves room for that.

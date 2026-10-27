@@ -15,6 +15,9 @@
 //! color. A listed file that is missing or does not decode is skipped with a
 //! warning, so art can be added one tile at a time.
 //!
+//! With `surfaces.ron` enabled ([`crate::surfaces`]), a face that has a noise
+//! recipe gets a generated layer (`noise:<key>:<field>`) instead of its file.
+//!
 //! [`TilesPlugin`] loads the set from the [`TileDir`] resource at startup and
 //! again when the editor's Reload-tiles action ([`EditorState::tiles_reload_requested`],
 //! F10) asks, and hands it to the shared [`EmissiveChunkMaterial`]. Without a
@@ -38,6 +41,7 @@ use tracing::{info, warn};
 use crate::editor::EditorState;
 use crate::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial};
 use crate::net::ClientMaterials;
+use crate::surfaces::{self, SurfaceConfig};
 
 /// The tile table, in the tile directory's parent (`assets/`).
 pub const TILES_FILE: &str = "tiles.ron";
@@ -56,6 +60,9 @@ pub const TILE_ANISOTROPY: u16 = 8;
 const TOP: usize = 0;
 const SIDE: usize = 1;
 const BOTTOM: usize = 2;
+
+/// Tile size when there is a `surfaces.ron` but no `tiles.ron`.
+pub const DEFAULT_TILE_SIZE: u32 = 128;
 
 /// `assets/tiles.ron`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -114,6 +121,8 @@ pub enum TileError {
     },
     #[error("tile size {0} is not a power of two")]
     Size(u32),
+    #[error("{0}")]
+    Surfaces(String),
 }
 
 /// Every tile decoded, resized and mipmapped, ready to stack.
@@ -130,24 +139,36 @@ pub struct TileSet {
 }
 
 impl TileSet {
-    /// Loads `dir/tiles.ron` and the files it lists from `dir/tiles/`.
-    /// `Ok(None)` when there is no `tiles.ron`.
+    /// Loads `dir/tiles.ron` and the files it lists from `dir/tiles/`, with
+    /// the noise recipes of `dir/surfaces.ron`. `Ok(None)` when there is
+    /// neither file.
     pub fn load(dir: &Path) -> Result<Option<Self>, TileError> {
-        let path = dir.join(TILES_FILE);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => return Err(TileError::Read { path, source }),
-        };
-        let config = TileConfig::parse(&text).map_err(|e| TileError::Parse {
-            path,
-            source: Box::new(e),
-        })?;
-        Self::build(&config, &dir.join(TILES_SUBDIR)).map(Some)
+        TileSources::load(dir)?
+            .map(|sources| {
+                Self::build_with(
+                    &sources.config,
+                    &dir.join(TILES_SUBDIR),
+                    &sources.surfaces,
+                    None,
+                )
+            })
+            .transpose()
     }
 
     /// The set `config` describes, with its files read from `tile_dir`.
     pub fn build(config: &TileConfig, tile_dir: &Path) -> Result<Self, TileError> {
+        Self::build_with(config, tile_dir, &SurfaceConfig::default(), None)
+    }
+
+    /// The set `config` describes, with the faces `surfaces` has a recipe for
+    /// generated. File layers already in `previous` are copied from it
+    /// instead of decoded again.
+    pub fn build_with(
+        config: &TileConfig,
+        tile_dir: &Path,
+        surfaces: &SurfaceConfig,
+        previous: Option<&TileSet>,
+    ) -> Result<Self, TileError> {
         let size = config.size;
         if !size.is_power_of_two() {
             return Err(TileError::Size(size));
@@ -159,14 +180,38 @@ impl TileSet {
             data: Vec::new(),
             faces: BTreeMap::new(),
         };
+        let previous = previous.filter(|p| p.size == size);
+        let mut keys: Vec<&String> = config.materials.keys().collect();
+        if surfaces.enabled {
+            keys.extend(surfaces.materials.keys());
+        }
+        keys.sort();
+        keys.dedup();
         let mut layer_of: BTreeMap<String, Option<u32>> = BTreeMap::new();
-        for (key, files) in &config.materials {
-            let faces = files.resolved().map(|file| {
-                let file = file?;
-                *layer_of
-                    .entry(file.to_owned())
-                    .or_insert_with(|| set.push_layer(&tile_dir.join(file), file))
-            });
+        for key in keys {
+            let files = config
+                .materials
+                .get(key)
+                .map_or([None; 3], FaceFiles::resolved);
+            let recipes = surfaces.faces(key);
+            let mut faces = [None; 3];
+            for f in [TOP, SIDE, BOTTOM] {
+                faces[f] = match (recipes[f], files[f]) {
+                    (Some((field, recipe)), _) => {
+                        let name = surfaces::layer_name(key, field);
+                        *layer_of.entry(name.clone()).or_insert_with(|| {
+                            Some(set.push_image(&surfaces::generate(recipe, size), &name))
+                        })
+                    }
+                    (None, Some(file)) => *layer_of.entry(file.to_owned()).or_insert_with(|| {
+                        match previous.and_then(|p| p.layer(file)) {
+                            Some(bytes) => Some(set.push_bytes(bytes, file)),
+                            None => set.push_layer(&tile_dir.join(file), file),
+                        }
+                    }),
+                    (None, None) => None,
+                };
+            }
             set.faces.insert(key.clone(), faces);
         }
         Ok(set)
@@ -174,21 +219,59 @@ impl TileSet {
 
     /// Decodes `path` and appends it as a layer, or warns and returns `None`.
     fn push_layer(&mut self, path: &Path, name: &str) -> Option<u32> {
-        let img = match image::open(path) {
-            Ok(img) => img.to_rgba8(),
+        match image::open(path) {
+            Ok(img) => Some(self.push_image(&img.to_rgba8(), name)),
             Err(e) => {
                 warn!("tile {}: {e}", path.display());
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    /// Appends `img`, resized to the tile size with its mips, as a layer.
+    pub fn push_image(&mut self, img: &image::RgbaImage, name: &str) -> u32 {
+        let bytes = self.mips(img);
+        self.push_bytes(&bytes, name)
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8], name: &str) -> u32 {
+        self.data.extend_from_slice(bytes);
+        self.layers.push(name.to_owned());
+        self.layers.len() as u32 - 1
+    }
+
+    /// `img` resized to the tile size, then each mip down to 1 texel.
+    fn mips(&self, img: &image::RgbaImage) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.layer_bytes());
         let mut level = self.size;
         while level > 0 {
-            let mip = image::imageops::resize(&img, level, level, FilterType::Lanczos3);
-            self.data.extend_from_slice(mip.as_raw());
+            let mip = if img.width() == level && img.height() == level {
+                img.clone()
+            } else {
+                image::imageops::resize(img, level, level, FilterType::Lanczos3)
+            };
+            bytes.extend_from_slice(mip.as_raw());
             level /= 2;
         }
-        self.layers.push(name.to_owned());
-        Some(self.layers.len() as u32 - 1)
+        bytes
+    }
+
+    /// The bytes (with mips) of the layer named `name`.
+    pub fn layer(&self, name: &str) -> Option<&[u8]> {
+        let i = self.layers.iter().position(|l| l == name)?;
+        let n = self.layer_bytes();
+        self.data.get(i * n..(i + 1) * n)
+    }
+
+    /// Replaces the layer named `name` with `img`; false when there is none.
+    pub fn replace_layer(&mut self, name: &str, img: &image::RgbaImage) -> bool {
+        let Some(i) = self.layers.iter().position(|l| l == name) else {
+            return false;
+        };
+        let n = self.layer_bytes();
+        let bytes = self.mips(img);
+        self.data[i * n..(i + 1) * n].copy_from_slice(&bytes);
+        true
     }
 
     /// The 2D array texture of every layer, with its mips.
@@ -230,7 +313,7 @@ impl TileSet {
     }
 
     /// Bytes of one layer with all its mips.
-    fn layer_bytes(&self) -> usize {
+    pub fn layer_bytes(&self) -> usize {
         (0..self.mip_levels)
             .map(|m| ((self.size >> m) as usize).pow(2) * 4)
             .sum()
@@ -282,6 +365,41 @@ pub struct TileDir(pub PathBuf);
 #[derive(Resource, Clone, Debug)]
 pub struct LoadedTiles(pub TileSet);
 
+/// What the loaded set was built from: `tiles.ron` and `surfaces.ron` (empty
+/// when absent). The Surfaces window edits `surfaces`.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct TileSources {
+    pub config: TileConfig,
+    pub surfaces: SurfaceConfig,
+}
+
+impl TileSources {
+    /// Reads `dir/tiles.ron` and `dir/surfaces.ron`; `Ok(None)` when there
+    /// is neither.
+    pub fn load(dir: &Path) -> Result<Option<Self>, TileError> {
+        let path = dir.join(TILES_FILE);
+        let config = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(TileConfig::parse(&text).map_err(|e| TileError::Parse {
+                path,
+                source: Box::new(e),
+            })?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => return Err(TileError::Read { path, source }),
+        };
+        let surfaces = SurfaceConfig::load(dir).map_err(TileError::Surfaces)?;
+        if config.is_none() && surfaces.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            config: config.unwrap_or(TileConfig {
+                size: DEFAULT_TILE_SIZE,
+                materials: BTreeMap::new(),
+            }),
+            surfaces: surfaces.unwrap_or_default(),
+        }))
+    }
+}
+
 /// Loads tiles from [`TileDir`] at startup and on the editor's Reload-tiles
 /// action, and applies them to the chunk material.
 pub struct TilesPlugin;
@@ -311,14 +429,30 @@ fn reload_tiles(world: &mut World) {
 
 /// Loads the set in `dir` and gives it to the shared chunk material.
 fn apply(world: &mut World, dir: &Path) {
-    let set = match TileSet::load(dir) {
-        Ok(Some(set)) => set,
+    let sources = match TileSources::load(dir) {
+        Ok(Some(sources)) => sources,
         Ok(None) => return,
         Err(e) => {
             warn!("tiles not loaded: {e}");
             return;
         }
     };
+    match TileSet::build_with(
+        &sources.config,
+        &dir.join(TILES_SUBDIR),
+        &sources.surfaces,
+        None,
+    ) {
+        Ok(set) => {
+            world.insert_resource(sources);
+            install(world, set);
+        }
+        Err(e) => warn!("tiles not loaded: {e}"),
+    }
+}
+
+/// Gives `set` to the shared chunk material and keeps it as [`LoadedTiles`].
+pub fn install(world: &mut World, set: TileSet) {
     info!(
         "tiles: {} layers at {}px for {} materials",
         set.layers.len(),
