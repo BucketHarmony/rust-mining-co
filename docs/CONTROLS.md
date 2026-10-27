@@ -23,6 +23,12 @@ test kit. Keys are named by their position on a US layout.
 
 The player climbs a one-cell rise by walking into it; two cells need a jump.
 
+The chip in the bottom-left corner shows the season, the year, the air
+temperature and the sky: dry, frost, or light, steady or heavy rain (snow
+below 0 °C). While the season's rain lands, rain falls around you, but not
+under a roof or in a cave. While the seasons are paused (`P`), nothing falls
+and the chip says so.
+
 Placing spends one of the selected material per cell, and only works on an
 open cell (air or water) within the pickaxe's reach (3 m). Nothing is
 selected until you turn the wheel or press `E` / `Q`; the selected line of the

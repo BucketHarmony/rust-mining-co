@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bevy::prelude::*;
-use rmc_client::Toast;
+use rmc_client::{SeasonClockPaused, Toast};
 use rmc_host::Host;
 
 use crate::session::GameHost;
@@ -69,7 +69,7 @@ pub struct EcoClockPlugin;
 impl Plugin for EcoClockPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EcoClock>()
-            .add_systems(Update, (toggle_pause, tick).chain());
+            .add_systems(Update, (toggle_pause, tick, show_paused).chain());
     }
 }
 
@@ -108,6 +108,17 @@ fn tick(time: Res<Time<Real>>, mut clock: ResMut<EcoClock>, host: Option<Res<Gam
         clock.sent += 1;
     } else {
         clock.busy.store(false, Ordering::Release);
+    }
+}
+
+/// Tells the weather (`rmc_client::weather`) when no season runs: the
+/// clock is paused or off, so no rain falls.
+fn show_paused(clock: Res<EcoClock>, shown: Option<ResMut<SeasonClockPaused>>) {
+    let paused = clock.paused || clock.interval.is_none();
+    if let Some(mut shown) = shown
+        && shown.0 != paused
+    {
+        shown.0 = paused;
     }
 }
 

@@ -3850,3 +3850,19 @@ Decisions:
 - Screenshots were copied from the passing `scripts/e2e.sh ui_menu_renders` run by hand, which is what `screens.sh` does, so the 3.5-minute scenario did not run twice.
 Next: migrate `hud.rs` onto anchors and tokens; persist `UiSettings`; gamepad navigation; remappable controls; colorblind-safe status icons.
 Blockers: none.
+
+## 2026-10-26 — Owner: season and weather HUD, rain, water sides check — passed
+Done:
+- `rmc_client::weather` (`WeatherPlugin`):
+  - `ClientSeasons` (the `seasons.ron` rows) and `Weather`. The current season is the running one, else the one after the last, else 0. Its rain is a share of the wettest row's, counting only rain that lands (rain ≤ 1 lands nothing). Below 0 °C it is snow.
+  - A UI-kit HUD chip in `HudSlot(BottomLeft)`: "Autumn · Year 2", "8.0 C · Heavy rain", and "Seasons paused (P)" while paused.
+  - Rain: up to 1500 thin unlit streaks (snowflakes below 0 °C), in a ring 1.5–8 m around the camera, falling at 11 m/s (snow 1.4). Each ends at the top of its cell column in the replica, so it does not rain under roofs or in caves. Nothing falls while the clock is paused or off. Visual only; the host's season pass is what lands.
+- `rmc_app`: `WeatherPlugin` in the windowed game, `client_seasons` from the eco tables, and `EcoClock` writes `SeasonClockPaused`. `rmc_testkit`: `TestConfig::weather` (default off, so other scenarios' shots have no rain).
+- Water "only a top": checked with a new scenario. A block of water standing on the ground draws all its sides (`docs/screens/water_sides_show-*.png`). Water in the game sits flush in hollows, so its sides face soil and are rightly not drawn. Only the top shows, and nothing marks its depth. No mesher change.
+Tests added: `weather::tests::{weather_follows_the_season_and_its_rain, rain_falls_around_the_camera_only_while_it_rains, hud_chip_shows_the_season_in_the_bottom_left}`; `e2e:weather_shows` (asserts `Weather`, the chip's slot and lines, the drop count in autumn and in winter; shots `docs/screens/weather_shows-*.png`); `e2e:water_sides_show` (liquid quads, shots).
+Decisions:
+- The chip is bottom-left: the old HUD holds both top corners until it moves onto the kit.
+- After loading a save mid-season, the chip shows season 0 until the host's next `SeasonStarted` (at most one season of sub-steps). The host does not send the current season on connect.
+- Drop density, size and color are look constants in `weather.rs`; the playtester judges them (rule 21).
+Next: depth cue for water (darken submerged faces by depth) if the flat look still bothers; a darker sky while it rains; send the current season on connect.
+Blockers: none.

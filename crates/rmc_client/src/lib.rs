@@ -22,6 +22,7 @@ pub mod sound;
 pub mod tiles;
 pub mod ui;
 pub mod viewmodel;
+pub mod weather;
 
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
@@ -90,3 +91,6 @@ pub use ui::{
     UiSystems, UiTheme,
 };
 pub use viewmodel::{ViewModel, ViewModelPlugin, ViewModelSystems};
+pub use weather::{
+    ClientSeasons, SeasonClockPaused, SeasonView, Sky, Weather, WeatherPlugin, WeatherSystems,
+};

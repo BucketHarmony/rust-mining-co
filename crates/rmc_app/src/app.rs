@@ -25,7 +25,7 @@ use rmc_client::{
     CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
     FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
     NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin, SoundConfig,
-    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin,
+    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin, WeatherPlugin,
 };
 use rmc_host::{ChannelTransport, spawn_host_thread};
 
@@ -38,8 +38,8 @@ use tracing::info;
 
 use crate::cli::{Cli, DEFAULT_WORLD_SIZE, WorldSize};
 use crate::session::{
-    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, client_eco, has_save,
-    start_world,
+    EndpointLink, GameAssets, GameHost, HOST_HZ, SessionPlugin, assets_dir, client_eco,
+    client_seasons, has_save, start_world,
 };
 
 /// The window's title.
@@ -129,7 +129,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             ViewModelPlugin,
         ));
     if windowed {
-        app.add_plugins((EditorPanelPlugin, CursorPlugin));
+        app.add_plugins((EditorPanelPlugin, CursorPlugin, WeatherPlugin));
         // Sound is a nicety: without its config the game runs silent.
         let dir = crate::session::assets_dir();
         match SoundConfig::load(dir.join("sounds.ron")) {
@@ -155,6 +155,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))
         .insert_resource(client_eco(&assets.eco))
+        .insert_resource(client_seasons(&assets.eco))
         .insert_resource(Pickaxe(assets.tools.pickaxe))
         .insert_resource(HostConnection::new(EndpointLink(endpoint)))
         .insert_resource(TileDir(assets_dir()))

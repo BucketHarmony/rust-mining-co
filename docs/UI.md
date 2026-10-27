@@ -126,6 +126,16 @@ a `panel`-like surface if it sits over the world.
 where the kit may be absent), `Toast::info("…")`, or set `tone` to `Ok`,
 `Warning` or `Danger`.
 
+## Season and weather chip
+
+`rmc_client::weather` is the first HUD element built on the kit. It is a
+`HudSlot(BottomLeft)` chip with a `label` line (season and year), a `body`
+line (air temperature and sky) and a `caption` line in `warning` that shows
+only while the seasons are paused. It sits on the `surface` token, so the
+contrast rule holds over the world. It is bottom-left because the old HUD
+still holds both top corners. The same module draws the rain (see
+`docs/CONTROLS.md`). Shots: `docs/screens/weather_shows-*.png`.
+
 ## Migration plan for the existing HUD
 
 `hud.rs` predates the kit. It uses absolute pixel offsets, Bevy's default

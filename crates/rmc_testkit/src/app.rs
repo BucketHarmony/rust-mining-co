@@ -69,6 +69,10 @@ pub struct TestConfig {
     /// Add the UI kit (`rmc_client::ui`: menus, toasts) with the shipped
     /// `assets/ui.ron` and fonts, as the windowed game does. Off by default.
     pub ui: bool,
+    /// Add the season and weather HUD chip and the rain
+    /// (`rmc_client::weather`), as the windowed game does. Off by default,
+    /// so other scenarios' shots have no rain in them.
+    pub weather: bool,
 }
 
 impl Default for TestConfig {
@@ -80,6 +84,7 @@ impl Default for TestConfig {
             size: (640, 360),
             tiles: false,
             ui: false,
+            weather: false,
         }
     }
 }
@@ -253,6 +258,10 @@ impl TestApp {
             .insert_resource(HostConnection::new(EndpointLink(endpoint)));
         if config.tiles {
             app.insert_resource(rmc_client::tiles::TileDir(asset_path("")));
+        }
+        if config.weather {
+            app.insert_resource(crate::eco::client_seasons(&eco))
+                .add_plugins(rmc_client::WeatherPlugin);
         }
         if config.ui {
             let theme =

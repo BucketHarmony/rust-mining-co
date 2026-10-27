@@ -26,7 +26,7 @@ use bevy::prelude::{
     App, AppExit, IntoScheduleConfigs, Last, MessageReader, Plugin, Res, ResMut, Resource,
     SystemSet, Update,
 };
-use rmc_client::{ClientEco, EditorState, EditorSystems, HostLink};
+use rmc_client::{ClientEco, ClientSeasons, EditorState, EditorSystems, HostLink, SeasonView};
 use rmc_eco::{EcoTables, ToxKind};
 use rmc_host::{ClientEndpoint, Host, HostConfig, HostHandle, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
@@ -416,6 +416,22 @@ pub fn client_eco(eco: &EcoTables) -> ClientEco {
         gas_tint: eco.gas_tints(),
         flammable: eco.flammable_gases(),
         plants: eco.plants().iter().map(|p| p.key.clone()).collect(),
+    }
+}
+
+/// The season rows the client's weather reads (`rmc_client::weather`).
+pub fn client_seasons(eco: &EcoTables) -> ClientSeasons {
+    ClientSeasons {
+        rows: eco
+            .seasons()
+            .seasons
+            .iter()
+            .map(|s| SeasonView {
+                key: s.key.clone(),
+                air_temp: s.air_temp,
+                rain: s.rain,
+            })
+            .collect(),
     }
 }
 

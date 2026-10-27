@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use rmc_client::{ClientEco, CommandSeq, FromHost, ToHost};
+use rmc_client::{ClientEco, ClientSeasons, CommandSeq, FromHost, SeasonView, ToHost};
 use rmc_protocol::{ClientMsg, SeasonReport, ServerMsg};
 use rmc_world::coords::{CellAabb, CellPos, ChunkPos};
 use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, MAX_EDIT_CELLS};
@@ -661,6 +661,23 @@ pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
         gas_tint: eco.gas_tints(),
         flammable: eco.flammable_gases(),
         plants: eco.plants().iter().map(|p| p.key.clone()).collect(),
+    }
+}
+
+/// The season rows as the client reads them (`rmc_client::weather`), as
+/// the game inserts them.
+pub(crate) fn client_seasons(eco: &EcoTables) -> ClientSeasons {
+    ClientSeasons {
+        rows: eco
+            .seasons()
+            .seasons
+            .iter()
+            .map(|s| SeasonView {
+                key: s.key.clone(),
+                air_temp: s.air_temp,
+                rain: s.rain,
+            })
+            .collect(),
     }
 }
 
