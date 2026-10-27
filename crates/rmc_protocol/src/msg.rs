@@ -6,6 +6,7 @@ use glam::Vec3;
 use rmc_world::chunk::{Chunk, ChunkStorage};
 use rmc_world::coords::{CellAabb, ChunkPos};
 use rmc_world::edit::{EditCommand, EditResult, PlayerId};
+use rmc_world::items::{Bag, SlotRef};
 use rmc_world::layers::{ChunkLayers, PlantState};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
@@ -44,6 +45,14 @@ pub enum ClientMsg {
     SaveRequest,
     /// Editor "Season" button: run one season tick (SAD-P2 §9).
     AdvanceSeason,
+    /// Move `count` (`None`: all) of the stack in one bag slot to another
+    /// (`docs/ITEMS.md`). Hosts without an item table ignore it, so the
+    /// version stays 2.
+    MoveItem {
+        from: SlotRef,
+        to: SlotRef,
+        count: Option<u32>,
+    },
 }
 
 /// What a season tick did (SAD-P2 §9): its ledger, the ledger of the edits
@@ -134,6 +143,9 @@ pub enum ServerMsg {
     /// clock and the hour's weather. Hosts without a calendar never send
     /// it, so the version stays 2.
     Clock(GameClock),
+    /// The player's bag, after it changed or a `MoveItem` (`docs/ITEMS.md`).
+    /// Hosts without an item table never send it, so the version stays 2.
+    Bag(Box<Bag>),
 }
 
 impl ServerMsg {

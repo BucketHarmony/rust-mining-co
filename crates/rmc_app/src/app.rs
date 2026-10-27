@@ -122,6 +122,11 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
     let mut host = start.into_host(Box::new(transport));
     let calendar_on = calendar.is_some();
     host.set_calendar(calendar);
+    // The player's bag (docs/ITEMS.md). Headless apps and the tests keep
+    // the host they had: no bag, no Bag messages.
+    if windowed {
+        host.set_items(assets.items.clone());
+    }
     let handle = spawn_host_thread(host, HOST_HZ);
     info!(hz = HOST_HZ, windowed, calendar_on, "host thread started");
 

@@ -89,6 +89,7 @@ use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::coords::{CELL_SIZE_M, CellPos, ChunkPos, LocalPos};
 use rmc_world::edit::{ChunkDelta, EditOp};
 use rmc_world::inventory::Inventory;
+use rmc_world::items::Bag;
 use rmc_world::layers::{LayerId, N_GASES};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::query::SubstanceTint;
@@ -438,6 +439,11 @@ pub fn step_selection(
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClientInventory(pub Inventory);
 
+/// The player's bag as of the host's last `Bag` message (`docs/ITEMS.md`);
+/// `None` before one, after a `Welcome`, and with a host that has no items.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClientBag(pub Option<Bag>);
+
 /// Damage this client has sent per cell, not yet undone by a change to the
 /// cell. Entries are above zero and at most the cell's hardness.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -574,6 +580,7 @@ impl Plugin for HudPlugin {
             .add_message::<CellBroke>()
             .init_resource::<HudState>()
             .init_resource::<ClientInventory>()
+            .init_resource::<ClientBag>()
             .init_resource::<DamageEstimate>()
             .init_resource::<PickTarget>()
             .init_resource::<Feedback>()
@@ -627,8 +634,8 @@ impl Plugin for HudPlugin {
     }
 }
 
-/// Follows the host: inventory totals, cells whose estimate is void, and
-/// cells the player sees break.
+/// Follows the host: inventory totals, the bag, cells whose estimate is
+/// void, and cells the player sees break.
 #[allow(clippy::too_many_arguments)]
 fn track_host(
     mut inbox: MessageReader<FromHost>,
@@ -636,6 +643,7 @@ fn track_host(
     target: Res<PickTarget>,
     time: Res<Time>,
     mut inventory: ResMut<ClientInventory>,
+    mut bag: ResMut<ClientBag>,
     mut estimate: ResMut<DamageEstimate>,
     mut feedback: ResMut<Feedback>,
     mut selected: ResMut<SelectedMaterial>,
@@ -651,11 +659,13 @@ fn track_host(
         match msg {
             ServerMsg::Welcome { .. } => {
                 inventory.0 = Inventory::new();
+                bag.0 = None;
                 estimate.0.clear();
                 feedback.broke = None;
                 selected.set_if_neq(SelectedMaterial(None));
             }
             ServerMsg::Inventory { items } => inventory.0 = Inventory::from_items(items),
+            ServerMsg::Bag(new) => bag.0 = Some((**new).clone()),
             ServerMsg::ChunkSnapshot { pos, .. } => estimate.clear_chunk(*pos),
             ServerMsg::Applied(result) => {
                 // The targeted cell's break wins over the other cells'.
@@ -2106,6 +2116,43 @@ mod tests {
             .single(world)
             .unwrap();
         assert_eq!(font.font_size, FontSize::Px(HUD_FONT_SIZE));
+    }
+
+    #[test]
+    fn client_bag_follows_the_host() {
+        let items = rmc_world::ItemTable::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/items.ron"
+        ))
+        .expect("assets/items.ron loads");
+        let mut rig = Rig::new(world("stone", "stone"));
+        let bag = |rig: &Rig| rig.app.world().resource::<ClientBag>().0.clone();
+        assert_eq!(bag(&rig), None, "no bag before the host sends one");
+
+        let kit = Bag::starter(&items);
+        rig.deliver([ServerMsg::Bag(Box::new(kit.clone()))]);
+        assert_eq!(bag(&rig), Some(kit.clone()));
+
+        let mut moved = kit.clone();
+        moved
+            .move_stack(
+                &items,
+                rmc_world::items::SlotRef::Hotbar(0),
+                rmc_world::items::SlotRef::Pack(0),
+                None,
+            )
+            .unwrap();
+        rig.deliver([ServerMsg::Bag(Box::new(moved.clone()))]);
+        assert_eq!(bag(&rig), Some(moved));
+
+        // A new Welcome (a loaded world) forgets it until the host resends.
+        rig.deliver([ServerMsg::Welcome {
+            player: rmc_world::edit::PlayerId(1),
+            seed: 0,
+            bounds: rig.replica_world().bounds(),
+            gen_params_hash: 0,
+        }]);
+        assert_eq!(bag(&rig), None);
     }
 
     #[test]

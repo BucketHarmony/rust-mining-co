@@ -54,7 +54,7 @@ pub use gizmo::{
     EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
 };
 pub use hud::{
-    BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, CellBroke,
+    BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, CellBroke, ClientBag,
     ClientInventory, CrackOverlay, DamageEstimate, DamageProgress, GasTintOverlay,
     HUD_GIZMO_DEPTH_BIAS, HudChip, HudGas, HudGizmos, HudItem, HudPlugin, HudRoot, HudState,
     HudSystems, LANTERN_DANGER_COLOR, LANTERN_FLARING_COLOR, LANTERN_ICON_SIZE,

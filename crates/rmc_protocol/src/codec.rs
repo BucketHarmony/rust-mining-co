@@ -67,7 +67,8 @@ pub fn decode_server(bytes: &[u8]) -> Result<ServerMsg, CodecError> {
         | ServerMsg::Saved { .. }
         | ServerMsg::SeasonStarted { .. }
         | ServerMsg::SeasonDone { .. }
-        | ServerMsg::Clock(_) => true,
+        | ServerMsg::Clock(_)
+        | ServerMsg::Bag(_) => true,
     };
     if well_formed {
         Ok(msg)
@@ -99,6 +100,7 @@ mod tests {
     use rmc_world::edit::{
         CommandId, EditCommand, EditOp, EditResult, EditStatus, PlayerId, RejectReason,
     };
+    use rmc_world::items::{Bag, EquipSlot, ItemId, ItemTable, SlotRef, Thing};
     use rmc_world::materials::MaterialId;
     use rmc_world::shape::Shape;
 
@@ -140,9 +142,10 @@ mod tests {
             ClientMsg::RequestChunk(_) => 3,
             ClientMsg::SaveRequest => 4,
             ClientMsg::AdvanceSeason => 5,
+            ClientMsg::MoveItem { .. } => 6,
         }
     }
-    const CLIENT_VARIANTS: usize = 6;
+    const CLIENT_VARIANTS: usize = 7;
 
     fn server_variant(msg: &ServerMsg) -> usize {
         match msg {
@@ -157,9 +160,10 @@ mod tests {
             ServerMsg::SeasonStarted { .. } => 8,
             ServerMsg::SeasonDone { .. } => 9,
             ServerMsg::Clock(_) => 10,
+            ServerMsg::Bag(_) => 11,
         }
     }
-    const SERVER_VARIANTS: usize = 11;
+    const SERVER_VARIANTS: usize = 12;
 
     fn ops() -> Vec<EditOp> {
         vec![
@@ -253,7 +257,51 @@ mod tests {
         for &c in &EXTREME_CELLS {
             msgs.push(ClientMsg::RequestChunk(ChunkPos(c.0)));
         }
+        let slots = [
+            SlotRef::Hotbar(0),
+            SlotRef::Hotbar(u8::MAX),
+            SlotRef::Pack(0),
+            SlotRef::Pack(u16::MAX),
+            SlotRef::Equip(EquipSlot::Head),
+            SlotRef::Equip(EquipSlot::Hands),
+        ];
+        for (i, &from) in slots.iter().enumerate() {
+            msgs.push(ClientMsg::MoveItem {
+                from,
+                to: slots[(i + 1) % slots.len()],
+                count: [None, Some(0), Some(1), Some(u32::MAX)][i % 4],
+            });
+        }
         msgs
+    }
+
+    /// Bags: empty, a starting kit, and full with materials of every size.
+    fn sample_bags() -> Vec<Bag> {
+        let table = ItemTable::from_ron_str(
+            r#"(
+                bag: (hotbar: 9, pack: 4),
+                material_stack: 4000000000,
+                items: [
+                    (key: "pick", name: "Pick", tags: ["tool"], stack: 1, tool: Some("pickaxe")),
+                    (key: "cap", name: "Cap", tags: ["clothing"], stack: 1, slot: Some(Head)),
+                    (key: "boots", name: "Boots", tags: ["clothing"], stack: 1, slot: Some(Feet)),
+                ],
+                start: [("pick", 1), ("cap", 2), ("boots", 1)],
+            )"#,
+        )
+        .unwrap();
+        let mut full = Bag::starter(&table);
+        for (i, count) in [1, 999, 4_000_000_000, 7].into_iter().enumerate() {
+            full.insert(&table, Thing::Material(MaterialId(i as u16 * 300)), count);
+        }
+        full.insert(&table, Thing::Material(MaterialId(u16::MAX)), 4_000_000_000);
+        full.insert(&table, Thing::Item(ItemId(u16::MAX)), 3);
+        vec![
+            Bag::default(),
+            Bag::new(table.bag()),
+            Bag::starter(&table),
+            full,
+        ]
     }
 
     /// A paletted chunk with `materials` cycling through every cell.
@@ -448,6 +496,11 @@ mod tests {
             ledger: Box::default(),
         }));
         msgs.extend(phase2_server_samples());
+        msgs.extend(
+            sample_bags()
+                .into_iter()
+                .map(|b| ServerMsg::Bag(Box::new(b))),
+        );
         msgs
     }
 

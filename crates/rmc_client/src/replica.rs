@@ -274,7 +274,8 @@ impl Replica {
             | ServerMsg::Saved { .. }
             | ServerMsg::SeasonStarted { .. }
             | ServerMsg::SeasonDone { .. }
-            | ServerMsg::Clock(_) => {}
+            | ServerMsg::Clock(_)
+            | ServerMsg::Bag(_) => {}
         }
         Ok(())
     }

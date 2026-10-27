@@ -36,6 +36,15 @@
 //! [`Host::replace_world`] swaps in another world (a loaded save) and sends
 //! every joined player `Welcome`, the snapshots and its inventory again.
 //!
+//! A host given the item table ([`Host::set_items`], `docs/ITEMS.md`) also
+//! keeps a [`Bag`] per player. A joining player gets the starting kit and a
+//! `Bag` message after its snapshots. Yields go into the bag (what does not
+//! fit is lost), a `Place` spends from it, and after either the player gets
+//! `Inventory` (the bag's material totals) and then `Bag`. A `MoveItem`
+//! moves a stack within the bag and is answered with `Bag`, moved or not.
+//! Without the item table there are no bags, `MoveItem` is ignored, and
+//! the host sends exactly what it sent before.
+//!
 //! A host given the Phase 2 tables ([`Host::with_eco`]) runs a season tick
 //! on `AdvanceSeason` and keeps the ledger of the edits between seasons
 //! (see [`crate::season`]).
@@ -50,6 +59,7 @@ use rmc_world::edit::{
     ChunkDelta, EditCommand, EditOp, EditResult, EditStatus, PlayerId, RejectReason,
 };
 use rmc_world::inventory::Inventory;
+use rmc_world::items::{Bag, ItemTable, SlotRef, Thing};
 use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World;
 use tracing::{debug, info, warn};
@@ -104,6 +114,10 @@ pub struct Host {
     player_cells: BTreeMap<PlayerId, CellAabb>,
     /// The season state; `None` without the Phase 2 tables.
     pub(crate) eco: Option<Seasons>,
+    /// The item table; `None`: no bags.
+    items: Option<ItemTable>,
+    /// Each joined player's bag, with the item table.
+    bags: BTreeMap<PlayerId, Bag>,
 }
 
 impl Host {
@@ -117,7 +131,20 @@ impl Host {
             save: None,
             player_cells: BTreeMap::new(),
             eco: None,
+            items: None,
+            bags: BTreeMap::new(),
         }
+    }
+
+    /// Gives the host the item table, so players that join from now on get
+    /// a bag (see the module docs).
+    pub fn set_items(&mut self, items: ItemTable) {
+        self.items = Some(items);
+    }
+
+    /// `player`'s bag, if it joined after [`Host::set_items`].
+    pub fn bag(&self, player: PlayerId) -> Option<&Bag> {
+        self.bags.get(&player)
     }
 
     /// Lets `SaveRequest` write the world as `save` describes.
@@ -190,6 +217,7 @@ impl Host {
                 .unwrap_or_default();
             self.transport
                 .send(Recipient::One(player), ServerMsg::Inventory { items });
+            self.send_bag(player);
         }
         info!(
             seed = config.seed,
@@ -234,6 +262,28 @@ impl Host {
                 debug!(player = player.0, "AdvanceSeason");
                 self.advance_season();
             }
+            ClientMsg::MoveItem { from, to, count } => self.move_item(player, from, to, count),
+        }
+    }
+
+    /// Moves a stack in `player`'s bag and sends it the bag, moved or not.
+    fn move_item(&mut self, player: PlayerId, from: SlotRef, to: SlotRef, count: Option<u32>) {
+        let (Some(items), Some(bag)) = (&self.items, self.bags.get_mut(&player)) else {
+            debug!(player = player.0, "MoveItem without a bag ignored");
+            return;
+        };
+        match bag.move_stack(items, from, to, count) {
+            Ok(moved) => debug!(player = player.0, ?from, ?to, moved, "item moved"),
+            Err(e) => debug!(player = player.0, ?from, ?to, %e, "item move refused"),
+        }
+        self.send_bag(player);
+    }
+
+    /// Sends `player` its bag, if it has one.
+    fn send_bag(&mut self, player: PlayerId) {
+        if let Some(bag) = self.bags.get(&player) {
+            let msg = ServerMsg::Bag(Box::new(bag.clone()));
+            self.transport.send(Recipient::One(player), msg);
         }
     }
 
@@ -267,6 +317,13 @@ impl Host {
         self.send_world(player);
         self.joined.insert(player);
         self.inventories.entry(player).or_default();
+        if let Some(items) = &self.items {
+            let bag = Bag::starter(items);
+            self.inventories
+                .insert(player, Inventory::from_items(&bag.materials()));
+            self.bags.insert(player, bag);
+            self.send_bag(player);
+        }
         info!(
             player = player.0,
             chunks = self.world.chunk_count(),
@@ -324,7 +381,25 @@ impl Host {
         for &p in &self.joined {
             self.transport.send(Recipient::One(p), msg.clone());
         }
-        if !yields.is_empty() || spent.is_some() {
+        if (!yields.is_empty() || spent.is_some())
+            && let (Some(items), Some(bag)) = (&self.items, self.bags.get_mut(&player))
+        {
+            if let Some(id) = spent {
+                bag.remove(Thing::Material(id), 1);
+            }
+            for &(id, count) in &yields {
+                let lost = bag.insert(items, Thing::Material(id), count);
+                if lost > 0 {
+                    debug!(player = player.0, ?id, lost, "bag full: yield lost");
+                }
+            }
+            let items = bag.materials();
+            self.inventories
+                .insert(player, Inventory::from_items(&items));
+            self.transport
+                .send(Recipient::One(player), ServerMsg::Inventory { items });
+            self.send_bag(player);
+        } else if !yields.is_empty() || spent.is_some() {
             let inventory = self.inventories.entry(player).or_default();
             if let Some(id) = spent {
                 inventory.remove(id, 1);
@@ -2142,5 +2217,175 @@ mod tests {
         refused(&a.drain(), stone);
         assert_eq!(host.world().get_cell(above), Some(MaterialId::AIR));
         assert_eq!(replica_a.hash(), host.world().hash());
+    }
+
+    /// Two hotbar slots and one pack slot; materials stack to 2. The kit
+    /// is a pick (hotbar) and a cap (worn).
+    fn small_items() -> ItemTable {
+        ItemTable::from_ron_str(
+            r#"(
+                bag: (hotbar: 2, pack: 1),
+                material_stack: 2,
+                items: [
+                    (key: "pick", name: "Pick", tags: ["tool"], stack: 1, tool: Some("pickaxe")),
+                    (key: "cap", name: "Cap", tags: ["clothing"], stack: 1, slot: Some(Head)),
+                ],
+                start: [("pick", 1), ("cap", 1)],
+            )"#,
+        )
+        .unwrap()
+    }
+
+    fn bag_of(msg: &ServerMsg) -> &Bag {
+        match msg {
+            ServerMsg::Bag(bag) => bag,
+            other => panic!("expected Bag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bags_hold_yields_spend_places_and_move_items() {
+        use rmc_world::items::{EquipSlot, Stack};
+
+        let (mut host, eps) = host_with(test_world(), 1);
+        host.set_items(small_items());
+        let a = &eps[0];
+        let me = a.player();
+        let stone = mat(host.world(), "stone");
+        let stones = |count| {
+            Some(Stack {
+                thing: Thing::Material(stone),
+                count,
+            })
+        };
+        let cell = |x, y, z| Shape::Cell(CellPos::new(x, y, z));
+
+        // A join ends with the starting kit.
+        a.send(hello(host.world())).unwrap();
+        host.tick();
+        let msgs = a.drain();
+        let (last, join) = msgs.split_last().unwrap();
+        assert_join(&host, me, join);
+        let kit = Bag::starter(&small_items());
+        assert_eq!(bag_of(last), &kit);
+        assert_eq!(host.bag(me), Some(&kit));
+        assert!(kit.worn(EquipSlot::Head).is_some());
+        assert!(kit.get(SlotRef::Hotbar(0)).is_some());
+
+        // Three stone cells: each yield is Applied, Inventory, Bag. Stone
+        // stacks to 2, so the third goes to the pack.
+        for x in 10..13 {
+            assert_eq!(host.world().get_cell(CellPos::new(x, 3, 10)), Some(stone));
+            a.send(edit(1, x as u32, EditOp::Damage(u16::MAX), cell(x, 3, 10)))
+                .unwrap();
+        }
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 9, "{to_a:?}");
+        assert_eq!(
+            to_a[7],
+            ServerMsg::Inventory {
+                items: vec![(stone, 3)]
+            }
+        );
+        let bag = bag_of(&to_a[8]);
+        assert_eq!(bag.get(SlotRef::Hotbar(1)), stones(2));
+        assert_eq!(bag.get(SlotRef::Pack(0)), stones(1));
+        assert_eq!(host.bag(me), Some(bag));
+
+        // The fourth tops up the pack's stack; then the bag is full, and a
+        // fifth is lost: the totals say 4.
+        for x in 13..15 {
+            assert_eq!(host.world().get_cell(CellPos::new(x, 3, 10)), Some(stone));
+            a.send(edit(1, x as u32, EditOp::Damage(u16::MAX), cell(x, 3, 10)))
+                .unwrap();
+        }
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 6, "{to_a:?}");
+        assert_eq!(bag_of(&to_a[2]).get(SlotRef::Pack(0)), stones(2));
+        assert_eq!(bag_of(&to_a[5]), bag_of(&to_a[2]));
+        assert_eq!(host.inventory(me).unwrap().count(stone), 4);
+
+        // A Place spends from the hotbar first.
+        let open = CellPos::new(-30, 40, 40);
+        a.send(edit(1, 21, EditOp::Place(stone), Shape::Cell(open)))
+            .unwrap();
+        host.tick();
+        assert_eq!(host.world().get_cell(open), Some(stone));
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 3, "{to_a:?}");
+        assert_eq!(
+            to_a[1],
+            ServerMsg::Inventory {
+                items: vec![(stone, 3)]
+            }
+        );
+        assert_eq!(bag_of(&to_a[2]).get(SlotRef::Hotbar(1)), stones(1));
+
+        // MoveItem tops up the hotbar's stone from the pack's, and only the
+        // bag comes back.
+        a.send(ClientMsg::MoveItem {
+            from: SlotRef::Pack(0),
+            to: SlotRef::Hotbar(1),
+            count: None,
+        })
+        .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 1, "{to_a:?}");
+        let bag = bag_of(&to_a[0]);
+        assert_eq!(bag.get(SlotRef::Hotbar(1)), stones(2));
+        assert_eq!(bag.get(SlotRef::Pack(0)), stones(1));
+        let before = bag.clone();
+
+        // A refused move (stone on the head) changes nothing, and the bag
+        // still comes back so a client can undo its guess.
+        a.send(ClientMsg::MoveItem {
+            from: SlotRef::Hotbar(1),
+            to: SlotRef::Equip(EquipSlot::Head),
+            count: None,
+        })
+        .unwrap();
+        host.tick();
+        assert_eq!(a.drain(), vec![ServerMsg::Bag(Box::new(before.clone()))]);
+        assert_eq!(host.bag(me), Some(&before));
+        assert_eq!(host.inventory(me).unwrap().count(stone), 3);
+    }
+
+    #[test]
+    fn hosts_without_items_send_no_bags() {
+        let (mut host, eps) = host_with(test_world(), 1);
+        let a = &eps[0];
+        let stone = mat(host.world(), "stone");
+        a.send(hello(host.world())).unwrap();
+        host.tick();
+        assert_join(&host, a.player(), &a.drain());
+        assert!(host.bag(a.player()).is_none());
+
+        a.send(ClientMsg::MoveItem {
+            from: SlotRef::Hotbar(0),
+            to: SlotRef::Pack(0),
+            count: None,
+        })
+        .unwrap();
+        a.send(edit(
+            1,
+            0,
+            EditOp::Damage(u16::MAX),
+            Shape::Cell(CellPos::new(10, 3, 10)),
+        ))
+        .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        assert_eq!(to_a.len(), 2, "{to_a:?}");
+        assert!(matches!(to_a[0], ServerMsg::Applied(_)));
+        assert_eq!(
+            to_a[1],
+            ServerMsg::Inventory {
+                items: vec![(stone, 1)]
+            }
+        );
+        assert!(host.bag(a.player()).is_none());
     }
 }

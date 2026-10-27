@@ -3994,3 +3994,34 @@ Decisions:
 - The sound is judged by ear (rule 21 in spirit). The tests check the routing and the speed range only.
 Next: a tool menu (hotbar) with several tools, and an inventory with drag and drop between the character's slots (tools, equipment, armour, clothes) and the pack. These are larger features that need a plan first.
 Blockers: none.
+
+## 2026-10-27 — Owner: items, tools and character screen plan; I1 items and the bag — passed
+Done:
+- Owner said "make it so" to the tool menu and inventory plan. `docs/ITEMS.md` gives it as steps I1–I4:
+  - I1: items and the bag;
+  - I2: hotbar and several tools;
+  - I3: character screen with drag and drop;
+  - I4: what gear does.
+  Feature ids come when the owner merges a backlog file (`features-p*.json` is protected).
+- I1 built:
+  - `assets/items.ron` and `rmc_world::items`:
+    - `ItemTable` (rows with key, name, tags, stack, tool, slot; bag size; material stack; starting kit);
+    - `Thing` (material or item), `Stack`, `SlotRef`;
+    - `Bag`: hotbar 9, pack 27, and five equipment slots (head, body, legs, feet, hands). It supports insert, remove and `move_stack` (merge, swap, refuse), plus `Bag::starter`, which puts the kit's clothes on.
+  - Protocol: `ClientMsg::MoveItem { from, to, count }` and `ServerMsg::Bag`. Both are additive, so `PROTOCOL_VERSION` stays 2.
+  - Host (`Host::set_items`):
+    - a joining player gets the starting kit and a `Bag` message;
+    - yields go into the bag, and a `Place` spends from it; after either the player gets `Inventory` (the bag's totals) and then `Bag`;
+    - a `MoveItem` is answered with `Bag`, whether it moved or not.
+  - Client: `ClientBag` follows `Bag` and is cleared by `Welcome`.
+  - The windowed game loads `items.ron` and gives it to the host. Headless runs and tests keep a host without items.
+Tests added: `items::tests::{shipped_items_load, bad_items_are_refused, insert_merges_then_fills_hotbar_then_pack, remove_takes_hotbar_first, moves_merge_swap_and_refuse, equipment_slots_take_only_their_items, starter_kit_wears_its_clothes}`, `host::tests::{bags_hold_yields_spend_places_and_move_items, hosts_without_items_send_no_bags}`, `hud::tests::client_bag_follows_the_host`, and codec samples for `MoveItem` and `Bag`.
+Decisions:
+- test-fix (`d1160e9`): `roundtrip_phase2_variants` spelled AdvanceSeason's tag as `CLIENT_VARIANTS - 1`, which holds only while it is the last client message. It now uses the test's own tag table, and the check is otherwise unchanged.
+- Hosts without the item table send exactly what they sent before, so every existing host test and e2e stream is unchanged.
+- Yields that do not fit a full bag are lost; the totals in `Inventory` show it. `Place` spends from the hotbar, then the pack.
+- An equipment slot holds one item, and only an item whose row names that slot. Code branches on tags and slots, never on item keys.
+- Bags are not saved, matching inventories (SAD §10). `items.ron` is not in the material hash, the same as `tools.ron`.
+- The starting kit is a pickaxe, five pieces of work clothes (worn) and a hard hat (in the hotbar), so I3's drag and drop has something to move.
+Next: I2, the hotbar and several tools (`docs/ITEMS.md`).
+Blockers: none.

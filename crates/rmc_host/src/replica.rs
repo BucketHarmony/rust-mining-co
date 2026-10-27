@@ -138,7 +138,7 @@ impl Replica {
     ///   stale ones, at or below the chunk's revision) are reported together
     ///   after the others have been applied; a refused delta changes nothing.
     /// - `Inventory` replaces the replica's inventory.
-    /// - `PlayerStates` and `Saved` do not touch the replica.
+    /// - `PlayerStates`, `Saved`, `Clock` and `Bag` do not touch the replica.
     pub fn handle(&mut self, msg: ServerMsg) -> Result<(), ReplicaError> {
         match msg {
             ServerMsg::Welcome { player, bounds, .. } => {
@@ -243,7 +243,8 @@ impl Replica {
             | ServerMsg::Saved { .. }
             | ServerMsg::SeasonStarted { .. }
             | ServerMsg::SeasonDone { .. }
-            | ServerMsg::Clock(_) => {}
+            | ServerMsg::Clock(_)
+            | ServerMsg::Bag(_) => {}
         }
         Ok(())
     }

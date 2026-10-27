@@ -32,6 +32,7 @@ use rmc_host::{ClientEndpoint, Host, HostConfig, HostHandle, SaveConfig};
 use rmc_protocol::{ClientMsg, ServerMsg};
 use rmc_world::ToolTable;
 use rmc_world::coords::CellAabb;
+use rmc_world::items::ItemTable;
 use rmc_world::materials::MaterialTable;
 use rmc_world::save::{self, HEADER_FILE, SaveHeader};
 use rmc_world::world::World as CellWorld;
@@ -53,6 +54,8 @@ pub const HOST_HZ: u32 = 60;
 pub struct GameAssets {
     pub materials: Arc<MaterialTable>,
     pub tools: ToolTable,
+    /// Items, the bag and the starting kit (`items.ron`, `docs/ITEMS.md`).
+    pub items: ItemTable,
     pub worldgen: GenParams,
     /// The Phase 2 tables, built on `materials`: the host's seasons and the
     /// generated temperature layer.
@@ -62,13 +65,15 @@ pub struct GameAssets {
 }
 
 impl GameAssets {
-    /// Loads `materials.ron`, `tools.ron`, `worldgen.ron` and the Phase 2
-    /// tables from `dir`.
+    /// Loads `materials.ron`, `tools.ron`, `items.ron`, `worldgen.ron` and
+    /// the Phase 2 tables from `dir`.
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         let materials = MaterialTable::load(dir.join("materials.ron"))
             .with_context(|| format!("loading {}", dir.join("materials.ron").display()))?;
         let tools = ToolTable::load(dir.join("tools.ron"))
             .with_context(|| format!("loading {}", dir.join("tools.ron").display()))?;
+        let items = ItemTable::load(dir.join("items.ron"))
+            .with_context(|| format!("loading {}", dir.join("items.ron").display()))?;
         let worldgen = GenParams::load(dir.join("worldgen.ron"))
             .with_context(|| format!("loading {}", dir.join("worldgen.ron").display()))?;
         let materials = Arc::new(materials);
@@ -77,6 +82,7 @@ impl GameAssets {
         Ok(Self {
             materials,
             tools,
+            items,
             worldgen,
             tables_hash: eco.hash(),
             eco: Arc::new(eco),

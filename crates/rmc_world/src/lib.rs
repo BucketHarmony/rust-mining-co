@@ -10,6 +10,7 @@ pub mod displace;
 pub mod edit;
 pub mod fasthash;
 pub mod inventory;
+pub mod items;
 pub mod layers;
 pub mod ledger;
 pub mod materials;
@@ -22,6 +23,7 @@ pub mod world;
 
 pub use displace::EcoRules;
 pub use inventory::Inventory;
+pub use items::{Bag, ItemTable};
 pub use ledger::SeasonLedger;
 pub use raycast::{Hit, raycast, raycast_solid};
 pub use tools::{ToolProfile, ToolShape, ToolTable};
