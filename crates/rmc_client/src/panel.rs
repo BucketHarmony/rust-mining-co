@@ -36,6 +36,8 @@ use crate::flycam::FlyCam;
 use crate::meshpipe::MeshStats;
 use crate::net::{ClientMaterials, FromHost};
 use crate::replica::Replica;
+use crate::ui::egui_theme;
+use crate::ui::{FontDir, UiTheme};
 
 /// The panel's heading, also its egui id.
 pub const PANEL_TITLE: &str = "Editor";
@@ -339,7 +341,39 @@ impl Plugin for EditorPanelPlugin {
         if let Some(mut settings) = app.world_mut().get_resource_mut::<EguiGlobalSettings>() {
             settings.enable_absorb_bevy_input_system = true;
         }
-        app.add_systems(EguiPrimaryContextPass, draw_panel.run_if(editor_open));
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (theme_egui, draw_panel.run_if(editor_open)).chain(),
+        );
+    }
+}
+
+/// Gives the primary egui context the UI kit's look ([`egui_theme`]) once
+/// the kit's theme is there, and keeps its zoom at the kit's [`UiScale`],
+/// so the editor and the Surfaces window match the rest of the UI.
+fn theme_egui(
+    theme: Option<Res<UiTheme>>,
+    dir: Option<Res<FontDir>>,
+    scale: Option<Res<UiScale>>,
+    mut contexts: Query<&mut EguiContext, With<PrimaryEguiContext>>,
+    mut themed: Local<bool>,
+) {
+    let Some(theme) = theme else {
+        return;
+    };
+    let Ok(mut context) = contexts.single_mut() else {
+        return;
+    };
+    let ctx = context.get_mut();
+    if !*themed || theme.is_changed() {
+        let dir = dir.as_ref().and_then(|d| d.0.as_deref());
+        egui_theme::apply(ctx, &theme, dir);
+        *themed = true;
+    }
+    if let Some(scale) = scale
+        && (ctx.zoom_factor() - scale.0).abs() > f32::EPSILON
+    {
+        ctx.set_zoom_factor(scale.0);
     }
 }
 

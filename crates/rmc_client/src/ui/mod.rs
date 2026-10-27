@@ -14,6 +14,7 @@
 //! - Menus are a screen stack that pauses play ([`screens`]); notices are
 //!   toasts ([`toast`]).
 
+pub mod egui_theme;
 pub mod layers;
 pub mod scale;
 pub mod screens;
@@ -47,8 +48,9 @@ pub struct UiKitPlugin {
     pub assets_dir: Option<PathBuf>,
 }
 
+/// Where the kit's font files are read from, if anywhere.
 #[derive(Resource)]
-struct FontDir(Option<PathBuf>);
+pub struct FontDir(pub Option<PathBuf>);
 
 impl Plugin for UiKitPlugin {
     fn build(&self, app: &mut App) {

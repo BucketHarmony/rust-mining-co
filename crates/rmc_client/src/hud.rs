@@ -102,6 +102,7 @@ use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
 use crate::render::{GameCamera, chunk_material};
 use crate::replica::{Replica, apply_host_messages};
+use crate::ui::{ColorToken, TextRole, UiText, UiTheme};
 
 /// Selects the next held material (as does the mouse wheel turned down).
 pub const NEXT_SLOT_KEY: KeyCode = KeyCode::KeyE;
@@ -125,6 +126,9 @@ pub const HUD_FONT_SIZE: f32 = 16.0;
 
 /// What the spoil indicator says.
 pub const SPOIL_LABEL: &str = "SPOIL";
+
+/// The caption over the inventory list, with the UI kit's theme.
+pub const INVENTORY_HEADING: &str = "Inventory";
 
 /// The spoil indicator's text color: a sickly yellow-green.
 pub const SPOIL_COLOR: Color = Color::srgb(0.78, 0.92, 0.22);
@@ -530,6 +534,17 @@ struct TemperatureText;
 #[derive(Component, Debug)]
 struct GasText;
 
+/// A HUD group that hides while it has nothing to show ([`show_chips`]).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HudChip {
+    /// Top left: the inventory.
+    Inventory,
+    /// Top right: the temperature, the lantern and the gases.
+    Readout,
+    /// Bottom center: the targeted material, spoil and damage.
+    Target,
+}
+
 /// The full-screen gas tint, behind the rest of the HUD.
 #[derive(Component, Debug)]
 pub struct GasTintOverlay;
@@ -579,7 +594,9 @@ impl Plugin for HudPlugin {
                     estimate_damage,
                     select_material,
                     update_state,
-                    (show_state, show_gas).run_if(resource_changed::<HudState>),
+                    (show_state, show_gas, show_chips)
+                        .chain()
+                        .run_if(resource_changed::<HudState>),
                 )
                     .chain()
                     .in_set(HudSystems::Show)
@@ -891,18 +908,87 @@ fn material_name(materials: Option<&MaterialTable>, id: MaterialId) -> String {
 }
 
 /// The HUD's nodes, under one full-screen root.
-fn spawn_hud(mut commands: Commands) {
-    let text = || {
-        (
-            Text::new(""),
-            TextFont::from_font_size(HUD_FONT_SIZE),
-            TextColor(Color::WHITE),
-            TextShadow {
-                offset: Vec2::splat(1.0),
-                ..default()
-            },
-        )
+/// A HUD group: with the UI kit's theme, a chip on the `surface` token
+/// (`docs/UI.md` rule 3: text over the world sits on a surface); without
+/// it, a bare stack as before the kit.
+fn chip(theme: Option<&UiTheme>, align_items: AlignItems) -> impl Bundle {
+    let (padding, gap, border, radius, fill, edge) = match theme {
+        Some(t) => (
+            UiRect::axes(Val::Px(t.space.md), Val::Px(t.space.sm)),
+            t.space.xs,
+            t.border,
+            t.radius.md,
+            t.colors.surface,
+            t.colors.border,
+        ),
+        None => (UiRect::ZERO, 4.0, 0.0, 0.0, Color::NONE, Color::NONE),
     };
+    (
+        Node {
+            flex_direction: FlexDirection::Column,
+            align_items,
+            padding,
+            row_gap: Val::Px(gap),
+            border: UiRect::all(Val::Px(border)),
+            border_radius: BorderRadius::all(Val::Px(radius)),
+            ..default()
+        },
+        BackgroundColor(fill),
+        BorderColor::all(edge),
+    )
+}
+
+/// A HUD text saying `value` in the theme's `role` and `color`, or in the
+/// pre-kit look: [`HUD_FONT_SIZE`] in `plain`, with a drop shadow.
+fn hud_text(
+    theme: Option<&UiTheme>,
+    (role, color): (TextRole, ColorToken),
+    plain: Color,
+    value: &str,
+) -> impl Bundle {
+    let (size, fill, shadow) = match theme {
+        Some(t) => (t.font_size(role), t.colors.get(color), Color::NONE),
+        None => (HUD_FONT_SIZE, plain, Color::BLACK),
+    };
+    (
+        UiText { role, color },
+        Text::new(value),
+        TextFont::from_font_size(size),
+        TextColor(fill),
+        TextShadow {
+            offset: Vec2::splat(1.0),
+            color: shadow,
+        },
+    )
+}
+
+/// A column pinned to the top or bottom of the safe area, and to its left
+/// (`Some(true)`), right (`Some(false)`) or across its width (`None`).
+fn column(align_items: AlignItems, top: bool, left: Option<bool>) -> Node {
+    let mut node = Node {
+        position_type: PositionType::Absolute,
+        flex_direction: FlexDirection::Column,
+        align_items,
+        ..default()
+    };
+    if top {
+        node.top = Val::ZERO;
+    } else {
+        node.bottom = Val::ZERO;
+    }
+    match left {
+        Some(true) => node.left = Val::ZERO,
+        Some(false) => node.right = Val::ZERO,
+        None => {
+            node.left = Val::ZERO;
+            node.right = Val::ZERO;
+        }
+    }
+    node
+}
+
+fn spawn_hud(mut commands: Commands, theme: Option<Res<UiTheme>>) {
+    let theme = theme.as_deref();
     let arm = |w: f32, h: f32| {
         (
             CrosshairArm { vertical: h > w },
@@ -918,119 +1004,240 @@ fn spawn_hud(mut commands: Commands) {
         )
     };
     let (len, thick) = (CROSSHAIR_SIZE.x, CROSSHAIR_SIZE.y);
+    // The kit's safe area, or the pre-kit 8 px margin.
+    let inset = theme.map_or(Val::Px(8.0), |t| Val::VMin(t.safe_area * 100.0));
+    let (bar_size, radius, track, bar_fill) = match theme {
+        Some(t) => (
+            Vec2::new(t.button.width / 2.0, t.space.sm),
+            t.radius.sm,
+            t.colors.surface_raised,
+            t.colors.accent,
+        ),
+        None => (
+            DAMAGE_BAR_SIZE,
+            0.0,
+            Color::srgba(0.0, 0.0, 0.0, 0.6),
+            Color::srgb(0.95, 0.75, 0.2),
+        ),
+    };
+    let edge = theme.map_or(OUTLINE_COLOR, |t| t.colors.border);
+
+    let root = commands
+        .spawn((
+            HudRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            children![
+                (
+                    GasTintOverlay,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    Visibility::Hidden,
+                ),
+                (
+                    CrosshairNode,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0),
+                        top: Val::Percent(50.0),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    children![arm(len, thick), arm(thick, len)],
+                ),
+            ],
+        ))
+        .id();
+    let safe = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: inset,
+                right: inset,
+                top: inset,
+                bottom: inset,
+                ..default()
+            },
+            ChildOf(root),
+        ))
+        .id();
+
+    // Top left: the inventory.
+    let top_left = commands
+        .spawn((column(AlignItems::Start, true, Some(true)), ChildOf(safe)))
+        .id();
+    let inventory = commands
+        .spawn((
+            HudChip::Inventory,
+            chip(theme, AlignItems::Start),
+            ChildOf(top_left),
+        ))
+        .id();
+    if theme.is_some() {
+        commands.spawn((
+            hud_text(
+                theme,
+                (TextRole::Caption, ColorToken::TextDim),
+                Color::WHITE,
+                INVENTORY_HEADING,
+            ),
+            ChildOf(inventory),
+        ));
+    }
     commands.spawn((
-        HudRoot,
+        InventoryText,
+        hud_text(theme, (TextRole::Body, ColorToken::Text), Color::WHITE, ""),
+        ChildOf(inventory),
+    ));
+
+    // Top right: the temperature and the lantern, then the gases.
+    let top_right = commands
+        .spawn((column(AlignItems::End, true, Some(false)), ChildOf(safe)))
+        .id();
+    let readout = commands
+        .spawn((
+            HudChip::Readout,
+            chip(theme, AlignItems::End),
+            ChildOf(top_right),
+        ))
+        .id();
+    let gap = theme.map_or(4.0, |t| t.space.sm);
+    commands.spawn((
         Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(gap),
             ..default()
         },
+        ChildOf(readout),
         children![
             (
-                GasTintOverlay,
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(Color::NONE),
-                Visibility::Hidden,
+                TemperatureText,
+                hud_text(theme, (TextRole::Label, ColorToken::Text), Color::WHITE, "")
             ),
             (
-                CrosshairNode,
+                LanternIcon,
                 Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(50.0),
-                    top: Val::Percent(50.0),
+                    width: Val::Px(LANTERN_ICON_SIZE.x),
+                    height: Val::Px(LANTERN_ICON_SIZE.y),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(radius)),
                     ..default()
                 },
-                Visibility::Hidden,
-                children![arm(len, thick), arm(thick, len)],
-            ),
-            (
-                Node {
-                    position_type: PositionType::Absolute,
-                    bottom: Val::Px(24.0),
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(4.0),
-                    ..default()
-                },
-                children![
-                    (TargetText, text()),
-                    (
-                        SpoilIndicator,
-                        Text::new(SPOIL_LABEL),
-                        TextFont::from_font_size(HUD_FONT_SIZE),
-                        TextColor(SPOIL_COLOR),
-                        TextShadow {
-                            offset: Vec2::splat(1.0),
-                            ..default()
-                        },
-                        Visibility::Hidden,
-                    ),
-                    (
-                        DamageBar,
-                        Node {
-                            width: Val::Px(DAMAGE_BAR_SIZE.x),
-                            height: Val::Px(DAMAGE_BAR_SIZE.y),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
-                        Visibility::Hidden,
-                        children![(
-                            DamageFill,
-                            Node {
-                                width: Val::Percent(0.0),
-                                height: Val::Percent(100.0),
-                                ..default()
-                            },
-                            BackgroundColor(Color::srgb(0.95, 0.75, 0.2)),
-                        )],
-                    ),
-                ],
-            ),
-            (
-                InventoryText,
-                text(),
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(8.0),
-                    top: Val::Px(8.0),
-                    ..default()
-                },
-            ),
-            (
-                Node {
-                    position_type: PositionType::Absolute,
-                    right: Val::Px(8.0),
-                    top: Val::Px(8.0),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::End,
-                    row_gap: Val::Px(4.0),
-                    ..default()
-                },
-                children![
-                    (TemperatureText, text()),
-                    (
-                        LanternIcon,
-                        Node {
-                            width: Val::Px(LANTERN_ICON_SIZE.x),
-                            height: Val::Px(LANTERN_ICON_SIZE.y),
-                            border: UiRect::all(Val::Px(1.0)),
-                            ..default()
-                        },
-                        BorderColor::all(OUTLINE_COLOR),
-                        BackgroundColor(LanternState::Steady.color()),
-                    ),
-                    (GasText, text(), TextLayout::justify(Justify::Right)),
-                ],
+                BorderColor::all(edge),
+                BackgroundColor(LanternState::Steady.color()),
             ),
         ],
     ));
+    commands.spawn((
+        GasText,
+        hud_text(
+            theme,
+            (TextRole::Body, ColorToken::TextDim),
+            Color::WHITE,
+            "",
+        ),
+        TextLayout::justify(Justify::Right),
+        ChildOf(readout),
+    ));
+
+    // Bottom center: what the pickaxe targets.
+    let bottom = commands
+        .spawn((column(AlignItems::Center, false, None), ChildOf(safe)))
+        .id();
+    let target = commands
+        .spawn((
+            HudChip::Target,
+            chip(theme, AlignItems::Center),
+            ChildOf(bottom),
+        ))
+        .id();
+    commands.spawn((
+        TargetText,
+        hud_text(theme, (TextRole::Label, ColorToken::Text), Color::WHITE, ""),
+        ChildOf(target),
+    ));
+    commands.spawn((
+        SpoilIndicator,
+        hud_text(
+            theme,
+            (TextRole::Caption, ColorToken::Warning),
+            SPOIL_COLOR,
+            SPOIL_LABEL,
+        ),
+        Visibility::Hidden,
+        ChildOf(target),
+    ));
+    commands.spawn((
+        DamageBar,
+        Node {
+            width: Val::Px(bar_size.x),
+            height: Val::Px(bar_size.y),
+            border_radius: BorderRadius::all(Val::Px(radius)),
+            ..default()
+        },
+        BackgroundColor(track),
+        Visibility::Hidden,
+        ChildOf(target),
+        children![(
+            DamageFill,
+            Node {
+                width: Val::Percent(0.0),
+                height: Val::Percent(100.0),
+                border_radius: BorderRadius::all(Val::Px(radius)),
+                ..default()
+            },
+            BackgroundColor(bar_fill),
+        )],
+    ));
+}
+
+/// The parts of the target chip that hide: the damage bar and the spoil
+/// label.
+type ChipParts = (
+    Or<(With<DamageBar>, With<SpoilIndicator>)>,
+    Without<HudChip>,
+);
+
+/// Shows a HUD chip only while it has something to show, so no empty
+/// surface sits over the world. A hidden spoil label or damage bar also
+/// leaves the layout, so the target chip does not keep their room.
+fn show_chips(
+    hud: Res<HudState>,
+    mut chips: Query<(&HudChip, &mut Visibility)>,
+    mut parts: Query<(&Visibility, &mut Node), ChipParts>,
+) {
+    for (v, mut node) in &mut parts {
+        let display = if *v == Visibility::Hidden {
+            Display::None
+        } else {
+            Display::Flex
+        };
+        if node.display != display {
+            node.display = display;
+        }
+    }
+    for (chip, mut v) in &mut chips {
+        let on = match chip {
+            HudChip::Inventory => !hud.inventory.is_empty(),
+            HudChip::Readout => hud.temperature.is_some() || !hud.gases.is_empty(),
+            HudChip::Target => hud.material.is_some() || hud.damage.is_some() || hud.spoil,
+        };
+        v.set_if_neq(if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
 }
 
 /// Draws the HUD on the game camera, whatever it renders to (a window, or
@@ -1463,18 +1670,26 @@ mod tests {
 
     impl Rig {
         fn new(world: World) -> Self {
-            Self::build(world, false)
+            Self::build(world, false, None)
         }
 
         /// As [`Rig::new`], with what a rendering app gives the HUD: mesh
         /// and material assets, and Bevy's gizmos.
         fn rendering(world: World) -> Self {
-            Self::build(world, true)
+            Self::build(world, true, None)
         }
 
-        fn build(world: World, rendering: bool) -> Self {
+        /// As [`Rig::new`], with the UI kit's theme, as the game has it.
+        fn themed(world: World, theme: UiTheme) -> Self {
+            Self::build(world, false, Some(theme))
+        }
+
+        fn build(world: World, rendering: bool, theme: Option<UiTheme>) -> Self {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins);
+            if let Some(theme) = theme {
+                app.insert_resource(theme);
+            }
             if rendering {
                 app.add_plugins((AssetPlugin::default(), GizmoPlugin))
                     .init_asset::<Mesh>()
@@ -1815,6 +2030,81 @@ mod tests {
             assert!(self.app.world().resource::<DamageEstimate>().is_empty());
             assert_eq!(self.hud().damage, None);
         }
+    }
+
+    /// With the UI kit's theme, the HUD's groups are chips on the
+    /// `surface` token inside the safe area, their texts take the type
+    /// ramp, and a chip shows only while it has something to show; without
+    /// it, the pre-kit look.
+    #[test]
+    fn hud_takes_the_ui_kit_look() {
+        let theme = UiTheme::load(crate::ui::theme::tests::THEME_PATH).unwrap();
+        let mut rig = Rig::themed(world("stone", "stone"), theme.clone());
+        let chip = |rig: &mut Rig, which: HudChip| {
+            let world = rig.app.world_mut();
+            let mut q = world.query::<(&HudChip, &BackgroundColor, &BorderColor, &Visibility)>();
+            let (_, bg, border, v) = q
+                .iter(world)
+                .find(|(c, ..)| **c == which)
+                .expect("the chip");
+            (bg.0, border.top, *v == Visibility::Inherited)
+        };
+        for which in [HudChip::Inventory, HudChip::Readout, HudChip::Target] {
+            let (bg, border, _) = chip(&mut rig, which);
+            assert_eq!(bg, theme.colors.surface, "{which:?}");
+            assert_eq!(border, theme.colors.border, "{which:?}");
+        }
+        assert!(!chip(&mut rig, HudChip::Inventory).2, "empty: hidden");
+        let world = rig.app.world_mut();
+        let (ui, font, color) = world
+            .query_filtered::<(&UiText, &TextFont, &TextColor), With<InventoryText>>()
+            .single(world)
+            .unwrap();
+        assert_eq!(
+            *ui,
+            UiText {
+                role: TextRole::Body,
+                color: ColorToken::Text
+            }
+        );
+        assert_eq!(font.font_size, FontSize::Px(theme.text.body));
+        assert_eq!(color.0, theme.colors.text);
+        let heading: Vec<String> = world
+            .query::<&Text>()
+            .iter(world)
+            .map(|t| t.0.clone())
+            .filter(|t| t == INVENTORY_HEADING)
+            .collect();
+        assert_eq!(heading.len(), 1, "the inventory has a heading");
+        let fill = world
+            .query_filtered::<&BackgroundColor, With<DamageFill>>()
+            .single(world)
+            .unwrap()
+            .0;
+        assert_eq!(fill, theme.colors.accent, "the damage bar is the accent");
+        for display in world
+            .query_filtered::<&Node, Or<(With<DamageBar>, With<SpoilIndicator>)>>()
+            .iter(world)
+            .map(|n| n.display)
+        {
+            assert_eq!(display, Display::None, "hidden parts take no room");
+        }
+
+        let stone = rig.replica_world().materials().id("stone").unwrap();
+        rig.deliver([ServerMsg::Inventory {
+            items: vec![(stone, 3)],
+        }]);
+        assert!(chip(&mut rig, HudChip::Inventory).2, "held: shown");
+
+        // Without the kit: no surface, the old font size.
+        let mut rig = Rig::new(super::tests::world("stone", "stone"));
+        assert_eq!(chip(&mut rig, HudChip::Target).0, Color::NONE);
+        let world = rig.app.world_mut();
+        let font = world
+            .query_filtered::<&TextFont, With<InventoryText>>()
+            .single(world)
+            .unwrap();
+        assert_eq!(font.font_size, FontSize::Px(HUD_FONT_SIZE));
     }
 
     #[test]

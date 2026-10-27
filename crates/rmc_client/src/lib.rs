@@ -52,11 +52,11 @@ pub use gizmo::{
 pub use hud::{
     BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, CellBroke,
     ClientInventory, CrackOverlay, DamageEstimate, DamageProgress, GasTintOverlay,
-    HUD_GIZMO_DEPTH_BIAS, HudGas, HudGizmos, HudItem, HudPlugin, HudRoot, HudState, HudSystems,
-    LANTERN_DANGER_COLOR, LANTERN_FLARING_COLOR, LANTERN_ICON_SIZE, LANTERN_STEADY_COLOR,
-    LanternIcon, LanternState, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK, SPOIL_COLOR,
-    SPOIL_LABEL, SelectedMaterial, SpoilIndicator, crack_color, flash_scale, gas_overlay,
-    lantern_state, step_selection,
+    HUD_GIZMO_DEPTH_BIAS, HudChip, HudGas, HudGizmos, HudItem, HudPlugin, HudRoot, HudState,
+    HudSystems, LANTERN_DANGER_COLOR, LANTERN_FLARING_COLOR, LANTERN_ICON_SIZE,
+    LANTERN_STEADY_COLOR, LanternIcon, LanternState, NEXT_SLOT_KEY, PREV_SLOT_KEY, SELECTED_MARK,
+    SPOIL_COLOR, SPOIL_LABEL, SelectedMaterial, SpoilIndicator, crack_color, flash_scale,
+    gas_overlay, lantern_state, step_selection,
 };
 pub use interp::{InterpolatedEye, render_pos};
 pub use material::{

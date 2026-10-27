@@ -132,25 +132,49 @@ where the kit may be absent), `Toast::info("…")`, or set `tone` to `Ok`,
 `HudSlot(BottomLeft)` chip with a `label` line (season and year), a `body`
 line (air temperature and sky) and a `caption` line in `warning` that shows
 only while the seasons are paused. It sits on the `surface` token, so the
-contrast rule holds over the world. It is bottom-left because the old HUD
-still holds both top corners. The same module draws the rain (see
+contrast rule holds over the world. It is bottom-left: the inventory and
+the readout hold the top corners. The same module draws the rain (see
 `docs/CONTROLS.md`). Shots: `docs/screens/weather_shows-*.png`.
 
-## Migration plan for the existing HUD
+## The HUD on the kit
 
-`hud.rs` predates the kit. It uses absolute pixel offsets, Bevy's default
-font, colors in code and z 0. Move it piece by piece, keeping `HudState`
-and its tests unchanged:
+`hud.rs` predates the kit; it now takes the kit's look in place. The
+entities, their markers (`InventoryText`, `TemperatureText`, `LanternIcon`,
+`GasText`, `TargetText`, `SpoilIndicator`, `DamageBar`) and `HudState`
+are unchanged, and everything stays under `HudRoot` (`save_load_roundtrip`
+hides it). With a `UiTheme`:
 
-1. Inventory, then lantern/gas, then the spoil indicator, then the season
-   readout: give each `HudSlot` (bottom-left, top-right, center, top-left)
-   and drop its absolute offsets.
-2. Replace `HUD_FONT_SIZE` and the color constants with text roles and
-   tokens. Add status tokens where a HUD color has a meaning (lantern
-   danger = `danger`).
-3. Put readable text over the world on a translucent surface (rule 3).
-4. Re-shoot the HUD scenarios (`scripts/screens.sh <scenario>`). The
-   playtester judges the look (CLAUDE.md rule 21).
+- Three `HudChip`s inside the safe area, each on `surface` with a `border`
+  edge and `radius.md`: **Inventory** top left (an `Inventory` caption over
+  the `body` list), **Readout** top right (temperature in `label`, the
+  lantern swatch, gases in `body`/`text_dim`), **Target** bottom center
+  (the material in `label`, `SPOIL` in `caption`/`warning`, the damage bar
+  as an `accent` fill on a `surface_raised` track).
+- A chip with nothing to show is hidden, so no empty surface sits over the
+  world. A hidden spoil label or damage bar takes no room (`Display::None`).
+- Texts carry `UiText`, so `restyle_texts` gives them the kit's fonts and
+  follows theme edits.
+- The lantern keeps its `LanternState` colors (tests check them); the
+  crosshair and the gas tint are unchanged.
+
+Without a theme (logic-only tests, or the kit not added) the HUD keeps its
+pre-kit look. Test: `hud::tests::hud_takes_the_ui_kit_look`; scenario
+`e2e:hud_themed_renders`, shots `docs/screens/hud_themed_renders-*.png`.
+
+## The egui tools
+
+The F1 editor panel and the F11 Surfaces window stay egui: they are dense
+forms (sliders, pickers, an inspector) that egui already does well.
+`ui::egui_theme` gives egui the kit's tokens instead of its default grey:
+`surface` panels and windows with a `border` stroke and the kit's radii and
+shadow, `surface_raised`/`surface_hover`/`accent_pressed` widget states,
+`accent` selection, `info` links, `warning`/`danger` for warnings and
+errors, the type ramp (nothing below `caption`, headings in bold `label`),
+the spacing grid, and Atkinson Hyperlegible. `panel::theme_egui` applies it
+once, again when `UiTheme` changes, and sets egui's zoom to `UiScale`, so
+the tools scale with the rest of the UI. Without a theme egui keeps its
+look. The test kit does not render egui, so the tests are unit tests
+(`ui::egui_theme::tests`).
 
 ## Sources
 

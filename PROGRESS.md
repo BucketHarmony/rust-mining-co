@@ -3913,3 +3913,21 @@ Decisions:
 - `MIN_DRAWN_FILL` is a look constant (rule 21); the playtester judges it.
 Next: if the owner wants the sim itself to hold no films, the rain target would have to fill a non-full top water cell first. That is a SAD-P2 change, for the owner.
 Blockers: none.
+
+## 2026-10-27 — Owner: every menu and HUD element on the UI kit — passed
+Done:
+- Owner report: the menus from before the UI kit don't look like UI elements. Pre-kit pieces: the HUD (`hud.rs`), the F1 editor panel and the F11 Surfaces window (both egui).
+- HUD restyled in place with the kit's tokens:
+  - three `HudChip`s inside the safe area on the `surface` token: Inventory (top left, with a caption heading), Readout (top right: temperature, lantern, gases) and Target (bottom center: material, spoil, damage bar in `accent`);
+  - text uses the type ramp and `UiText`, so it picks up the kit's fonts;
+  - a chip with nothing to show is hidden; a hidden spoil label or damage bar takes no layout room.
+- egui themed: `ui::egui_theme` maps the kit's tokens onto egui's style: surfaces, borders, radii, shadow, widget states, accent selection, status colors, type ramp, spacing and Atkinson Hyperlegible. `panel::theme_egui` applies it, re-applies when the theme changes, and sets egui's zoom to `UiScale`. This covers both the editor panel and the Surfaces window.
+- `docs/UI.md`: "The HUD on the kit" and "The egui tools" replace the migration plan.
+Tests added: `hud::tests::hud_takes_the_ui_kit_look`, `ui::egui_theme::tests::{egui_style_takes_the_kit_tokens, egui_fonts_put_the_kit_fonts_first}`, `e2e:hud_themed_renders` (chip fills and visibility, text roles; shots `docs/screens/hud_themed_renders-{empty,held}.png`). Re-ran `spoil_indicator_shows`, `gas_tint_shows`, `save_load_roundtrip`: pass.
+Decisions:
+- Restyled in place under `HudRoot`, not moved to `HudSlot`s: `save_load_roundtrip` hides `HudRoot`, and logic-only tests run without the kit. Without a `UiTheme` the HUD keeps its pre-kit look, so existing tests and shots are unchanged.
+- egui tools are themed, not rewritten in Bevy UI: they are dense forms egui handles well. The test kit does not render egui, so they have unit tests only, no screenshot.
+- The lantern keeps its `LanternState` colors (tests check them).
+- Rule 21: no pixel thresholds; the playtester judges the look.
+Next: owner checks F1/F11 in the game; move the HUD onto `HudSlot`s if the season chip and the HUD should share anchors.
+Blockers: none.
