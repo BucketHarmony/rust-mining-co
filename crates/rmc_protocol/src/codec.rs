@@ -917,7 +917,7 @@ mod tests {
         let advance = encode_client(&ClientMsg::AdvanceSeason).unwrap();
         assert_eq!(
             advance,
-            [CLIENT_VARIANTS as u8 - 1],
+            [client_variant(&ClientMsg::AdvanceSeason) as u8],
             "AdvanceSeason is a lone tag"
         );
 
