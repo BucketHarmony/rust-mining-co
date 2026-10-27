@@ -81,6 +81,11 @@ does not turn the view.
 A slot that does not take the stack (a pickaxe on your head) leaves it
 where it was.
 
+What you wear keeps you warm: under the worn slots the screen sums the
+warmth and protection of your gear, and the temperature readout in the top
+right shows how warm it feels (`10.0 C, feels 19.0 C`). Digging plants also
+puts seeds in your bag.
+
 ## Menus
 
 The game menu (Resume, Settings, Save and quit) opens when the cursor is

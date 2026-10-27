@@ -11,24 +11,40 @@
 //                 swings with), slot (Head, Body, Legs, Feet or Hands: where
 //                 a wearable goes), fast (cell tags a tool works well on;
 //                 empty: all), slow_div (a tool's damage divisor on other
-//                 cells), model (Pickaxe, Shovel or Axe: drawn in hand).
+//                 cells), model (Pickaxe, Shovel or Axe: drawn in hand),
+//                 warmth (worn: how much warmer the wearer feels, in
+//                 0.1 C), protection (worn: harm turned aside; shown only,
+//                 nothing harms the player yet).
 // start:          what a new player gets, in order. Wearables are put on
 //                 when their slot is free; the rest go in the hotbar first.
+// harvest:        breaking a cell whose material has `tag` also gives
+//                 `count` of `item` per unit the cell yields
+//                 (docs/VEGETATION.md section 7). No material is tagged
+//                 "wood" or "fruit" yet; trees and fruiting plants will be.
 (
     bag: (hotbar: 9, pack: 27),
     material_stack: 999,
     items: [
         (key: "pickaxe", name: "Pickaxe", tags: ["tool"], stack: 1, tool: Some("pickaxe"), model: Some(Pickaxe)),
-        (key: "work_cap", name: "Work cap", tags: ["clothing"], stack: 1, slot: Some(Head)),
-        (key: "work_shirt", name: "Work shirt", tags: ["clothing"], stack: 1, slot: Some(Body)),
-        (key: "work_trousers", name: "Work trousers", tags: ["clothing"], stack: 1, slot: Some(Legs)),
-        (key: "work_boots", name: "Work boots", tags: ["clothing"], stack: 1, slot: Some(Feet)),
-        (key: "work_gloves", name: "Work gloves", tags: ["clothing"], stack: 1, slot: Some(Hands)),
-        (key: "hard_hat", name: "Hard hat", tags: ["armor"], stack: 1, slot: Some(Head)),
+        (key: "work_cap", name: "Work cap", tags: ["clothing"], stack: 1, slot: Some(Head),
+         warmth: 10),
+        (key: "work_shirt", name: "Work shirt", tags: ["clothing"], stack: 1, slot: Some(Body),
+         warmth: 30, protection: 1),
+        (key: "work_trousers", name: "Work trousers", tags: ["clothing"], stack: 1, slot: Some(Legs),
+         warmth: 25, protection: 1),
+        (key: "work_boots", name: "Work boots", tags: ["clothing"], stack: 1, slot: Some(Feet),
+         warmth: 15, protection: 2),
+        (key: "work_gloves", name: "Work gloves", tags: ["clothing"], stack: 1, slot: Some(Hands),
+         warmth: 10, protection: 1),
+        (key: "hard_hat", name: "Hard hat", tags: ["armor"], stack: 1, slot: Some(Head),
+         warmth: 5, protection: 4),
         (key: "shovel", name: "Shovel", tags: ["tool"], stack: 1, tool: Some("shovel"),
          fast: ["soil"], slow_div: 4, model: Some(Shovel)),
         (key: "axe", name: "Axe", tags: ["tool"], stack: 1, tool: Some("axe"),
          fast: ["plant"], slow_div: 4, model: Some(Axe)),
+        (key: "seeds", name: "Seeds", tags: ["harvest", "plantable"], stack: 99),
+        (key: "wood", name: "Wood", tags: ["harvest"], stack: 99),
+        (key: "fruit", name: "Fruit", tags: ["harvest", "plantable"], stack: 99),
     ],
     start: [
         ("pickaxe", 1),
@@ -40,5 +56,10 @@
         ("work_boots", 1),
         ("work_gloves", 1),
         ("hard_hat", 1),
+    ],
+    harvest: [
+        (tag: "plant", item: "seeds", count: 1),
+        (tag: "wood", item: "wood", count: 1),
+        (tag: "fruit", item: "fruit", count: 1),
     ],
 )

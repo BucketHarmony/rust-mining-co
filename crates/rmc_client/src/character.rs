@@ -7,7 +7,8 @@
 //!   ([`crate::cursor`]).
 //! - The panel shows what is worn (the five [`EquipSlot`]s), the pack grid
 //!   and the hotbar row: one [`BagSlotUi`] per slot, with the thing's name
-//!   and, past one, its count.
+//!   and, past one, its count. Under the worn slots, [`GearText`] sums what
+//!   the worn things do (`docs/ITEMS.md` I4): their warmth and protection.
 //! - Gestures are [`BagGesture`] messages. A drag dropped on a slot moves
 //!   the stack there; with the right button, half of it (rounded up). A
 //!   shift-click moves a stack between the hotbar and the pack (worn
@@ -33,7 +34,7 @@ use rmc_world::items::{Bag, EquipSlot, ItemTable, MAX_HOTBAR, SlotRef};
 
 use crate::editor::EditorState;
 use crate::hotbar::{ClientItems, thing_name};
-use crate::hud::ClientBag;
+use crate::hud::{ClientBag, format_temperature};
 use crate::net::ToHost;
 use crate::replica::Replica;
 use crate::ui::{
@@ -78,6 +79,10 @@ pub struct BagSlotLine {
     pub line: u8,
 }
 
+/// The line under the worn slots: warmth and protection.
+#[derive(Component, Debug)]
+pub struct GearText;
+
 /// The stack under the pointer while a drag is on.
 #[derive(Component, Debug)]
 pub struct DragGhost;
@@ -117,7 +122,7 @@ impl Plugin for CharacterPlugin {
                 Update,
                 (
                     toggle_character.before(UiSystems),
-                    (fill_character, apply_gestures, show_bag_slots)
+                    (fill_character, apply_gestures, show_bag_slots, show_gear)
                         .chain()
                         .after(UiSystems),
                 )
@@ -320,6 +325,11 @@ fn fill_character(
                 ChildOf(row),
             ));
         }
+        commands.spawn((
+            text(t, f, TextRole::Caption, ColorToken::Text, ""),
+            GearText,
+            ChildOf(worn),
+        ));
 
         let bag_column = column(&mut commands);
         let grid = |commands: &mut Commands| {
@@ -454,6 +464,36 @@ fn show_bag_slots(
             if t.0 != value {
                 t.0.clone_from(&value);
             }
+        }
+    }
+}
+
+/// What the worn things do, as [`GearText`] shows it.
+pub fn gear_line(bag: &Bag, items: &ItemTable) -> String {
+    let warmth = bag
+        .warmth(items)
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let sign = if warmth >= 0 { "+" } else { "" };
+    format!(
+        "Warmth {sign}{}
+Protection {}",
+        format_temperature(warmth),
+        bag.protection(items)
+    )
+}
+
+fn show_gear(
+    bag: Res<ClientBag>,
+    tables: Option<Res<ClientItems>>,
+    mut lines: Query<&mut Text, With<GearText>>,
+) {
+    let value = match (&bag.0, tables) {
+        (Some(bag), Some(t)) => gear_line(bag, &t.items),
+        _ => String::new(),
+    };
+    for mut t in &mut lines {
+        if t.0 != value {
+            t.0.clone_from(&value);
         }
     }
 }
@@ -842,6 +882,46 @@ mod tests {
         assert_eq!(line(dirt, NAME_LINE), "#2");
         assert_eq!(line(dirt, COUNT_LINE), "40");
         assert_eq!(line(SlotRef::Pack(0), NAME_LINE), "");
+    }
+
+    #[test]
+    fn gear_line_shows_worn_warmth_and_protection() {
+        let t = tables();
+        let mut app = app(true);
+        press(&mut app, KeyCode::KeyI);
+        let gear = |app: &mut App| {
+            let world = app.world_mut();
+            world
+                .query_filtered::<&Text, With<GearText>>()
+                .single(world)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let b = the_bag(&app);
+        let want = format!(
+            "Warmth +{}
+Protection {}",
+            format_temperature(b.warmth(&t.items) as i16),
+            b.protection(&t.items)
+        );
+        assert_eq!(gear(&mut app), want);
+        assert_eq!(gear_line(&b, &t.items), want);
+
+        // The hard hat on instead of the cap: warmer or not, it protects more.
+        let hat = slot_of(&b, Thing::Item(t.items.id("hard_hat").unwrap()));
+        gesture(
+            &mut app,
+            BagGesture::Drop {
+                from: hat,
+                to: SlotRef::Equip(EquipSlot::Head),
+                half: false,
+            },
+        );
+        let b2 = the_bag(&app);
+        assert!(b2.protection(&t.items) > b.protection(&t.items));
+        assert_eq!(gear(&mut app), gear_line(&b2, &t.items));
+        assert_ne!(gear(&mut app), want);
     }
 
     fn pointer() -> bevy::picking::events::Pointer {

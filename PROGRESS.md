@@ -4062,3 +4062,19 @@ Decisions:
 - Rule 21: the e2e asserts the screen, the slots, both bags after a move and a refused move; the screenshots are for the playtester.
 Next: I4, what gear does (warmth, protection, felt temperature).
 Blockers: none.
+
+## 2026-10-27 — I4 what gear does — passed
+Done:
+- `items.ron` rows gain `warmth` (0.1 °C) and `protection`; the work clothes add 9.0 °C, the hard hat protects 4. `Bag::warmth` and `Bag::protection` sum what is worn.
+- `harvest` rows in `items.ron` (cell tag, item, count per yielded unit); the host adds them to the bag beside the material yield. New items: seeds (from `plant` cells), wood and fruit (rows wait for tagged trees and fruit). `ItemTable::harvest(tags)`; unknown items and empty rows are refused.
+- HUD: `HudState::felt_temperature`, and the temperature line reads `12.3 C, feels 21.3 C` with a bag (`format_felt`); unchanged without one.
+- Character screen: a gear line under the worn slots (`GearText`, `gear_line`).
+- Screens for `character_screen_renders` and `hotbar_renders` re-shot (frame numbers moved).
+- Docs: `docs/ITEMS.md` (I4 done, decisions), `docs/CONTROLS.md`.
+Tests added: `items::tests::{worn_gear_adds_warmth_and_protection, harvest_rows_give_items_by_tag}`, `host::tests::broken_cells_harvest_items_by_tag`, `hud::tests::worn_warmth_adds_to_the_felt_temperature`, `character::tests::gear_line_shows_worn_warmth_and_protection`.
+Decisions:
+- Felt temperature uses the HUD's existing cell readout (the air at the feet) rather than the calendar's season temperature, so it follows caves and weather as the readout does.
+- The `HudState` literal in `hud::tests::hudstate_reflects_target` gained `felt_temperature: None` (a new field, the assertion is otherwise the same).
+- Harvest keeps the material yield, so placing grass and moss works as before; items come on top.
+Next: the items plan (I1–I4) is done. Owner: merge feature ids for I1–I4 if wanted; the vegetation plan (V1–V7) is next in line.
+Blockers: none.

@@ -21,7 +21,9 @@
 //!   ([`format_temperature`]). The
 //!   replica's layers follow `ChunkSnapshot`, `LayerSnapshot` and
 //!   `ChunkDelta::Layers`. Nothing is shown without a player or outside
-//!   the resident chunks.
+//!   the resident chunks. With a bag ([`ClientBag`], `docs/ITEMS.md` I4)
+//!   the line adds the felt temperature: the cell's plus the worn items'
+//!   `warmth` ([`format_felt`]).
 //! - Spoil (SAD-P2 §10): when the targeted cell is spoil for the player's
 //!   toxicity profile ([`ClientEco::player_tox`], `tox_player` in
 //!   `substances.ron`), [`SPOIL_LABEL`] shows under the material name in
@@ -100,6 +102,7 @@ use crate::controller::Player;
 use crate::eco::{ClientEco, unnamed};
 use crate::editor::EditorState;
 use crate::flycam::{FlyCam, FlyCamSystems};
+use crate::hotbar::ClientItems;
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 use crate::pickaxe::{PickTarget, PickaxeSystems, SwingState};
 use crate::render::{GameCamera, chunk_material};
@@ -360,6 +363,8 @@ pub struct HudState {
     pub selected: Option<MaterialId>,
     /// The temperature of the player's cell in the replica, in 0.1 °C.
     pub temperature: Option<i16>,
+    /// With a bag: `temperature` plus the worn items' warmth, in 0.1 °C.
+    pub felt_temperature: Option<i16>,
     /// Whether the targeted cell is spoil for the player's toxicity
     /// profile.
     pub spoil: bool,
@@ -568,6 +573,18 @@ pub fn format_temperature(t: i16) -> String {
     let sign = if t < 0 { "-" } else { "" };
     let abs = t.abs();
     format!("{sign}{}.{} C", abs / 10, abs % 10)
+}
+
+/// The temperature line: `t`, and the felt temperature when known.
+pub fn format_felt(t: i16, felt: Option<i16>) -> String {
+    match felt {
+        Some(felt) => format!(
+            "{}, feels {}",
+            format_temperature(t),
+            format_temperature(felt)
+        ),
+        None => format_temperature(t),
+    }
 }
 
 /// The HUD. Needs [`NetPlugin`](crate::net::NetPlugin) for host messages
@@ -795,6 +812,8 @@ fn update_state(
     swings: Option<Res<SwingState>>,
     time: Res<Time>,
     mut feedback: ResMut<Feedback>,
+    bag: Res<ClientBag>,
+    items: Option<Res<ClientItems>>,
     players: Query<&Player>,
     cameras: Query<&Transform, With<GameCamera>>,
     mut hud: ResMut<HudState>,
@@ -843,6 +862,10 @@ fn update_state(
             .and_then(|(player, world)| cell_temperature(world, CellPos::from_meters(player.feet))),
         ..default()
     };
+    if let (Some(t), Some(bag), Some(items)) = (next.temperature, &bag.0, &items) {
+        let felt = i32::from(t).saturating_add(bag.warmth(&items.items));
+        next.felt_temperature = Some(felt.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+    }
     let camera_cell = cameras
         .iter()
         .next()
@@ -1377,7 +1400,10 @@ fn show_state(
     for mut text in &mut inventory_text {
         text.0 = lines.join("\n");
     }
-    let temperature = hud.temperature.map(format_temperature).unwrap_or_default();
+    let temperature = hud
+        .temperature
+        .map(|t| format_felt(t, hud.felt_temperature))
+        .unwrap_or_default();
     for mut text in &mut temperature_text {
         text.0.clone_from(&temperature);
     }
@@ -1844,6 +1870,7 @@ mod tests {
                 last_break: None,
                 selected: None,
                 temperature: Some(0),
+                felt_temperature: None,
                 spoil: false,
                 gases: vec![],
                 gas_tint: None,
@@ -2617,6 +2644,66 @@ mod tests {
         let texts: Vec<String> = q.iter(rig.app.world()).map(|t| t.0.clone()).collect();
         assert_eq!(texts.len(), 1, "one temperature line");
         texts[0].clone()
+    }
+
+    #[test]
+    fn worn_warmth_adds_to_the_felt_temperature() {
+        use rmc_world::ToolTable;
+        use rmc_world::items::{EquipSlot, ItemTable, SlotRef};
+
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/");
+        let items = ClientItems {
+            items: ItemTable::load(format!("{root}items.ron")).unwrap(),
+            tools: ToolTable::load(format!("{root}tools.ron")).unwrap(),
+        };
+        let mut w = world("granite", "stone");
+        let feet = CellPos::from_meters(FEET);
+        let r = w.apply(&EditCommand {
+            id: CommandId::default(),
+            issuer: PlayerId(0),
+            op: EditOp::SetLayer {
+                layer: LayerId::Temperature,
+                value: 123,
+            },
+            shape: Shape::Cell(feet),
+        });
+        assert_eq!(r.status, EditStatus::Applied);
+        let mut rig = Rig::new(w);
+        rig.frames(1);
+        // Without a bag: the air only.
+        assert_eq!(rig.hud().felt_temperature, None);
+        assert_eq!(temperature_text(&mut rig), "12.3 C");
+
+        let mut bag = Bag::starter(&items.items);
+        let warmth = bag.warmth(&items.items);
+        assert!(warmth > 0, "the starting clothes are warm");
+        rig.app.insert_resource(items.clone());
+        rig.app.insert_resource(ClientBag(Some(bag.clone())));
+        rig.frames(1);
+        let felt = 123 + warmth as i16;
+        assert_eq!(rig.hud().felt_temperature, Some(felt));
+        assert_eq!(
+            temperature_text(&mut rig),
+            format!("12.3 C, feels {}", format_temperature(felt))
+        );
+
+        // Taking the cap off is colder by the cap's warmth.
+        let cap = bag.worn(EquipSlot::Head).unwrap().thing;
+        let rmc_world::items::Thing::Item(cap_id) = cap else {
+            panic!("an item");
+        };
+        let cap_warmth = items.items.get(cap_id).unwrap().warmth;
+        bag.move_stack(
+            &items.items,
+            SlotRef::Equip(EquipSlot::Head),
+            SlotRef::Pack(0),
+            None,
+        )
+        .unwrap();
+        rig.app.insert_resource(ClientBag(Some(bag)));
+        rig.frames(1);
+        assert_eq!(rig.hud().felt_temperature, Some(felt - cap_warmth));
+        assert_eq!(format_felt(-5, Some(85)), "-0.5 C, feels 8.5 C");
     }
 
     #[test]

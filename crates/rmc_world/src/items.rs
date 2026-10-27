@@ -95,6 +95,23 @@ pub struct ItemDef {
     /// The shape drawn in hand; `None`: an empty hand.
     #[serde(default)]
     pub model: Option<HeldModel>,
+    /// Worn: how much warmer the wearer feels, in 0.1 °C.
+    #[serde(default)]
+    pub warmth: i16,
+    /// Worn: how much harm it turns aside. Shown; nothing harms the player
+    /// yet.
+    #[serde(default)]
+    pub protection: u16,
+}
+
+/// One `harvest` row of `items.ron`: breaking a cell whose material has
+/// `tag` also gives `count` of `item` per unit the cell yields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarvestRow {
+    tag: String,
+    item: String,
+    count: u32,
 }
 
 fn one() -> u16 {
@@ -169,6 +186,8 @@ struct ItemFile {
     items: Vec<ItemDef>,
     #[serde(default)]
     start: Vec<(String, u32)>,
+    #[serde(default)]
+    harvest: Vec<HarvestRow>,
 }
 
 /// Every item, the bag's size, the largest material stack and the starting
@@ -180,6 +199,8 @@ pub struct ItemTable {
     bag: BagSize,
     material_stack: u32,
     start: Vec<(ItemId, u32)>,
+    /// Cell tag, item, count per yielded unit; in file order.
+    harvest: Vec<(String, ItemId, u32)>,
 }
 
 #[derive(Debug, Error)]
@@ -214,6 +235,10 @@ pub enum ItemError {
     EmptyStart(String),
     #[error("too many items: {0}")]
     TooMany(usize),
+    #[error("a harvest row gives {0:?}, which is not an item")]
+    UnknownHarvest(String),
+    #[error("a harvest row for tag {0:?} gives nothing")]
+    EmptyHarvest(String),
 }
 
 impl ItemTable {
@@ -272,12 +297,23 @@ impl ItemTable {
             }
             start.push((id, count));
         }
+        let mut harvest = Vec::with_capacity(file.harvest.len());
+        for row in file.harvest {
+            let id = *by_key
+                .get(&row.item)
+                .ok_or(ItemError::UnknownHarvest(row.item.clone()))?;
+            if row.count == 0 || row.tag.is_empty() {
+                return Err(ItemError::EmptyHarvest(row.tag));
+            }
+            harvest.push((row.tag, id, row.count));
+        }
         Ok(Self {
             rows: file.items,
             by_key,
             bag: file.bag,
             material_stack: file.material_stack,
             start,
+            harvest,
         })
     }
 
@@ -289,6 +325,16 @@ impl ItemTable {
     /// Item `id`'s row.
     pub fn get(&self, id: ItemId) -> Option<&ItemDef> {
         self.rows.get(usize::from(id.0))
+    }
+
+    /// What breaking one unit of a cell with `tags` harvests: each
+    /// matching `harvest` row's item and count, in file order.
+    pub fn harvest(&self, tags: &[String]) -> Vec<(ItemId, u32)> {
+        self.harvest
+            .iter()
+            .filter(|(tag, _, _)| tags.contains(tag))
+            .map(|&(_, id, count)| (id, count))
+            .collect()
     }
 
     /// Every row with its id, in id order.
@@ -451,6 +497,25 @@ impl Bag {
             SlotRef::Pack(i) => usize::from(i) < self.pack.len(),
             SlotRef::Equip(_) => true,
         }
+    }
+
+    /// The worn items' rows, in slot order.
+    fn worn_rows<'t>(&self, table: &'t ItemTable) -> impl Iterator<Item = &'t ItemDef> {
+        self.equip.values().filter_map(|s| match s.thing {
+            Thing::Item(id) => table.get(id),
+            Thing::Material(_) => None,
+        })
+    }
+
+    /// How much warmer the wearer feels, in 0.1 °C: the worn items'
+    /// `warmth`.
+    pub fn warmth(&self, table: &ItemTable) -> i32 {
+        self.worn_rows(table).map(|r| i32::from(r.warmth)).sum()
+    }
+
+    /// The worn items' `protection`.
+    pub fn protection(&self, table: &ItemTable) -> u32 {
+        self.worn_rows(table).map(|r| u32::from(r.protection)).sum()
     }
 
     /// How many of `thing` the bag holds, worn included.
@@ -720,6 +785,80 @@ mod tests {
             panic!("a material in the first slot")
         };
         assert!(t.get(id).unwrap().tool.is_some());
+    }
+
+    #[test]
+    fn worn_gear_adds_warmth_and_protection() {
+        let t = ItemTable::from_ron_str(
+            r#"(
+                bag: (hotbar: 3, pack: 2),
+                material_stack: 10,
+                items: [
+                    (key: "cap", name: "Cap", stack: 1, slot: Some(Head), warmth: 10),
+                    (key: "helm", name: "Helm", stack: 1, slot: Some(Head), warmth: 5, protection: 3),
+                    (key: "coat", name: "Coat", stack: 1, slot: Some(Body), warmth: 40, protection: 1),
+                    (key: "fan", name: "Fan", stack: 1, warmth: 99, protection: 99),
+                ],
+                start: [("cap", 1), ("helm", 1), ("coat", 1), ("fan", 1)],
+            )"#,
+        )
+        .unwrap();
+        let mut bag = Bag::starter(&t);
+        // Cap and coat are worn; the helm and the fan are carried, which
+        // does nothing.
+        assert_eq!(bag.warmth(&t), 50);
+        assert_eq!(bag.protection(&t), 1);
+        let helm = SlotRef::Hotbar(0);
+        assert_eq!(bag.get(helm).map(|s| s.thing), Some(item(&t, "helm")));
+        bag.move_stack(&t, helm, SlotRef::Equip(EquipSlot::Head), None)
+            .unwrap();
+        assert_eq!(bag.warmth(&t), 45, "the helm swapped for the cap");
+        assert_eq!(bag.protection(&t), 4);
+        assert_eq!(Bag::new(t.bag()).warmth(&t), 0);
+    }
+
+    #[test]
+    fn harvest_rows_give_items_by_tag() {
+        let t = ItemTable::from_ron_str(
+            r#"(
+                bag: (hotbar: 3, pack: 2),
+                material_stack: 10,
+                items: [
+                    (key: "seeds", name: "Seeds", stack: 50),
+                    (key: "wood", name: "Wood", stack: 50),
+                ],
+                harvest: [
+                    (tag: "plant", item: "seeds", count: 2),
+                    (tag: "wood", item: "wood", count: 1),
+                    (tag: "plant", item: "wood", count: 1),
+                ],
+            )"#,
+        )
+        .unwrap();
+        let tags = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (seeds, wood) = (t.id("seeds").unwrap(), t.id("wood").unwrap());
+        assert_eq!(t.harvest(&tags(&["plant"])), [(seeds, 2), (wood, 1)]);
+        assert_eq!(t.harvest(&tags(&["wood", "x"])), [(wood, 1)]);
+        assert_eq!(t.harvest(&tags(&["stone"])), []);
+
+        let bad = |harvest: &str| {
+            ItemTable::from_ron_str(&format!(
+                r#"(bag: (hotbar: 3, pack: 2), material_stack: 10,
+                    items: [(key: "seeds", name: "Seeds", stack: 50)], harvest: [{harvest}])"#
+            ))
+        };
+        assert!(matches!(
+            bad(r#"(tag: "plant", item: "nuts", count: 1)"#),
+            Err(ItemError::UnknownHarvest(_))
+        ));
+        assert!(matches!(
+            bad(r#"(tag: "plant", item: "seeds", count: 0)"#),
+            Err(ItemError::EmptyHarvest(_))
+        ));
+        assert!(matches!(
+            bad(r#"(tag: "", item: "seeds", count: 1)"#),
+            Err(ItemError::EmptyHarvest(_))
+        ));
     }
 
     #[test]

@@ -392,6 +392,14 @@ impl Host {
                 if lost > 0 {
                     debug!(player = player.0, ?id, lost, "bag full: yield lost");
                 }
+                // Harvests (docs/ITEMS.md I4): items by the material's tags.
+                let tags = self.world.materials().get(id).map(|d| d.tags.clone());
+                for (item, per) in items.harvest(tags.as_deref().unwrap_or_default()) {
+                    let lost = bag.insert(items, Thing::Item(item), per.saturating_mul(count));
+                    if lost > 0 {
+                        debug!(player = player.0, ?item, lost, "bag full: harvest lost");
+                    }
+                }
             }
             let items = bag.materials();
             self.inventories
@@ -2234,6 +2242,55 @@ mod tests {
             )"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn broken_cells_harvest_items_by_tag() {
+        let (mut host, eps) = host_with(test_world(), 1);
+        let stone = mat(host.world(), "stone");
+        let tag = host.world().materials().get(stone).unwrap().tags[0].clone();
+        let items = ItemTable::from_ron_str(&format!(
+            r#"(
+                bag: (hotbar: 2, pack: 1),
+                material_stack: 9,
+                items: [
+                    (key: "pebble", name: "Pebble", stack: 9),
+                    (key: "nut", name: "Nut", stack: 9),
+                ],
+                harvest: [
+                    (tag: "{tag}", item: "pebble", count: 2),
+                    (tag: "no such tag", item: "nut", count: 1),
+                ],
+            )"#
+        ))
+        .unwrap();
+        let pebble = Thing::Item(items.id("pebble").unwrap());
+        let nut = Thing::Item(items.id("nut").unwrap());
+        host.set_items(items);
+        let a = &eps[0];
+        let me = a.player();
+        a.send(hello(host.world())).unwrap();
+        host.tick();
+        a.drain();
+
+        let cell = CellPos::new(10, 3, 10);
+        assert_eq!(host.world().get_cell(cell), Some(stone));
+        a.send(edit(1, 1, EditOp::Damage(u16::MAX), Shape::Cell(cell)))
+            .unwrap();
+        host.tick();
+        let to_a = a.drain();
+        let bag = bag_of(to_a.last().unwrap());
+        assert_eq!(bag.count(Thing::Material(stone)), 1, "the yield");
+        assert_eq!(bag.count(pebble), 2, "and the harvest");
+        assert_eq!(bag.count(nut), 0);
+        assert_eq!(host.bag(me), Some(bag));
+        // The totals are of materials only.
+        assert_eq!(
+            to_a[to_a.len() - 2],
+            ServerMsg::Inventory {
+                items: vec![(stone, 1)]
+            }
+        );
     }
 
     fn bag_of(msg: &ServerMsg) -> &Bag {

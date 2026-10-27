@@ -56,10 +56,12 @@ Status: done 2026-10-27.
 
 ### I4. What gear does
 
+Status: done 2026-10-27.
+
 - Tools: the I2 tag speeds.
 - Clothing and armor get `warmth` and `protection` in `items.ron`. The player's felt temperature is the air temperature (from the calendar) plus the worn warmth, shown in the HUD readout. With nothing to harm the player yet, protection is shown, not used.
 - Harvests from the vegetation plan (wood, fruit, seeds; `docs/VEGETATION.md` §7) arrive as items in the bag.
-- Tests: worn warmth adds to the felt temperature; the readout shows it.
+- Tests: `items::tests::{worn_gear_adds_warmth_and_protection, harvest_rows_give_items_by_tag}`, `host::tests::broken_cells_harvest_items_by_tag`, `hud::tests::worn_warmth_adds_to_the_felt_temperature`, `character::tests::gear_line_shows_worn_warmth_and_protection`; screens refreshed in `e2e:character_screen_renders` and `e2e:hotbar_renders`.
 
 ## Decisions
 
@@ -75,4 +77,7 @@ Status: done 2026-10-27.
 - I3: gestures are `BagGesture` messages; the pointer observers only translate Bevy's picking events into them. Tests trigger those events by hand (no picking backend under `MinimalPlugins`), and the e2e writes gestures, since the test kit drives no pointer.
 - I3: a prediction is replaced by the next `Bag` from the host. A `Bag` sent for an earlier change (a yield) that arrives before the reply can show the old slot for a frame; the reply puts it right.
 - I3: shift-click goes onto the same thing first, then the first empty slot, and moves what fits in one `MoveItem`.
+- I4: `warmth` is in 0.1 °C, like the temperature layer. The felt temperature is the HUD's existing readout (the temperature of the cell at the player's feet, which is the air there) plus the worn warmth; the line reads `10.0 C, feels 19.0 C`. Without a bag the line is unchanged.
+- I4: the work clothes add 9.0 °C together; the hard hat 0.5 °C and protection 4 against the cap's 0. Protection is summed on the character screen and used by nothing yet.
+- I4: harvests are `harvest` rows in `items.ron` keyed by cell tags (rule 5): a broken cell gives its material yield as before plus each matching row's item. `plant` gives seeds now; `wood` and `fruit` rows wait for the vegetation features to tag trees and fruiting plants. Seeds and fruit are tagged `plantable`; planting them is vegetation work.
 - I2: an item without a `model` (a hard hat in the hotbar) leaves the hand empty; a material in hand is drawn as a small block of its color.
