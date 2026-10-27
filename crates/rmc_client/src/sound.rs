@@ -7,7 +7,11 @@
 //!     cell's `hit`;
 //!   - a place ([`PlaceState`] count up) plays `place`;
 //!   - a cell the player sees break ([`CellBroke`]) plays its `broken`;
-//!   - every `step_m` walked on the ground plays `step`;
+//!   - every `step_m` walked on the ground plays a step: the `step` of
+//!     the first `materials` row that matches the cell underfoot (the cell
+//!     at the feet when it is a liquid, so wading splashes) and has one,
+//!     else the top-level `step`. Each step's speed, and so its pitch,
+//!     varies by up to `step_vary` either way;
 //!   - the host's `SeasonDone` plays `season`.
 //!
 //!   A cell's sounds come from the first `materials` row that matches it,
@@ -67,6 +71,9 @@ pub struct MaterialSounds {
     pub tags: Vec<String>,
     pub hit: Sound,
     pub broken: Sound,
+    /// A footstep on a cell of this row; `None`: the top-level `step`.
+    #[serde(default)]
+    pub step: Option<Sound>,
 }
 
 impl MaterialSounds {
@@ -82,6 +89,9 @@ pub struct SoundConfig {
     pub place: Sound,
     pub step: Sound,
     pub step_m: f32,
+    /// The largest share by which a step's speed (and pitch) varies.
+    #[serde(default)]
+    pub step_vary: f32,
     pub season: Sound,
     pub wind: Sound,
     pub wind_covered: f32,
@@ -119,6 +129,14 @@ impl SoundConfig {
             .unwrap_or_else(|| self.default.clone())
     }
 
+    /// A footstep on a cell of `def` (`None`: nothing underfoot): the step
+    /// of the first matching row, if it has one, else `step`.
+    pub fn step_on(&self, def: Option<&MaterialDef>) -> Sound {
+        def.and_then(|def| self.materials.iter().find(|row| row.matches(def)))
+            .and_then(|row| row.step.clone())
+            .unwrap_or_else(|| self.step.clone())
+    }
+
     /// Every file the config names.
     pub fn files(&self) -> Vec<&str> {
         let mut files = vec![
@@ -131,6 +149,7 @@ impl SoundConfig {
             &self.default.broken,
         ];
         files.extend(self.materials.iter().flat_map(|r| [&r.hit, &r.broken]));
+        files.extend(self.materials.iter().filter_map(|r| r.step.as_ref()));
         let mut names: Vec<&str> = files.into_iter().map(|s| s.file.as_str()).collect();
         names.sort_unstable();
         names.dedup();
@@ -138,9 +157,16 @@ impl SoundConfig {
     }
 }
 
-/// A sound to play now.
+/// A sound to play now, and its playback speed (1: as recorded).
 #[derive(Message, Clone, Debug, PartialEq)]
-pub struct SoundCue(pub Sound);
+pub struct SoundCue(pub Sound, pub f32);
+
+impl SoundCue {
+    /// `sound` at its recorded speed.
+    pub fn new(sound: Sound) -> Self {
+        Self(sound, 1.0)
+    }
+}
 
 /// The wind loop's target volume (see the module docs).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
@@ -235,17 +261,17 @@ fn cue_tool(
         && swings.swings() > seen.0
     {
         seen.0 = swings.swings();
-        out.write(SoundCue(config.swing.clone()));
+        out.write(SoundCue::new(config.swing.clone()));
         let aimed = target.and_then(|t| t.0).map(|hit| hit.cell);
         if let Some(def) = aimed.and_then(|cell| cell_def(replica.as_deref(), cell)) {
-            out.write(SoundCue(config.cell(&def).hit));
+            out.write(SoundCue::new(config.cell(&def).hit));
         }
     }
     if let Some(places) = places
         && places.places() > seen.1
     {
         seen.1 = places.places();
-        out.write(SoundCue(config.place.clone()));
+        out.write(SoundCue::new(config.place.clone()));
     }
 }
 
@@ -261,18 +287,22 @@ fn cue_breaks(
             .as_deref()
             .and_then(|r| r.world().materials().get(event.material));
         if let Some(def) = def {
-            out.write(SoundCue(config.cell(def).broken));
+            out.write(SoundCue::new(config.cell(def).broken));
         }
     }
 }
 
-/// A step every `step_m` walked on the ground. The fly camera walks no one.
+/// A step every `step_m` walked on the ground, sounding like the ground
+/// underfoot. The fly camera walks no one.
+#[allow(clippy::too_many_arguments)]
 fn cue_steps(
     players: Query<&Player>,
     flycam: Option<Res<FlyCam>>,
+    replica: Option<Res<Replica>>,
     time: Res<Time>,
     config: Res<SoundConfig>,
     mut walked: Local<f32>,
+    mut count: Local<u32>,
     mut out: MessageWriter<SoundCue>,
 ) {
     let flying = flycam.is_some_and(|f| f.enabled);
@@ -287,8 +317,35 @@ fn cue_steps(
     *walked += player.velocity.with_y(0.0).length() * time.delta_secs();
     if *walked >= config.step_m {
         *walked -= config.step_m;
-        out.write(SoundCue(config.step.clone()));
+        let ground = underfoot(replica.as_deref(), player.feet);
+        *count = count.wrapping_add(1);
+        let speed = 1.0 + config.step_vary * step_jitter(*count);
+        out.write(SoundCue(config.step_on(ground.as_ref()), speed));
     }
+}
+
+/// How far above and below the feet the ground cell is looked for, metres.
+const UNDERFOOT_M: f32 = 0.05;
+
+/// The material a step lands on: the cell at the feet when it is a liquid
+/// (wading), else the cell just below them; `None` for air.
+fn underfoot(replica: Option<&Replica>, feet: Vec3) -> Option<MaterialDef> {
+    let at = cell_def(replica, CellPos::from_meters(feet + Vec3::Y * UNDERFOOT_M));
+    if let Some(def) = at.filter(|d| d.phase == Phase::Liquid) {
+        return Some(def);
+    }
+    cell_def(replica, CellPos::from_meters(feet - Vec3::Y * UNDERFOOT_M))
+        .filter(|d| d.phase != Phase::Air)
+}
+
+/// A value in -1..=1 that differs from step to step and is the same every
+/// run (an integer hash of the step count).
+fn step_jitter(n: u32) -> f32 {
+    let mut x = n.wrapping_mul(0x9E37_79B9);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    (x % 2001) as f32 / 1000.0 - 1.0
 }
 
 /// The season chime on `SeasonDone`.
@@ -299,7 +356,7 @@ fn cue_seasons(
 ) {
     for FromHost(msg) in inbox.read() {
         if matches!(msg, ServerMsg::SeasonDone { .. }) {
-            out.write(SoundCue(config.season.clone()));
+            out.write(SoundCue::new(config.season.clone()));
         }
     }
 }
@@ -342,11 +399,13 @@ fn play_cues(
         cues.clear();
         return;
     };
-    for SoundCue(sound) in cues.read() {
+    for SoundCue(sound, speed) in cues.read() {
         if let Some(handle) = bank.handle(&sound.file, &mut sources) {
             commands.spawn((
                 AudioPlayer::new(handle),
-                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(sound.volume)),
+                PlaybackSettings::DESPAWN
+                    .with_volume(Volume::Linear(sound.volume))
+                    .with_speed(*speed),
             ));
         }
     }
@@ -545,6 +604,47 @@ mod tests {
                 .count();
         }
         assert_eq!(steps, 4);
+    }
+
+    #[test]
+    fn steps_sound_like_the_ground_underfoot() {
+        let config = config();
+        let soil = config.step_on(Some(&def("topsoil")));
+        let stone = config.step_on(Some(&def("stone")));
+        let plant = config.step_on(Some(&def("grass")));
+        let water = config.step_on(Some(&def("water")));
+        assert_eq!(config.step_on(None), config.step);
+        assert_eq!(stone, config.step, "stone has no row of its own");
+        for other in [&soil, &plant, &water] {
+            assert_ne!(other.file, stone.file);
+        }
+        assert!(config.step_vary > 0.0 && config.step_vary < 0.5);
+
+        // On the stone slab: stone steps, each at a slightly different
+        // speed within step_vary.
+        let mut app = app();
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            100,
+        )));
+        let mut player = Player::at(Vec3::new(4.0, 21.0, 4.0));
+        player.velocity = Vec3::new(config.step_m * 2.0, 0.0, 0.0);
+        player.grounded = true;
+        app.world_mut().spawn(player);
+        let mut speeds = Vec::new();
+        for _ in 0..30 {
+            app.update();
+            let mut cues = app.world_mut().resource_mut::<Messages<SoundCue>>();
+            for SoundCue(sound, speed) in cues.drain() {
+                if sound.file == stone.file {
+                    speeds.push(speed);
+                }
+            }
+        }
+        assert!(speeds.len() >= 5, "{speeds:?}");
+        for s in &speeds {
+            assert!((s - 1.0).abs() <= config.step_vary + 1e-6, "{s}");
+        }
+        assert!(speeds.windows(2).any(|w| w[0] != w[1]), "{speeds:?}");
     }
 
     #[test]

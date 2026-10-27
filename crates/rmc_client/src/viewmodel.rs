@@ -103,7 +103,9 @@ struct Part {
     color: [f32; 3],
 }
 
-/// The model, its grip at the origin and the handle along +Y.
+/// The model, its grip at the origin and the handle along +Y. The head
+/// lies along Z, square to the chop axis (X), so a chop drives the front
+/// pick down point first.
 const PARTS: [Part; 5] = [
     // Handle.
     Part {
@@ -120,18 +122,18 @@ const PARTS: [Part; 5] = [
     // Head.
     Part {
         center: Vec3::new(0.0, 0.122, 0.0),
-        half: Vec3::new(0.045, 0.0075, 0.009),
+        half: Vec3::new(0.009, 0.0075, 0.045),
         color: [0.56, 0.57, 0.61],
     },
     // Picks, drooping at both ends.
     Part {
-        center: Vec3::new(0.052, 0.115, 0.0),
-        half: Vec3::new(0.011, 0.006, 0.007),
+        center: Vec3::new(0.0, 0.115, -0.052),
+        half: Vec3::new(0.007, 0.006, 0.011),
         color: [0.66, 0.67, 0.71],
     },
     Part {
-        center: Vec3::new(-0.052, 0.115, 0.0),
-        half: Vec3::new(0.011, 0.006, 0.007),
+        center: Vec3::new(0.0, 0.115, 0.052),
+        half: Vec3::new(0.007, 0.006, 0.011),
         color: [0.66, 0.67, 0.71],
     },
 ];
@@ -386,6 +388,18 @@ mod tests {
             .single(world)
             .expect("one view model");
         (e, *t, *v)
+    }
+
+    #[test]
+    fn pickaxe_head_lies_square_to_the_chop() {
+        // The chop turns about local X; a head along X would only spin.
+        let head = &PARTS[2];
+        assert!(head.half.z > head.half.x * 4.0, "head along Z");
+        // Mid-chop the front pick (-Z) has come forward and down.
+        let tip = Vec3::new(0.0, 0.115, -0.063);
+        let rest = pose(None, None, 0.0).transform_point(tip);
+        let chop = pose(Some(SWING_S / 2.0), None, 0.0).transform_point(tip);
+        assert!(chop.y < rest.y, "the pick comes down: {rest} -> {chop}");
     }
 
     #[test]

@@ -156,10 +156,47 @@ def place():
     return normalize(thump + 0.6 * tap, 0.7)
 
 
+# Footsteps (owner, 2026-10-27: less ticky, lower, more of a thud, and
+# different per ground). Each has its own seeded generator, so the shared
+# stream, and every sound after these in SOUNDS, comes out as before.
+def thud(g, seconds, freq, decay):
+    tt = t(seconds)
+    sweep = freq * (1 + 0.6 * np.exp(-tt / 0.012))
+    body = np.sin(2 * np.pi * np.cumsum(sweep) / RATE) * env(len(tt), 0.003, decay)
+    scuff = lowpass(g.standard_normal(len(tt)), 380) * env(len(tt), 0.004, decay * 0.8)
+    return body + 0.9 * scuff
+
+
 def step():
-    n = lowpass(noise(0.12), 900) * env(int(0.12 * RATE), 0.006, 0.03)
-    grit = highpass(noise(0.12), 2500) * env(int(0.12 * RATE), 0.004, 0.015)
-    return normalize(n + 0.25 * grit, 0.35)
+    """On stone, ore and other hard ground: a thud with a little grit."""
+    rng.standard_normal(2 * int(0.12 * RATE))  # the old step's share of the stream
+    g = np.random.default_rng(1)
+    x = thud(g, 0.16, 72, 0.035)
+    grit = lowpass(highpass(g.standard_normal(len(x)), 900), 2200) * env(len(x), 0.002, 0.012)
+    return normalize(x + 0.12 * grit, 0.5)
+
+
+def step_soil():
+    """On soil: a deeper, softer thud."""
+    g = np.random.default_rng(2)
+    return normalize(lowpass(thud(g, 0.18, 58, 0.045), 900), 0.5)
+
+
+def step_plant():
+    """On plants: a soft thud with a leafy rustle."""
+    g = np.random.default_rng(3)
+    x = lowpass(thud(g, 0.2, 62, 0.04), 900)
+    rustle = lowpass(highpass(g.standard_normal(len(x)), 1500), 4500) * env(len(x), 0.01, 0.06)
+    return normalize(x + 0.22 * rustle, 0.45)
+
+
+def step_liquid():
+    """Wading: a low slosh."""
+    g = np.random.default_rng(4)
+    tt = t(0.3)
+    slosh = lowpass(g.standard_normal(len(tt)), 700) * env(len(tt), 0.02, 0.09)
+    body = np.sin(2 * np.pi * 48 * tt) * env(len(tt), 0.01, 0.06)
+    return normalize(slosh + 0.5 * body, 0.45)
 
 
 def season_chime():
@@ -216,6 +253,9 @@ SOUNDS = {
     "break_plant": lambda: crumble(hit_plant, 4, 0.15, 3000),
     "place": place,
     "step": step,
+    "step_soil": step_soil,
+    "step_plant": step_plant,
+    "step_liquid": step_liquid,
     "season": season_chime,
     "tick": tick,
     "wind": wind,

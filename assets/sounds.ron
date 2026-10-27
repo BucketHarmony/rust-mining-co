@@ -3,9 +3,14 @@
 (
     swing: (file: "swing.ogg", volume: 0.45),
     place: (file: "place.ogg", volume: 0.7),
-    step: (file: "step.ogg", volume: 0.3),
+    // A footstep where no materials row below gives one (stone, ore, ...):
+    // a low thud with a little grit.
+    step: (file: "step.ogg", volume: 0.4),
     // Metres walked on the ground between footsteps.
     step_m: 0.75,
+    // Each step plays up to this share faster or slower (and higher or
+    // lower), so a walk is not one sound repeated.
+    step_vary: 0.08,
     // Every finished season: a very soft tick (season.ogg is the old chime).
     season: (file: "tick.ogg", volume: 0.08),
     // The wind loop, and its volume with solid cells overhead.
@@ -15,11 +20,13 @@
     roof_cells: 24,
     // What a swing at, and the break of, a cell sounds like. The first row
     // that matches wins: a row matches a material of its phase (if set) or
-    // with any of its tags. Materials no row matches use `default`.
+    // with any of its tags. Materials no row matches use `default`. A row's
+    // `step` is a footstep on it; without one, steps use `step`.
     materials: [
         (phase: Some(Liquid), tags: [],
             hit: (file: "hit_liquid.ogg", volume: 0.6),
-            broken: (file: "hit_liquid.ogg", volume: 0.8)),
+            broken: (file: "hit_liquid.ogg", volume: 0.8),
+            step: Some((file: "step_liquid.ogg", volume: 0.35))),
         (tags: ["crystal"],
             hit: (file: "hit_crystal.ogg", volume: 0.55),
             broken: (file: "break_crystal.ogg", volume: 0.8)),
@@ -28,10 +35,12 @@
             broken: (file: "break_ore.ogg", volume: 0.85)),
         (tags: ["plant"],
             hit: (file: "hit_plant.ogg", volume: 0.6),
-            broken: (file: "break_plant.ogg", volume: 0.8)),
+            broken: (file: "break_plant.ogg", volume: 0.8),
+            step: Some((file: "step_plant.ogg", volume: 0.35))),
         (tags: ["soil", "crust", "porous", "placeable"],
             hit: (file: "hit_soil.ogg", volume: 0.6),
-            broken: (file: "break_soil.ogg", volume: 0.8)),
+            broken: (file: "break_soil.ogg", volume: 0.8),
+            step: Some((file: "step_soil.ogg", volume: 0.45))),
     ],
     default: (
         hit: (file: "hit_stone.ogg", volume: 0.55),

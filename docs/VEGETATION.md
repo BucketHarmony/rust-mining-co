@@ -167,3 +167,20 @@ The `part_cost` and `growth_per_substep` columns set this; owner playtests decid
 2. A save format change (the `PlantState` fields and the `PlantPart` layer) breaks old saves. Is a migration needed, or are fresh worlds acceptable?
 3. Plant growth runs once a game day. Should trees and vines extend more often (every few hours) so growth is visible while watching?
 4. Should the pickaxe yield wood, fruit and seeds as inventory materials (so the player can plant them), or keep plants dig-only?
+
+## 7. Owner answers (2026-10-27)
+
+| Question | Answer |
+|---|---|
+| Process | F2xx features, failing tests first |
+| Old saves | Fresh worlds are fine; no migration |
+| Tree and vine cadence | A part every 4 game hours (stress stays daily) |
+| Harvest | Wood, fruit and seeds as plantable inventory items |
+| First species | Clover (nitrogen-fixing groundcover) |
+| Day length | Keep `--day-seconds 120` |
+
+Owner notes for other work, outside vegetation:
+- Footsteps: less ticky and lower pitched, more of a thud, varying by the material underfoot.
+- Rotate the pickaxe 90 degrees.
+- A tool menu with different tools.
+- An inventory with drag and drop between the character and the inventory: tools, equipment, armor and clothes.

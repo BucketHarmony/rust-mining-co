@@ -3970,3 +3970,27 @@ Decisions:
 - Vegetation is a plan only. It changes SAD-P2 (§5–§8), the tables hash and the save format, so it waits for the owner.
 Next: owner playtests the calendar pacing (`--day-seconds`) and answers the open questions in `docs/VEGETATION.md` §6. V1 (soil that can feed plants) comes first: today the shipped world grows essentially no plants, because topsoil holds no moisture and no soil holds NPK.
 Blockers: none.
+
+## 2026-10-27 — Owner answers; footsteps by ground; pickaxe head turned — passed
+Done:
+- Owner answers to the vegetation questions are recorded in `docs/VEGETATION.md` §7:
+  - process: F2xx features, tests first;
+  - fresh worlds are fine (no save migration);
+  - trees and vines update every 4 game hours;
+  - harvests drop wood, fruit and seeds as items;
+  - clover is the first and only species;
+  - a game day is 120 s.
+- Footsteps (owner: "too ticky and too high pitch, more of a thud, change slightly with the material"):
+  - `sounds.ron` rows take an optional `step`. `SoundConfig::step_on` picks the first matching row's step, else the top-level `step`.
+  - The ground is the cell at the feet when it is a liquid (wading), else the cell just below.
+  - `step_vary: 0.08`: each step plays at a hashed speed within ±8 %, so pitch varies.
+  - `SoundCue` now carries a speed.
+  - `gen-sounds.py` makes low thuds: stone/default (72 Hz body plus a little grit), soil (58 Hz, softer), plant (thud plus rustle), liquid (slosh). They use their own seeded generators, and the old step's draws from the shared stream are kept, so every other sound generates as before.
+  - Only the step files are committed. The encoder changes Ogg bytes on every run, so the other files were put back.
+- Pickaxe (owner: "rotate 90 degrees"): the head lies along Z, square to the chop axis, so a chop drives the front pick down point first instead of spinning the head about its own length.
+Tests added: `sound::tests::steps_sound_like_the_ground_underfoot`, `viewmodel::tests::pickaxe_head_lies_square_to_the_chop`.
+Decisions:
+- Steps are chosen by the existing phase/tags rows (rule 5), not by material keys. Stone and ore use the top-level `step`.
+- The sound is judged by ear (rule 21 in spirit). The tests check the routing and the speed range only.
+Next: a tool menu (hotbar) with several tools, and an inventory with drag and drop between the character's slots (tools, equipment, armour, clothes) and the pack. These are larger features that need a plan first.
+Blockers: none.
