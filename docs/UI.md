@@ -115,7 +115,10 @@ pick `Primary` for the one main choice on a screen.
 
 **A new screen:** add a `Screen` variant, then draw it in
 `screens::sync_screens`. Give the first button `AutoFocus`, and push it
-from an action. Escape and Back already pop it.
+from an action. Escape and Back already pop it. A screen whose content
+lives in another module (the character screen, `crate::character`) leaves
+its `sync_screens` arm empty; that module fills the panel tagged
+`ScreenBody(screen)` when it is `Added`, after `UiSystems`.
 
 **A HUD element:** spawn it with `HudSlot(HudAnchor::…)`. It moves into
 that anchor inside the safe area and stacks with its neighbours. Size its

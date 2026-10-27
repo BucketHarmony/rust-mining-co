@@ -23,11 +23,11 @@ use rmc_client::controller::Player;
 use rmc_client::surfaces::SurfacesPlugin;
 use rmc_client::tiles::TileDir;
 use rmc_client::{
-    CameraStart, ClientItems, ClientMaterials, ControllerPlugin, CursorPlugin, DayNightPlugin,
-    EditorPanelPlugin, EditorPlugin, FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection,
-    HotbarPlugin, HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, Replica,
-    ReplicaPlugin, SavePlugin, SoundConfig, SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin,
-    WeatherPlugin,
+    CameraStart, CharacterPlugin, ClientItems, ClientMaterials, ControllerPlugin, CursorPlugin,
+    DayNightPlugin, EditorPanelPlugin, EditorPlugin, FlyCamPlugin, FromHost, GameRenderPlugin,
+    HostConnection, HotbarPlugin, HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin,
+    Replica, ReplicaPlugin, SavePlugin, SoundConfig, SoundPlugin, UiKitPlugin, UiTheme,
+    ViewModelPlugin, WeatherPlugin,
 };
 use rmc_eco::{CALENDAR_FILE, Calendar};
 use rmc_host::{ChannelTransport, spawn_host_thread};
@@ -156,8 +156,9 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             WeatherPlugin,
             DayNightPlugin,
             HotbarPlugin,
+            CharacterPlugin,
         ));
-        // The hotbar follows the bag the host keeps (see above).
+        // The hotbar and the character screen follow the bag the host keeps (see above).
         app.insert_resource(ClientItems {
             items: assets.items.clone(),
             tools: assets.tools.clone(),

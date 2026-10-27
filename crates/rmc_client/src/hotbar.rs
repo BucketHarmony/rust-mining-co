@@ -224,6 +224,19 @@ fn hold(
     }
 }
 
+/// A thing's name: the item row's, the material's key, or its id when
+/// neither table knows it.
+pub fn thing_name(thing: Thing, items: &ItemTable, materials: Option<&MaterialTable>) -> String {
+    match thing {
+        Thing::Item(id) => items
+            .get(id)
+            .map_or_else(|| format!("item {}", id.0), |r| r.name.clone()),
+        Thing::Material(id) => materials
+            .and_then(|m| m.get(id))
+            .map_or_else(|| format!("#{}", id.0), |d| d.key.clone()),
+    }
+}
+
 /// What each chip shows: one per hotbar slot of `bag`.
 pub fn slot_views(
     bag: &Bag,
@@ -235,15 +248,7 @@ pub fn slot_views(
         .iter()
         .enumerate()
         .map(|(i, stack)| {
-            let name = match stack.map(|s| s.thing) {
-                None => String::new(),
-                Some(Thing::Item(id)) => items
-                    .get(id)
-                    .map_or_else(|| format!("item {}", id.0), |r| r.name.clone()),
-                Some(Thing::Material(id)) => materials
-                    .and_then(|m| m.get(id))
-                    .map_or_else(|| format!("#{}", id.0), |d| d.key.clone()),
-            };
+            let name = stack.map_or_else(String::new, |s| thing_name(s.thing, items, materials));
             SlotView {
                 key: (i + 1).to_string(),
                 name,

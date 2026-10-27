@@ -47,10 +47,12 @@ Status: done 2026-10-27.
 
 ### I3. Character screen with drag and drop
 
+Status: done 2026-10-27.
+
 - `Tab` (or `I`) opens the character screen on the UI kit's menu layer. It shows the pack grid, the hotbar row and a figure with the five equipment slots. The cursor is freed while it is open.
 - Drag a stack with the left mouse; drop it on a slot to send `MoveItem`. Right-drag moves half a stack. Shift-click moves a stack between the pack and the hotbar. A drop on a slot that refuses it snaps back.
 - Moves are predicted on the client and corrected by the host's `Bag`, so a refused move snaps back without a flicker.
-- Tests: the screen opens and closes and frees the cursor; a drag sends the right `MoveItem`; a refused drop leaves the bag unchanged; equipment slots show what is worn; `e2e:character_screen_renders` with a semantic assert and screenshot.
+- Tests: `character::tests::{i_and_tab_open_and_close_the_character_screen_and_free_the_cursor, drops_predict_the_move_and_send_it, refused_drops_leave_the_bag_and_send_nothing, equipment_slots_show_what_is_worn, pointer_drags_and_shift_clicks_become_moves}` and `e2e:character_screen_renders` with a semantic assert and screenshots (rule 21).
 
 ### I4. What gear does
 
@@ -69,4 +71,8 @@ Status: done 2026-10-27.
 - I2: the pickaxe is fast on everything (`fast: []`), so mining stone, ore and soil feels as before. The shovel (damage 20) is quicker than the pickaxe on dirt and clay, and the axe on shrubs; each does a quarter of its damage elsewhere.
 - I2: the swing's damage comes from the hit cell's tags, and a sphere-shaped tool applies that one value to its whole shape (`EditOp::Damage` carries one amount).
 - I2: no host anti-cheat for `Damage` yet. The editor's brush sends `Damage` with amounts no tool has, from the same player, so the host cannot tell them apart without a protocol change; and the game is single-player. Recorded for the owner.
+- I3: `Tab` opens the character screen only when no screen is open, so it still moves the focus inside the menus; on the character screen (no buttons) it closes it like `I`.
+- I3: gestures are `BagGesture` messages; the pointer observers only translate Bevy's picking events into them. Tests trigger those events by hand (no picking backend under `MinimalPlugins`), and the e2e writes gestures, since the test kit drives no pointer.
+- I3: a prediction is replaced by the next `Bag` from the host. A `Bag` sent for an earlier change (a yield) that arrives before the reply can show the old slot for a frame; the reply puts it right.
+- I3: shift-click goes onto the same thing first, then the first empty slot, and moves what fits in one `MoveItem`.
 - I2: an item without a `model` (a hard hat in the hotbar) leaves the hand empty; a material in hand is drawn as a small block of its color.

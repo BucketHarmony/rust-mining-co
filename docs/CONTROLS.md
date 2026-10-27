@@ -18,6 +18,7 @@ test kit. Keys are named by their position on a US layout.
 | `Left mouse` | Swing the held tool (the pickaxe without a bag) at the targeted cell (hold to keep swinging); it aims through water and magma at the solid behind |
 | `Right mouse` | Place the selected material against the targeted face (hold to keep placing) |
 | `1` – `9` | Select a hotbar slot (with a bag: the windowed game) |
+| `I` / `Tab` | Open the character screen (with a bag; see below) |
 | `P` | Pause / resume the ecology clock and the time of day (one game hour, a season sub-step, every 5 s by default: `--day-seconds 120`; `--eco-tick-ms N` sets the hour directly, 0 stops the clock) |
 | `Mouse wheel` | Select the next (down) / previous (up) hotbar slot; without a bag, the next / previous material in the inventory |
 | `E` / `Q` | Select the next / previous hotbar slot; without a bag, the next / previous material |
@@ -62,6 +63,23 @@ Opening the editor (F1) releases the cursor for its panel, and closing it
 grabs the cursor again. Switching to another window releases it too and
 opens the game menu. With the editor open, Escape releases the cursor
 without opening the menu.
+
+## Character screen
+
+`I` or `Tab` opens the character screen while you have a bag and no menu
+or editor is open. It shows what you wear (head, body, legs, feet, hands),
+the pack and the hotbar. While it is open the cursor is free and the mouse
+does not turn the view.
+
+| Input | Action |
+|---|---|
+| `Left mouse` drag | Move a stack: drop it on another slot (onto the same thing it stacks, onto something else they swap) |
+| `Right mouse` drag | Move half the stack (rounded up) |
+| `Shift` + `Left mouse` | Move a stack between the hotbar and the pack (worn things go to the pack) |
+| `I` / `Tab` / `Escape` | Close the screen |
+
+A slot that does not take the stack (a pickaxe on your head) leaves it
+where it was.
 
 ## Menus
 

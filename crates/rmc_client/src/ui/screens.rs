@@ -1,4 +1,4 @@
-//! Screens: the game menu and settings, as a stack.
+//! Screens: the game menu, settings and the character screen, as a stack.
 //!
 //! [`UiScreens`] is a stack of [`Screen`]s; the top one is drawn on the
 //! menu layer over a scrim, the rest wait under it. While any screen is
@@ -16,6 +16,11 @@
 //!
 //! Buttons say what they do with a [`UiAction`]; [`on_activate`] is the
 //! one handler.
+//!
+//! The kit draws a screen's scrim and panel; the panel is tagged with
+//! [`ScreenBody`], so a screen the kit does not know the content of
+//! ([`Screen::Character`], filled by [`crate::character`]) is filled by its
+//! own module.
 
 use bevy::app::AppExit;
 use bevy::input_focus::tab_navigation::{NavAction, TabGroup, TabNavigation};
@@ -40,6 +45,8 @@ pub enum Screen {
     Menu,
     /// The UI scale.
     Settings,
+    /// The bag: pack, hotbar and what is worn ([`crate::character`]).
+    Character,
 }
 
 /// The open screens, bottom first.
@@ -74,6 +81,10 @@ impl UiScreens {
 /// The root node of the drawn screen.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenRoot(pub Screen);
+
+/// The panel of the drawn screen, inside its [`ScreenRoot`].
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenBody(pub Screen);
 
 /// The settings screen's UI scale readout.
 #[derive(Component, Clone, Copy, Debug)]
@@ -169,7 +180,12 @@ pub(crate) fn sync_screens(
         ))
         .id();
     let body = commands
-        .spawn((panel(t), TabGroup::modal(), ChildOf(root)))
+        .spawn((
+            panel(t),
+            TabGroup::modal(),
+            ScreenBody(screen),
+            ChildOf(root),
+        ))
         .id();
     let title = |s: &'static str| text(t, f, TextRole::Title, ColorToken::Text, s);
     let secondary = |a, s: &'static str| button(t, f, ButtonStyle::Secondary, a, s);
@@ -209,6 +225,8 @@ pub(crate) fn sync_screens(
             ));
             commands.spawn((primary(UiAction::Back, "Back"), ChildOf(body)));
         }
+        // Filled by its own module.
+        Screen::Character => {}
     }
 }
 

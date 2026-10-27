@@ -76,7 +76,8 @@ pub struct TestConfig {
     /// so other scenarios' shots have no rain in them.
     pub weather: bool,
     /// Give the host `assets/items.ron`, so the player gets a bag, and add
-    /// the hotbar (`rmc_client::hotbar`), as the windowed game does. Off by
+    /// the hotbar (`rmc_client::hotbar`) and the character screen
+    /// (`rmc_client::character`, drawn with `ui`), as the windowed game does. Off by
     /// default: the host then sends no `Bag` and the pickaxe swings as in
     /// Phase 1.
     pub items: bool,
@@ -287,7 +288,7 @@ impl TestApp {
         }
         if let Some(items) = items {
             app.insert_resource(rmc_client::ClientItems { items, tools })
-                .add_plugins(rmc_client::HotbarPlugin);
+                .add_plugins((rmc_client::HotbarPlugin, rmc_client::CharacterPlugin));
         }
 
         // What App::run does before its first update; we never call run.

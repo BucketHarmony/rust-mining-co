@@ -30,7 +30,9 @@ use bevy::prelude::*;
 
 pub use layers::{HudAnchor, HudSlot, UiLayer};
 pub use scale::{UiSettings, effective_scale};
-pub use screens::{MENU_TITLE, ScaleReadout, Screen, ScreenRoot, UiScreens, scale_label};
+pub use screens::{
+    MENU_TITLE, ScaleReadout, Screen, ScreenBody, ScreenRoot, UiScreens, scale_label,
+};
 pub use theme::{ColorToken, TextRole, UiFonts, UiTheme, UiThemeError, contrast_ratio};
 pub use toast::{Toast, ToastEntry, ToastStack, toast_alpha};
 pub use widgets::{

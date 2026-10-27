@@ -1,6 +1,7 @@
 //! Bevy client: replica, meshing, rendering, input, controller, HUD, debug UI.
 #![deny(unsafe_code)]
 
+pub mod character;
 pub mod controller;
 pub mod cursor;
 pub mod daynight;
@@ -28,6 +29,9 @@ pub mod ui;
 pub mod viewmodel;
 pub mod weather;
 
+pub use character::{
+    BagGesture, BagSlotUi, CHARACTER_KEYS, CharacterPlugin, CharacterSystems, DragGhost,
+};
 pub use controller::{
     Aabb, ControllerConfig, ControllerPlugin, ControllerSystems, EYE_HEIGHT_M, FIXED_HZ, MoveInput,
     PLAYER_HEIGHT_M, PLAYER_STATE_HZ, PLAYER_WIDTH_M, Player, STEP_SMOOTH_S,

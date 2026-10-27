@@ -4046,3 +4046,19 @@ Decisions:
 - Rule 21: the e2e asserts the bag, the chips, the outline, the held model and the profile; the screenshots are for the playtester.
 Next: I3, the character screen with drag and drop.
 Blockers: none.
+
+## 2026-10-27 — I3 character screen with drag and drop — passed
+Done:
+- `Screen::Character` in the UI kit's stack; the kit tags each drawn panel `ScreenBody(screen)`, and `rmc_client::character` fills the character panel: five worn slots, the pack grid (9 wide) and the hotbar row, with a hint line.
+- `I` / `Tab` open it (with a bag, editor closed, no other screen); `I`, `Tab` or Escape close it. It frees the cursor like any screen.
+- `BagGesture` (`Drop { from, to, half }`, `QuickMove { from }`) is predicted on `ClientBag` with `Bag::move_stack` and sent as `MoveItem` only when it moved something; the host's `Bag` reply replaces the prediction. A refused move sends nothing, so it snaps back.
+- Picking observers on the slots turn left/right drags and shift-clicks into gestures; a ghost follows the pointer and the dragged slot is outlined.
+- `hotbar::thing_name` shared by the hotbar and the screen. Wired into the windowed game and `TestConfig::items`.
+- Docs: `docs/ITEMS.md` (I3 done, decisions), `docs/CONTROLS.md` (character screen), `docs/UI.md` (screens filled by other modules).
+Tests added: `character::tests::{i_and_tab_open_and_close_the_character_screen_and_free_the_cursor, drops_predict_the_move_and_send_it, refused_drops_leave_the_bag_and_send_nothing, equipment_slots_show_what_is_worn, pointer_drags_and_shift_clicks_become_moves}`, `e2e:character_screen_renders` (screens `docs/screens/character_screen_renders-*.png`).
+Decisions:
+- Gestures are messages so the logic is tested without a pointer; the observer glue is tested by triggering picking events by hand.
+- `Tab` toggles the screen only when no screen is open, so menu focus navigation is unchanged.
+- Rule 21: the e2e asserts the screen, the slots, both bags after a move and a refused move; the screenshots are for the playtester.
+Next: I4, what gear does (warmth, protection, felt temperature).
+Blockers: none.
