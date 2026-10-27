@@ -35,13 +35,15 @@ Status: done 2026-10-27.
 
 ### I2. Tool menu (hotbar) and several tools
 
-- `tools.ron` becomes a map of profiles: `pickaxe`, `shovel`, `axe`, `hand`. Each profile gets `fast` (tags it works well on) and `slow_div` (a damage divisor everywhere else). The pickaxe is fast on stone and ore, the shovel on soil, the axe on plants and wood, and the hand places.
+Status: done 2026-10-27.
+
+- `tools.ron` gains a map of further profiles (`shovel`, `axe`) and the bare `hand`. An item row gets `fast` (tags it works well on), `slow_div` (a damage divisor everywhere else) and `model` (its shape in hand). The pickaxe is fast on everything, the shovel on soil, the axe on plants (wood when it exists), and the hand places.
 - Number keys 1–9 and the mouse wheel select a hotbar slot, which replaces `SelectedMaterial`:
   - a tool in the slot swings with that profile;
   - a material in the slot is placed by right mouse.
 - The hotbar is drawn as a row of chips on the HUD (UI kit), with the selected slot outlined. The view model shows the selected tool: each tool gets its own box model, and a material in hand is shown as a small block.
-- The host checks that a `Damage` comes from a tool the player holds in its bag (anti-cheat, owner extension).
-- Tests: tool table loads and is refused when bad; damage per tag; hotbar selection from keys and wheel; the view model follows the tool; `e2e:hotbar_renders` with a semantic assert and screenshot (rule 21).
+- The host checks that a `Damage` comes from a tool the player holds in its bag (anti-cheat, owner extension). Not built: see Decisions.
+- Tests: `tools::tests::more_tools_and_the_hand_load_by_key`, `items::tests::tools_are_fast_on_their_tags`, `hotbar::tests::{number_keys_and_wheel_select_slots_and_what_is_held, hotbar_row_shows_the_slots_with_the_selection_outlined}`, `pickaxe::tests::held_tools_hit_hard_only_on_their_tags`, `viewmodel::tests::{every_held_model_stays_within_reach, view_model_follows_what_is_held}`, and `e2e:hotbar_renders` with a semantic assert and screenshots (rule 21).
 
 ### I3. Character screen with drag and drop
 
@@ -63,3 +65,8 @@ Status: done 2026-10-27.
 - Equipment slots are a fixed set in code (head, body, legs, feet, hands), named by items in data. Code branches on tags and slots, never on item keys (rules 5 and 18).
 - Bags are not saved yet, matching inventories (SAD §10). Saving them is a save-format change for the owner.
 - `items.ron` is not in the material hash, the same as `tools.ron`.
+- I2: what a tool is fast on lives in its `items.ron` row, not in its `tools.ron` profile. The profile stays a small `Copy` value that the swing, the HUD and the editor already pass around, and the item row is where tags are already read. The pickaxe keeps `pickaxe:` as its own field, so older tool files still load.
+- I2: the pickaxe is fast on everything (`fast: []`), so mining stone, ore and soil feels as before. The shovel (damage 20) is quicker than the pickaxe on dirt and clay, and the axe on shrubs; each does a quarter of its damage elsewhere.
+- I2: the swing's damage comes from the hit cell's tags, and a sphere-shaped tool applies that one value to its whole shape (`EditOp::Damage` carries one amount).
+- I2: no host anti-cheat for `Damage` yet. The editor's brush sends `Damage` with amounts no tool has, from the same player, so the host cannot tell them apart without a protocol change; and the game is single-player. Recorded for the owner.
+- I2: an item without a `model` (a hard hat in the hotbar) leaves the hand empty; a material in hand is drawn as a small block of its color.

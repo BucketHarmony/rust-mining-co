@@ -8,6 +8,7 @@ pub mod eco;
 pub mod editor;
 pub mod flycam;
 pub mod gizmo;
+pub mod hotbar;
 pub mod hud;
 pub mod interp;
 pub mod liquid;
@@ -52,6 +53,9 @@ pub use flycam::{FLY_TOGGLE_KEY, FlyCam, FlyCamPlugin, FlyCamSystems};
 pub use gizmo::{
     BRUSH_CELL_COLOR, CELL_GIZMO_SCALE, CHUNK_BOUNDS_COLOR, CHUNK_BOUNDS_RADIUS, EditorGizmoPlugin,
     EditorGizmos, GizmoSystems, HIT_CELL_COLOR, MESH_QUEUE_INSET, TargetGizmo, mesh_state_color,
+};
+pub use hotbar::{
+    ClientItems, HOTBAR_KEYS, Held, HotbarChip, HotbarHud, HotbarPlugin, HotbarSlot, HotbarSystems,
 };
 pub use hud::{
     BREAK_CHIPS, BREAK_EFFECT_S, BreakChip, BreakEffect, CRACK_OVERLAY_SCALE, CellBroke, ClientBag,

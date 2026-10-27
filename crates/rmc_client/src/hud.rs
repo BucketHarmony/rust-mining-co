@@ -55,7 +55,8 @@
 //!   place it) until the next step, which goes to the held material after
 //!   it. The inventory line of the selected material is marked with `> `.
 //!   While the editor is open, the wheel and keys leave it alone. `Welcome`
-//!   clears it.
+//!   clears it. With a bag ([`ClientBag`]) the hotbar
+//!   ([`HotbarPlugin`](crate::hotbar::HotbarPlugin)) selects instead.
 //! - Swing feedback: every swing the pickaxe sends ([`SwingState`]) starts a
 //!   pulse of [`SWING_PULSE_S`]: the crosshair arms grow and warm, and the
 //!   outline grows and lights up, both fading back.
@@ -747,15 +748,17 @@ fn estimate_damage(
 
 /// Steps the selection on this frame's wheel turn (one step per frame,
 /// whatever the amount) and on [`NEXT_SLOT_KEY`] / [`PREV_SLOT_KEY`]
-/// presses. Not while the editor is open.
+/// presses. Not while the editor is open, nor with a bag (the hotbar
+/// selects).
 fn select_material(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     scroll: Option<Res<AccumulatedMouseScroll>>,
     editor: Option<Res<EditorState>>,
     inventory: Res<ClientInventory>,
+    bag: Res<ClientBag>,
     mut selected: ResMut<SelectedMaterial>,
 ) {
-    if editor.is_some_and(|e| e.open) {
+    if editor.is_some_and(|e| e.open) || bag.0.is_some() {
         return;
     }
     let wheel = scroll.map_or(0.0, |s| s.delta.y);

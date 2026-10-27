@@ -14,6 +14,11 @@
 //!   head chops forward and down by up to [`SWING_ANGLE`] and back. A place
 //!   ([`PlaceState`] count up) pushes the pickaxe forward for [`PLACE_S`].
 //!   Walking on the ground bobs it.
+//! - With the hotbar ([`Held`], `docs/ITEMS.md` I2) it shows what is held:
+//!   each tool's own box model ([`model_mesh`]), a material as a small
+//!   block of its color ([`block_mesh`]), and nothing for an empty hand or
+//!   an item that is not a tool ([`InHand`]). Without the hotbar it is the
+//!   pickaxe.
 //! - It shows only while a [`Player`] exists, the fly camera is off and the
 //!   editor is closed.
 //! - Making the mesh needs mesh and material assets; an app without them
@@ -26,11 +31,16 @@ use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
+use rmc_world::items::{HeldModel, Thing};
+use rmc_world::materials::MaterialId;
+
 use crate::controller::Player;
 use crate::editor::EditorState;
 use crate::flycam::FlyCam;
+use crate::hotbar::Held;
 use crate::pickaxe::{PlaceState, SwingState};
 use crate::render::GameCamera;
+use crate::replica::Replica;
 
 /// Seconds a swing's chop takes, down and back.
 pub const SWING_S: f32 = 0.28;
@@ -63,9 +73,35 @@ const BOB_M: f32 = 0.003;
 /// Shade by face: +Y, ±X, ±Z, -Y.
 pub const FACE_SHADE: [f32; 4] = [1.0, 0.8, 0.68, 0.5];
 
+/// What the view model shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InHand {
+    Tool(HeldModel),
+    Block(MaterialId),
+    /// Nothing: the model is hidden.
+    #[default]
+    Empty,
+}
+
+impl InHand {
+    /// What `held` shows; the pickaxe without the hotbar.
+    pub fn of(held: Option<&Held>) -> Self {
+        let Some(held) = held else {
+            return Self::Tool(HeldModel::Pickaxe);
+        };
+        match (held.model, held.thing) {
+            (Some(model), _) => Self::Tool(model),
+            (None, Some(Thing::Material(id))) => Self::Block(id),
+            _ => Self::Empty,
+        }
+    }
+}
+
 /// The pickaxe in hand, and its animation state.
 #[derive(Component, Debug, Default)]
 pub struct ViewModel {
+    /// What the mesh shows.
+    pub in_hand: InHand,
     seen_swings: u64,
     seen_places: u64,
     /// Seconds into the current swing, if one is playing.
@@ -88,7 +124,7 @@ impl Plugin for ViewModelPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PostUpdate,
-            (spawn_view_model, animate, show)
+            (spawn_view_model, follow_held, animate, show)
                 .chain()
                 .in_set(ViewModelSystems)
                 .before(TransformSystems::Propagate),
@@ -138,8 +174,113 @@ const PARTS: [Part; 5] = [
     },
 ];
 
+/// A shovel: the handle with a D grip at the butt, and a flat blade
+/// continuing the handle.
+const SHOVEL_PARTS: [Part; 5] = [
+    // Handle.
+    Part {
+        center: Vec3::new(0.0, 0.055, 0.0),
+        half: Vec3::new(0.006, 0.065, 0.006),
+        color: [0.46, 0.30, 0.16],
+    },
+    // Grip.
+    Part {
+        center: Vec3::new(0.0, -0.012, 0.0),
+        half: Vec3::new(0.014, 0.004, 0.005),
+        color: [0.40, 0.26, 0.14],
+    },
+    // Socket.
+    Part {
+        center: Vec3::new(0.0, 0.118, 0.0),
+        half: Vec3::new(0.008, 0.008, 0.006),
+        color: [0.50, 0.51, 0.55],
+    },
+    // Blade, flat across X.
+    Part {
+        center: Vec3::new(0.0, 0.142, 0.0),
+        half: Vec3::new(0.019, 0.018, 0.0025),
+        color: [0.56, 0.57, 0.61],
+    },
+    // Rounded tip.
+    Part {
+        center: Vec3::new(0.0, 0.163, 0.0),
+        half: Vec3::new(0.012, 0.004, 0.0025),
+        color: [0.62, 0.63, 0.67],
+    },
+];
+
+/// An axe: the handle, a head with its bit forward (-Z), square to the
+/// chop like the pickaxe's, and a short poll behind.
+const AXE_PARTS: [Part; 4] = [
+    // Handle.
+    Part {
+        center: Vec3::new(0.0, 0.055, 0.0),
+        half: Vec3::new(0.006, 0.065, 0.006),
+        color: [0.50, 0.33, 0.18],
+    },
+    // Head.
+    Part {
+        center: Vec3::new(0.0, 0.115, -0.012),
+        half: Vec3::new(0.007, 0.011, 0.02),
+        color: [0.50, 0.51, 0.55],
+    },
+    // Bit, taller than the head.
+    Part {
+        center: Vec3::new(0.0, 0.115, -0.036),
+        half: Vec3::new(0.004, 0.019, 0.005),
+        color: [0.68, 0.69, 0.73],
+    },
+    // Poll.
+    Part {
+        center: Vec3::new(0.0, 0.115, 0.012),
+        half: Vec3::new(0.007, 0.008, 0.005),
+        color: [0.44, 0.45, 0.49],
+    },
+];
+
+/// Half the edge of a held block, model units.
+const BLOCK_HALF: f32 = 0.024;
+
 /// The pickaxe mesh: positions, normals and shaded vertex colors.
 pub fn pickaxe_mesh() -> Mesh {
+    box_mesh(&PARTS)
+}
+
+/// The mesh of a tool model.
+pub fn model_mesh(model: HeldModel) -> Mesh {
+    match model {
+        HeldModel::Pickaxe => pickaxe_mesh(),
+        HeldModel::Shovel => box_mesh(&SHOVEL_PARTS),
+        HeldModel::Axe => box_mesh(&AXE_PARTS),
+    }
+}
+
+/// A held block of sRGB `color`, at the grip.
+pub fn block_mesh(color: [f32; 3]) -> Mesh {
+    box_mesh(&[Part {
+        center: Vec3::new(0.0, BLOCK_HALF, 0.0),
+        half: Vec3::splat(BLOCK_HALF),
+        color,
+    }])
+}
+
+/// What `in_hand` looks like; `None` for an empty hand.
+fn in_hand_mesh(in_hand: InHand, replica: Option<&Replica>) -> Option<Mesh> {
+    match in_hand {
+        InHand::Tool(model) => Some(model_mesh(model)),
+        InHand::Block(id) => {
+            let rgba = replica
+                .and_then(|r| r.world().materials().get(id))
+                .map_or([128, 128, 128, 255], |d| d.color);
+            let c = |i: usize| f32::from(rgba[i]) / f32::from(u8::MAX);
+            Some(block_mesh([c(0), c(1), c(2)]))
+        }
+        InHand::Empty => None,
+    }
+}
+
+/// Boxes as one mesh: positions, normals and shaded vertex colors.
+fn box_mesh(parts: &[Part]) -> Mesh {
     // Each face: normal, shade index, and its four corners as signs.
     let faces: [(Vec3, usize, [Vec3; 4]); 6] = [
         (
@@ -207,7 +348,7 @@ pub fn pickaxe_mesh() -> Mesh {
     let mut normals = Vec::new();
     let mut colors = Vec::new();
     let mut indices = Vec::new();
-    for part in &PARTS {
+    for part in parts {
         let [r, g, b] = part.color;
         let base = LinearRgba::from(Srgba::rgb(r, g, b));
         for (normal, shade, corners) in &faces {
@@ -287,6 +428,7 @@ fn spawn_view_model(
     let model = commands
         .spawn((
             ViewModel {
+                in_hand: InHand::Tool(HeldModel::Pickaxe),
                 // Swings before it existed are not played.
                 seen_swings: swings.map_or(0, |s| s.swings()),
                 seen_places: places.map_or(0, |p| p.places()),
@@ -300,6 +442,28 @@ fn spawn_view_model(
         ))
         .id();
     commands.entity(camera).add_child(model);
+}
+
+/// Swaps the mesh when what is held changes.
+fn follow_held(
+    held: Option<Res<Held>>,
+    replica: Option<Res<Replica>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    mut models: Query<(&mut ViewModel, &mut Mesh3d)>,
+) {
+    let Some(mut meshes) = meshes else {
+        return;
+    };
+    let want = InHand::of(held.as_deref());
+    for (mut model, mut mesh) in &mut models {
+        if model.in_hand == want {
+            continue;
+        }
+        model.in_hand = want;
+        if let Some(new) = in_hand_mesh(want, replica.as_deref()) {
+            mesh.0 = meshes.add(new);
+        }
+    }
 }
 
 /// Starts and plays the swing and place animations, and the walking bob.
@@ -343,17 +507,17 @@ fn show(
     players: Query<(), With<Player>>,
     flycam: Option<Res<FlyCam>>,
     editor: Option<Res<EditorState>>,
-    mut models: Query<&mut Visibility, With<ViewModel>>,
+    mut models: Query<(&ViewModel, &mut Visibility)>,
 ) {
     let shown = !players.is_empty()
         && !flycam.is_some_and(|f| f.enabled)
         && !editor.is_some_and(|e| e.open);
-    let want = if shown {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
-    for mut visibility in &mut models {
+    for (model, mut visibility) in &mut models {
+        let want = if shown && model.in_hand != InHand::Empty {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
         visibility.set_if_neq(want);
     }
 }
@@ -435,6 +599,85 @@ mod tests {
         }
         assert!(far <= MODEL_REACH_M, "reaches {far} m");
         assert!(near >= MODEL_NEAR_M, "comes within {near} m");
+    }
+
+    #[test]
+    fn every_held_model_stays_within_reach() {
+        let meshes = [
+            ("pickaxe", model_mesh(HeldModel::Pickaxe)),
+            ("shovel", model_mesh(HeldModel::Shovel)),
+            ("axe", model_mesh(HeldModel::Axe)),
+            ("block", block_mesh([0.5, 0.4, 0.3])),
+        ];
+        for (name, mesh) in &meshes {
+            let Some(VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("{name}: positions");
+            };
+            assert!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some(), "{name}");
+            let (mut far, mut near) = (0.0f32, f32::MAX);
+            for step in 0..=10 {
+                let t = SWING_S * step as f32 / 10.0;
+                for walked in [0.0, 0.4] {
+                    let pose = pose(Some(t), Some(t.min(PLACE_S)), walked);
+                    for p in positions {
+                        let v = pose.transform_point(Vec3::from_array(*p));
+                        far = far.max(v.abs().max_element());
+                        near = near.min(-v.z);
+                    }
+                }
+            }
+            assert!(far <= MODEL_REACH_M, "{name} reaches {far} m");
+            assert!(near >= MODEL_NEAR_M, "{name} comes within {near} m");
+        }
+        // The tools differ.
+        let shape = |m: &Mesh| format!("{:?}", m.attribute(Mesh::ATTRIBUTE_POSITION));
+        assert_ne!(shape(&meshes[0].1), shape(&meshes[1].1));
+        assert_ne!(shape(&meshes[0].1), shape(&meshes[2].1));
+        assert_ne!(shape(&meshes[1].1), shape(&meshes[2].1));
+    }
+
+    #[test]
+    fn view_model_follows_what_is_held() {
+        let mut app = app();
+        app.world_mut().spawn(Player::at(Vec3::ZERO));
+        app.update();
+        app.update();
+        let in_hand = |app: &mut App| {
+            let world = app.world_mut();
+            let mut q = world.query::<(&ViewModel, &Mesh3d, &Visibility)>();
+            let (m, mesh, v) = q.single(world).unwrap();
+            (m.in_hand, mesh.0.clone(), *v)
+        };
+        // Without the hotbar: the pickaxe.
+        let (first, pick_mesh, vis) = in_hand(&mut app);
+        assert_eq!(first, InHand::Tool(HeldModel::Pickaxe));
+        assert_eq!(vis, Visibility::Inherited);
+
+        app.insert_resource(Held {
+            model: Some(HeldModel::Shovel),
+            ..default()
+        });
+        app.update();
+        let (now, mesh, vis) = in_hand(&mut app);
+        assert_eq!(now, InHand::Tool(HeldModel::Shovel));
+        assert_ne!(mesh, pick_mesh, "a new mesh");
+        assert_eq!(vis, Visibility::Inherited);
+
+        app.insert_resource(Held {
+            thing: Some(Thing::Material(MaterialId(2))),
+            ..default()
+        });
+        app.update();
+        assert_eq!(in_hand(&mut app).0, InHand::Block(MaterialId(2)));
+
+        // An empty hand hides it.
+        app.insert_resource(Held::default());
+        app.update();
+        let (now, _, vis) = in_hand(&mut app);
+        assert_eq!(now, InHand::Empty);
+        assert_eq!(vis, Visibility::Hidden);
     }
 
     #[test]

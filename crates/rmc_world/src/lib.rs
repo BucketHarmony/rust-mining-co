@@ -26,4 +26,4 @@ pub use inventory::Inventory;
 pub use items::{Bag, ItemTable};
 pub use ledger::SeasonLedger;
 pub use raycast::{Hit, raycast, raycast_solid};
-pub use tools::{ToolProfile, ToolShape, ToolTable};
+pub use tools::{PICKAXE, ToolProfile, ToolShape, ToolTable};

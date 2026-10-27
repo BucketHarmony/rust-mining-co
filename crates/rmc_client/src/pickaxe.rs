@@ -10,7 +10,10 @@
 //!
 //! The profile comes from `assets/tools.ron` in the [`Pickaxe`] resource;
 //! without it, or before `Welcome` (no [`Replica`]), the pickaxe does
-//! nothing. The client only asks: the host decides what breaks, and the
+//! nothing. With the hotbar ([`Held`], `docs/ITEMS.md` I2) the profile is
+//! the held tool's, and a swing does the held tool's damage for the hit
+//! cell's tags ([`ToolSpeed::damage`](rmc_world::items::ToolSpeed::damage)).
+//! The host applies the damage it is sent. The client only asks: the host decides what breaks, and the
 //! replica changes when its `Applied` result comes back.
 //!
 //! - Swings run in `FixedUpdate`, after the controller has moved the
@@ -48,6 +51,7 @@ use crate::controller::{ControllerSystems, Player};
 use crate::cursor::{CursorGrab, look_allowed, swing_allowed};
 use crate::editor::EditorState;
 use crate::flycam::FlyCam;
+use crate::hotbar::Held;
 use crate::hud::SelectedMaterial;
 use crate::net::{CommandSeq, ToHost};
 use crate::replica::Replica;
@@ -172,6 +176,7 @@ fn swing(
     fly: Option<Res<FlyCam>>,
     editor: Option<Res<EditorState>>,
     grab: Option<Res<CursorGrab>>,
+    held_tool: Option<Res<Held>>,
     time: Res<Time>,
     mut state: ResMut<SwingState>,
     mut seq: ResMut<CommandSeq>,
@@ -206,11 +211,17 @@ fn swing(
     let Some(hit) = target(replica.world(), player, profile.reach_m) else {
         return;
     };
+    let world = replica.world();
+    let tags = world
+        .get_cell(hit.cell)
+        .and_then(|id| world.materials().get(id))
+        .map_or(&[][..], |def| &def.tags[..]);
+    let damage = held_tool.map_or(profile.damage, |h| h.speed.damage(profile.damage, tags));
     let issuer = replica.player();
     out.write(ToHost(ClientMsg::Edit(EditCommand {
         id: seq.next_id(issuer),
         issuer,
-        op: EditOp::Damage(profile.damage),
+        op: EditOp::Damage(damage),
         shape: profile.shape.at(hit.cell),
     })));
     state.since_swing = Some(Duration::ZERO);
@@ -1004,5 +1015,46 @@ mod tests {
             assert_eq!(rig.hud().swing_pulse, 0.0);
         }
         assert!(rig.edits().is_empty());
+    }
+
+    #[test]
+    fn held_tools_hit_hard_only_on_their_tags() {
+        use crate::hotbar::Held;
+        use rmc_world::items::ToolSpeed;
+
+        let speed = |fast: &str| ToolSpeed {
+            fast: vec![fast.to_string()],
+            slow_div: 4,
+        };
+        let swing_at_wall = |held: Option<Held>| {
+            let p = ToolProfile {
+                damage: 20,
+                ..profile()
+            };
+            let mut rig = Rig::new(world(Some(27)), feet_at_z(16.0), p);
+            if let Some(held) = held {
+                rig.app.insert_resource(held);
+            }
+            rig.hold(true);
+            rig.frames(2);
+            let edits = rig.edits();
+            assert_eq!(edits.len(), 1, "{edits:?}");
+            edits[0].1.op
+        };
+        // The wall is stone: a shovel (fast on soil) does a quarter, a
+        // tool fast on stone all of it, and without the hotbar the
+        // profile's damage is sent as before.
+        let shovel = Held {
+            speed: speed("soil"),
+            ..default()
+        };
+        assert_eq!(swing_at_wall(Some(shovel)), EditOp::Damage(5));
+        let pick = Held {
+            speed: speed("stone"),
+            ..default()
+        };
+        assert_eq!(swing_at_wall(Some(pick)), EditOp::Damage(20));
+        assert_eq!(swing_at_wall(Some(Held::default())), EditOp::Damage(20));
+        assert_eq!(swing_at_wall(None), EditOp::Damage(20));
     }
 }

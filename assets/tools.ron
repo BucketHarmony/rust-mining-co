@@ -6,6 +6,10 @@
 // reach_m:    how far from the eye a cell can be hit, in meters.
 // shape:      the cells one swing damages around the hit cell:
 //             Cell, or Sphere(radius: r) for every cell within r cells.
+//
+// tools: further profiles by key; an items.ron row names the one it
+//        swings with. What a tool is fast on is in its items.ron row.
+// hand:  what an empty hand, or a hand holding a material, swings with.
 (
     pickaxe: (
         damage: 10,
@@ -13,4 +17,9 @@
         reach_m: 3.0,
         shape: Cell,
     ),
+    tools: {
+        "shovel": (damage: 20, interval_s: 0.35, reach_m: 3.0, shape: Cell),
+        "axe": (damage: 20, interval_s: 0.4, reach_m: 3.0, shape: Cell),
+    },
+    hand: Some((damage: 2, interval_s: 0.35, reach_m: 3.0, shape: Cell)),
 )

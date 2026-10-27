@@ -22,6 +22,12 @@
 //!
 //! Every scan is in slot order, so a bag's contents depend only on the
 //! operations applied to it.
+//!
+//! A tool row (I2) also says what it is fast on: a swing does the profile's
+//! full damage to a cell with one of the row's `fast` tags (or to any cell
+//! when `fast` is empty), and the damage divided by `slow_div` elsewhere
+//! ([`ToolSpeed::damage`]). `model` names the shape the client draws in
+//! hand.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -30,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::materials::MaterialId;
+use crate::tools::ToolTable;
 
 /// An item: its row in [`ItemTable`].
 #[derive(
@@ -78,6 +85,67 @@ pub struct ItemDef {
     /// The equipment slot a wearable goes in.
     #[serde(default)]
     pub slot: Option<EquipSlot>,
+    /// For a tool: the cell tags it works well on. Empty: every cell.
+    #[serde(default)]
+    pub fast: Vec<String>,
+    /// For a tool: the damage divisor on a cell with none of `fast`'s tags.
+    /// At least 1.
+    #[serde(default = "one")]
+    pub slow_div: u16,
+    /// The shape drawn in hand; `None`: an empty hand.
+    #[serde(default)]
+    pub model: Option<HeldModel>,
+}
+
+fn one() -> u16 {
+    1
+}
+
+impl ItemDef {
+    /// How fast this item swings on each kind of cell.
+    pub fn speed(&self) -> ToolSpeed {
+        ToolSpeed {
+            fast: self.fast.clone(),
+            slow_div: self.slow_div,
+        }
+    }
+}
+
+/// A shape the client can draw in hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HeldModel {
+    Pickaxe,
+    Shovel,
+    Axe,
+}
+
+/// What a tool is fast on (see the module docs). The default is fast on
+/// everything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolSpeed {
+    pub fast: Vec<String>,
+    pub slow_div: u16,
+}
+
+impl Default for ToolSpeed {
+    fn default() -> Self {
+        Self {
+            fast: Vec::new(),
+            slow_div: 1,
+        }
+    }
+}
+
+impl ToolSpeed {
+    /// The damage a swing of `damage` does to a cell tagged `tags`: all of
+    /// it on a fast tag, else `damage / slow_div`, and never less than 1.
+    pub fn damage(&self, damage: u16, tags: &[String]) -> u16 {
+        if self.fast.is_empty() || self.fast.iter().any(|t| tags.contains(t)) {
+            damage
+        } else {
+            (damage / self.slow_div.max(1)).max(1)
+        }
+    }
 }
 
 /// How many hotbar and pack slots a bag has.
@@ -132,6 +200,10 @@ pub enum ItemError {
     NoStack(String),
     #[error("item {0:?}: an empty tool profile")]
     EmptyTool(String),
+    #[error("item {0:?}: slow_div must be at least 1")]
+    NoSlowDiv(String),
+    #[error("item {item:?} swings tool {tool:?}, which tools.ron does not have")]
+    UnknownTool { item: String, tool: String },
     #[error("bag: {0}")]
     BadBag(String),
     #[error("material_stack must be at least 1")]
@@ -182,6 +254,9 @@ impl ItemTable {
             }
             if row.tool.as_deref() == Some("") {
                 return Err(ItemError::EmptyTool(row.key.clone()));
+            }
+            if row.slow_div == 0 {
+                return Err(ItemError::NoSlowDiv(row.key.clone()));
             }
             if by_key.insert(row.key.clone(), ItemId(i as u16)).is_some() {
                 return Err(ItemError::Duplicate(row.key.clone()));
@@ -248,6 +323,21 @@ impl ItemTable {
     /// The starting kit, in file order.
     pub fn start(&self) -> &[(ItemId, u32)] {
         &self.start
+    }
+
+    /// Checks that every tool row names a profile in `tools`.
+    pub fn check_tools(&self, tools: &ToolTable) -> Result<(), ItemError> {
+        for row in &self.rows {
+            if let Some(tool) = &row.tool
+                && tools.profile(tool).is_none()
+            {
+                return Err(ItemError::UnknownTool {
+                    item: row.key.clone(),
+                    tool: tool.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -574,6 +664,7 @@ mod tests {
     use super::*;
 
     const ITEMS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/items.ron");
+    const TOOLS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/tools.ron");
 
     /// A small table: 3 hotbar and 2 pack slots, materials stack to 10.
     fn table() -> ItemTable {
@@ -842,6 +933,57 @@ mod tests {
         assert_eq!(bag.worn(EquipSlot::Feet), stack(boots, 1));
         assert_eq!(bag.count(cap), 3);
         assert_eq!(bag.count(helm), 1);
+    }
+
+    #[test]
+    fn tools_are_fast_on_their_tags() {
+        let tags = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let shovel = ToolSpeed {
+            fast: tags(&["soil"]),
+            slow_div: 4,
+        };
+        assert_eq!(shovel.damage(20, &tags(&["soil", "porous"])), 20);
+        assert_eq!(shovel.damage(20, &tags(&["stone"])), 5);
+        assert_eq!(shovel.damage(20, &[]), 5, "untagged cells are slow");
+        assert_eq!(shovel.damage(3, &tags(&["stone"])), 1, "never below 1");
+        let any = ToolSpeed::default();
+        assert_eq!(any.damage(10, &tags(&["stone"])), 10);
+        assert_eq!(any.damage(10, &[]), 10);
+
+        // The shipped tools: every tool row names a tools.ron profile and
+        // a model, and the tools differ in what they are fast on.
+        let t = ItemTable::load(ITEMS_PATH).unwrap();
+        let tools = ToolTable::load(TOOLS_PATH).unwrap();
+        t.check_tools(&tools).expect("every tool has a profile");
+        let rows: Vec<&ItemDef> = t
+            .iter()
+            .map(|(_, row)| row)
+            .filter(|row| row.tool.is_some())
+            .collect();
+        assert!(rows.len() >= 3, "pickaxe, shovel and axe");
+        assert!(rows.iter().all(|row| row.model.is_some()));
+        let mut fast: Vec<&Vec<String>> = rows.iter().map(|row| &row.fast).collect();
+        fast.sort();
+        fast.dedup();
+        assert_eq!(fast.len(), rows.len(), "each tool is fast on its own tags");
+
+        // A row that names a missing profile, or divides by 0, is refused.
+        let one_tool =
+            |row: &str| format!("(bag: (hotbar: 1, pack: 0), material_stack: 1, items: [{row}])");
+        let ghost = ItemTable::from_ron_str(&one_tool(
+            r#"(key: "g", name: "G", stack: 1, tool: Some("ghost"))"#,
+        ))
+        .unwrap();
+        assert!(matches!(
+            ghost.check_tools(&tools),
+            Err(ItemError::UnknownTool { .. })
+        ));
+        assert!(matches!(
+            ItemTable::from_ron_str(&one_tool(
+                r#"(key: "g", name: "G", stack: 1, tool: Some("pickaxe"), slow_div: 0)"#
+            )),
+            Err(ItemError::NoSlowDiv(_))
+        ));
     }
 
     #[test]

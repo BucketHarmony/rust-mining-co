@@ -9,23 +9,31 @@
 // items:          key (stable), name (shown), tags (code filters on these),
 //                 stack (largest stack), tool (the tools.ron profile a tool
 //                 swings with), slot (Head, Body, Legs, Feet or Hands: where
-//                 a wearable goes).
+//                 a wearable goes), fast (cell tags a tool works well on;
+//                 empty: all), slow_div (a tool's damage divisor on other
+//                 cells), model (Pickaxe, Shovel or Axe: drawn in hand).
 // start:          what a new player gets, in order. Wearables are put on
 //                 when their slot is free; the rest go in the hotbar first.
 (
     bag: (hotbar: 9, pack: 27),
     material_stack: 999,
     items: [
-        (key: "pickaxe", name: "Pickaxe", tags: ["tool"], stack: 1, tool: Some("pickaxe")),
+        (key: "pickaxe", name: "Pickaxe", tags: ["tool"], stack: 1, tool: Some("pickaxe"), model: Some(Pickaxe)),
         (key: "work_cap", name: "Work cap", tags: ["clothing"], stack: 1, slot: Some(Head)),
         (key: "work_shirt", name: "Work shirt", tags: ["clothing"], stack: 1, slot: Some(Body)),
         (key: "work_trousers", name: "Work trousers", tags: ["clothing"], stack: 1, slot: Some(Legs)),
         (key: "work_boots", name: "Work boots", tags: ["clothing"], stack: 1, slot: Some(Feet)),
         (key: "work_gloves", name: "Work gloves", tags: ["clothing"], stack: 1, slot: Some(Hands)),
         (key: "hard_hat", name: "Hard hat", tags: ["armor"], stack: 1, slot: Some(Head)),
+        (key: "shovel", name: "Shovel", tags: ["tool"], stack: 1, tool: Some("shovel"),
+         fast: ["soil"], slow_div: 4, model: Some(Shovel)),
+        (key: "axe", name: "Axe", tags: ["tool"], stack: 1, tool: Some("axe"),
+         fast: ["plant"], slow_div: 4, model: Some(Axe)),
     ],
     start: [
         ("pickaxe", 1),
+        ("shovel", 1),
+        ("axe", 1),
         ("work_cap", 1),
         ("work_shirt", 1),
         ("work_trousers", 1),

@@ -31,6 +31,7 @@ use rmc_world::ToolTable;
 use rmc_world::coords::CellAabb;
 use rmc_world::edit::PlayerId;
 use rmc_world::inventory::Inventory;
+use rmc_world::items::ItemTable;
 use rmc_world::materials::MaterialTable;
 use rmc_world::save::{self, SaveError, SaveHeader};
 use rmc_world::world::World as CellWorld;
@@ -74,6 +75,11 @@ pub struct TestConfig {
     /// (`rmc_client::daynight`), as the windowed game does. Off by default,
     /// so other scenarios' shots have no rain in them.
     pub weather: bool,
+    /// Give the host `assets/items.ron`, so the player gets a bag, and add
+    /// the hotbar (`rmc_client::hotbar`), as the windowed game does. Off by
+    /// default: the host then sends no `Bag` and the pickaxe swings as in
+    /// Phase 1.
+    pub items: bool,
 }
 
 impl Default for TestConfig {
@@ -86,6 +92,7 @@ impl Default for TestConfig {
             tiles: false,
             ui: false,
             weather: false,
+            items: false,
         }
     }
 }
@@ -228,6 +235,12 @@ impl TestApp {
         let player = endpoint.player();
         let mut host = Host::new(world, host_config, Box::new(transport)).with_eco(eco.clone());
         host.set_save(save);
+        let items = config
+            .items
+            .then(|| ItemTable::load(asset_path("items.ron")).expect("assets/items.ron loads"));
+        if let Some(items) = &items {
+            host.set_items(items.clone());
+        }
 
         let mut app = App::new();
         if config.render {
@@ -271,6 +284,10 @@ impl TestApp {
                 theme,
                 assets_dir: Some(asset_path("")),
             });
+        }
+        if let Some(items) = items {
+            app.insert_resource(rmc_client::ClientItems { items, tools })
+                .add_plugins(rmc_client::HotbarPlugin);
         }
 
         // What App::run does before its first update; we never call run.

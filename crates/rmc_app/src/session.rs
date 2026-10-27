@@ -74,6 +74,9 @@ impl GameAssets {
             .with_context(|| format!("loading {}", dir.join("tools.ron").display()))?;
         let items = ItemTable::load(dir.join("items.ron"))
             .with_context(|| format!("loading {}", dir.join("items.ron").display()))?;
+        items
+            .check_tools(&tools)
+            .with_context(|| format!("checking {}", dir.join("items.ron").display()))?;
         let worldgen = GenParams::load(dir.join("worldgen.ron"))
             .with_context(|| format!("loading {}", dir.join("worldgen.ron").display()))?;
         let materials = Arc::new(materials);

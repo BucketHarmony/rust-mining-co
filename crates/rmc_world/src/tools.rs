@@ -4,7 +4,12 @@
 //! swing does, how often it can swing, how far it reaches and which cells
 //! around the hit cell a swing damages. The client turns a swing into an
 //! `EditOp::Damage` command over [`ToolShape::at`] the hit cell.
+//!
+//! The items extension (`docs/ITEMS.md` I2) adds more profiles by key
+//! (`tools`) and the bare hand's (`hand`); an item row names the profile
+//! it swings with ([`ToolTable::profile`]).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -48,11 +53,20 @@ pub struct ToolProfile {
     pub shape: ToolShape,
 }
 
+/// The pickaxe's key: the name of [`ToolTable::pickaxe`].
+pub const PICKAXE: &str = "pickaxe";
+
 /// Every tool's profile: the contents of `tools.ron`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolTable {
     pub pickaxe: ToolProfile,
+    /// Further profiles by key.
+    #[serde(default)]
+    pub tools: BTreeMap<String, ToolProfile>,
+    /// What an empty hand, or a hand holding a material, swings with.
+    #[serde(default)]
+    pub hand: Option<ToolProfile>,
 }
 
 #[derive(Debug, Error)]
@@ -66,13 +80,15 @@ pub enum ToolError {
     #[error("parsing tools RON: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("tool {tool:?}: damage must be at least 1")]
-    NoDamage { tool: &'static str },
+    NoDamage { tool: String },
     #[error("tool {tool:?}: {field} is {value}; it must be finite and > 0")]
     NotPositive {
-        tool: &'static str,
+        tool: String,
         field: &'static str,
         value: f32,
     },
+    #[error("tool {0:?} is listed twice")]
+    Duplicate(String),
 }
 
 impl ToolTable {
@@ -91,19 +107,41 @@ impl ToolTable {
     /// Parses and validates the table from RON text.
     pub fn from_ron_str(text: &str) -> Result<Self, ToolError> {
         let table: ToolTable = ron::from_str(text)?;
-        table.pickaxe.validate("pickaxe")?;
+        table.pickaxe.validate(PICKAXE)?;
+        if table.tools.contains_key(PICKAXE) {
+            return Err(ToolError::Duplicate(PICKAXE.into()));
+        }
+        for (key, profile) in &table.tools {
+            profile.validate(key)?;
+        }
+        if let Some(hand) = &table.hand {
+            hand.validate("hand")?;
+        }
         Ok(table)
+    }
+
+    /// The profile named `key`: the pickaxe, or one of `tools`.
+    pub fn profile(&self, key: &str) -> Option<&ToolProfile> {
+        if key == PICKAXE {
+            Some(&self.pickaxe)
+        } else {
+            self.tools.get(key)
+        }
     }
 }
 
 impl ToolProfile {
-    fn validate(&self, tool: &'static str) -> Result<(), ToolError> {
+    fn validate(&self, tool: &str) -> Result<(), ToolError> {
         if self.damage == 0 {
-            return Err(ToolError::NoDamage { tool });
+            return Err(ToolError::NoDamage { tool: tool.into() });
         }
         for (field, value) in [("interval_s", self.interval_s), ("reach_m", self.reach_m)] {
             if !value.is_finite() || value <= 0.0 {
-                return Err(ToolError::NotPositive { tool, field, value });
+                return Err(ToolError::NotPositive {
+                    tool: tool.into(),
+                    field,
+                    value,
+                });
             }
         }
         Ok(())
@@ -130,6 +168,41 @@ mod tests {
         assert_eq!(t.pickaxe.interval_s, 0.35);
         assert_eq!(t.pickaxe.shape, ToolShape::Cell);
         assert!(t.pickaxe.damage >= 1);
+    }
+
+    #[test]
+    fn more_tools_and_the_hand_load_by_key() {
+        let t = ToolTable::load(TOOLS_PATH).unwrap();
+        assert_eq!(t.profile(PICKAXE), Some(&t.pickaxe));
+        for key in ["shovel", "axe"] {
+            assert!(t.profile(key).is_some(), "{key}");
+        }
+        assert!(t.hand.is_some(), "a bare hand");
+        assert_eq!(t.profile("ghost"), None);
+
+        // Without them the table is the Phase 1 one.
+        let old = ToolTable::from_ron_str(&ron(7, "0.5", "2.0", "Cell")).unwrap();
+        assert!(old.tools.is_empty() && old.hand.is_none());
+
+        let p = "(damage: 1, interval_s: 1.0, reach_m: 1.0, shape: Cell)";
+        let bad = "(damage: 0, interval_s: 1.0, reach_m: 1.0, shape: Cell)";
+        let file =
+            |tools: &str, hand: &str| format!("(pickaxe: {p}, tools: {{{tools}}}, hand: {hand})");
+        assert!(
+            ToolTable::from_ron_str(&file(&format!("\"s\": {p}"), &format!("Some({p})"))).is_ok()
+        );
+        assert!(matches!(
+            ToolTable::from_ron_str(&file(&format!("\"s\": {bad}"), "None")),
+            Err(ToolError::NoDamage { tool }) if tool == "s"
+        ));
+        assert!(matches!(
+            ToolTable::from_ron_str(&file("", &format!("Some({bad})"))),
+            Err(ToolError::NoDamage { tool }) if tool == "hand"
+        ));
+        assert!(matches!(
+            ToolTable::from_ron_str(&file(&format!("\"pickaxe\": {p}"), "None")),
+            Err(ToolError::Duplicate(_))
+        ));
     }
 
     #[test]

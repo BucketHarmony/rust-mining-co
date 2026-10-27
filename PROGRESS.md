@@ -4025,3 +4025,24 @@ Decisions:
 - The starting kit is a pickaxe, five pieces of work clothes (worn) and a hard hat (in the hotbar), so I3's drag and drop has something to move.
 Next: I2, the hotbar and several tools (`docs/ITEMS.md`).
 Blockers: none.
+
+## 2026-10-27 — I2 hotbar and several tools — passed
+Done:
+- `tools.ron`: `tools` map (`shovel` damage 20, `axe` damage 20) and the bare `hand` (damage 2); `ToolTable::profile(key)`. The `pickaxe` field stays, so old files load.
+- `items.ron` rows gain `fast`, `slow_div` and `model`; shovel (fast on soil) and axe (fast on plant) rows are appended and in the starting kit. `ToolSpeed::damage` gives full damage on a fast tag, else `damage / slow_div` (at least 1). `ItemTable::check_tools` runs when the game loads its assets.
+- `rmc_client::hotbar` (`HotbarPlugin`, `ClientItems`, `HotbarSlot`, `Held`):
+  - with a bag, keys 1–9, the wheel and `E`/`Q` select a slot (not in the editor);
+  - the held tool sets the `Pickaxe` profile (else the hand), a held material is `SelectedMaterial`;
+  - the HUD row of chips sits in the `Bottom` anchor, the selected chip outlined in the accent color, hidden without a bag.
+  The HUD's wheel selection stands aside while there is a bag.
+- The swing sends the held tool's damage for the hit cell's tags.
+- The view model shows the held thing: pickaxe, shovel or axe box models, a block of a held material's color, nothing for an empty hand.
+- The windowed game adds the hotbar; `TestConfig::items` does the same in the test kit (off by default).
+- Docs: `docs/ITEMS.md` (I2 done, decisions), `docs/CONTROLS.md`.
+Tests added: `tools::tests::more_tools_and_the_hand_load_by_key`, `items::tests::tools_are_fast_on_their_tags`, `hotbar::tests::{number_keys_and_wheel_select_slots_and_what_is_held, hotbar_row_shows_the_slots_with_the_selection_outlined}`, `pickaxe::tests::held_tools_hit_hard_only_on_their_tags`, `viewmodel::tests::{every_held_model_stays_within_reach, view_model_follows_what_is_held}`, `e2e:hotbar_renders` (screens `docs/screens/hotbar_renders-*.png`).
+Decisions:
+- Tool speed lives in the item row; the pickaxe is fast on everything, so mining feels as before.
+- No host anti-cheat on `Damage` yet: the editor brush sends tool-less damage as the same player. Recorded in `docs/ITEMS.md` for the owner.
+- Rule 21: the e2e asserts the bag, the chips, the outline, the held model and the profile; the screenshots are for the playtester.
+Next: I3, the character screen with drag and drop.
+Blockers: none.
