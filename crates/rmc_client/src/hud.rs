@@ -693,7 +693,8 @@ fn track_host(
             | ServerMsg::Saved { .. }
             | ServerMsg::LayerSnapshot { .. }
             | ServerMsg::SeasonStarted { .. }
-            | ServerMsg::SeasonDone { .. } => {}
+            | ServerMsg::SeasonDone { .. }
+            | ServerMsg::Clock(_) => {}
         }
     }
 }

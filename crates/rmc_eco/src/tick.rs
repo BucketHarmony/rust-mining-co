@@ -16,6 +16,7 @@ use rmc_world::ledger::SeasonLedger;
 use rmc_world::world::World;
 
 use crate::activity::{Activity, JacobiKind};
+use crate::calendar::SubstepWeather;
 use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::{Emission, GasPass};
 use crate::light::LightPass;
@@ -164,6 +165,9 @@ pub struct SeasonRun {
     report: TickReport,
     next: u8,
     substeps: u8,
+    /// The calendar's weather per sub-step ([`SeasonRun::start_planned`]);
+    /// `None`: the season row's flat `air_temp` and `rain`.
+    plan: Option<Vec<SubstepWeather>>,
 }
 
 impl SeasonRun {
@@ -206,7 +210,37 @@ impl SeasonRun {
             report: TickReport::default(),
             next: 0,
             substeps: tables.seasons().substeps,
+            plan: None,
         }
+    }
+
+    /// [`SeasonRun::start`] for a season of the game calendar
+    /// (`crate::calendar`): one sub-step per entry of `plan`, each with its
+    /// own air temperature clamp and rain instead of the season row's.
+    /// Whenever the clamp changes, the activity treats it as a season
+    /// boundary, so no chunk with an open cell skips the temperature pass.
+    ///
+    /// # Panics
+    /// If `plan` is empty or longer than `u8::MAX`.
+    pub fn start_planned(
+        world: &mut World,
+        tables: &EcoTables,
+        season: u32,
+        seed: u64,
+        activity: &mut Activity,
+        plan: Vec<SubstepWeather>,
+    ) -> Self {
+        let substeps = u8::try_from(plan.len()).expect("a season of at most 255 sub-steps");
+        assert!(substeps > 0, "a season of no sub-steps");
+        let mut run = Self::start(world, tables, season, seed, activity);
+        run.substeps = substeps;
+        run.plan = Some(plan);
+        run
+    }
+
+    /// The calendar weather of sub-step `i`; `None` for a flat season.
+    pub fn weather(&self, i: u8) -> Option<SubstepWeather> {
+        self.plan.as_ref()?.get(usize::from(i)).copied()
     }
 
     /// The season this run ticks.
@@ -248,6 +282,15 @@ impl SeasonRun {
         let i = self.next;
         let start = Instant::now();
         self.passes.spread.set_substep(i);
+        let mut plants = true;
+        if let Some(w) = self.weather(i) {
+            plants = w.plants;
+            if w.air_temp != self.passes.temperature.air_temp {
+                self.passes.temperature.air_temp = w.air_temp;
+                activity.season_boundary(world);
+            }
+            self.passes.rain.set_weather(w.rain, w.pattern, w.snow);
+        }
         let mut after =
             |pass: PassId, world: &World, ledger: &SeasonLedger| observe(i, pass, world, ledger);
         substep(
@@ -255,6 +298,7 @@ impl SeasonRun {
             &mut self.passes,
             activity,
             exec,
+            plants,
             &mut self.report,
             &mut after,
         );
@@ -292,7 +336,8 @@ impl SeasonRun {
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
 /// this sub-step. Light (§7.7) runs only when the world is dirty. Plant
-/// growth (§7.8) and then the spread sweep run last. Only the flow and gas
+/// growth (§7.8) and then the spread sweep run last, unless `plants` is
+/// false (a calendar hour other than its `plant_hour`). Only the flow and gas
 /// sweeps add an `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
@@ -300,6 +345,7 @@ fn substep(
     passes: &mut Passes,
     activity: &mut Activity,
     exec: Exec,
+    plants: bool,
     report: &mut TickReport,
     after: &mut dyn FnMut(PassId, &World, &SeasonLedger),
 ) {
@@ -380,6 +426,9 @@ fn substep(
         report.light_recomputes += 1;
     }
     after(PassId::Light, world, &report.ledger);
+    if !plants {
+        return;
+    }
     jacobi(
         JacobiKind::PlantGrowth,
         &passes.growth,
@@ -532,6 +581,198 @@ mod tests {
         got.substep_ms.clear();
         assert_eq!(got, expected);
         assert_eq!(stepped.hash(), whole.hash());
+    }
+
+    /// The flat season row `season` as a calendar plan.
+    fn flat_plan(t: &EcoTables, season: u32) -> Vec<SubstepWeather> {
+        let rows = &t.seasons().seasons;
+        let row = &rows[season as usize % rows.len()];
+        let w = SubstepWeather {
+            air_temp: row.air_temp,
+            rain: row.rain,
+            pattern: season,
+            snow: false,
+            plants: true,
+        };
+        vec![w; usize::from(t.seasons().substeps)]
+    }
+
+    /// A day of hours: the clamp swings around `mean` hour by hour, and
+    /// the middle hours rain on a pattern keyed by `day`.
+    fn day_plan(mean: i16, day: u32, hours: u8) -> Vec<SubstepWeather> {
+        (0..hours)
+            .map(|h| SubstepWeather {
+                air_temp: mean + i16::from(h % 6) * 40 - 100,
+                rain: if (4..8).contains(&h) { 30 } else { 0 },
+                pattern: day,
+                snow: false,
+                plants: true,
+            })
+            .collect()
+    }
+
+    /// Runs `plan` as a season and returns the world and the report with
+    /// its timing cleared.
+    fn run_planned(
+        t: &EcoTables,
+        seed: u64,
+        plan: &[SubstepWeather],
+        quiet_skip: u8,
+        exec: Exec,
+    ) -> (World, TickReport) {
+        let mut w = random_world(t, seed);
+        let mut activity = Activity::new(quiet_skip);
+        let mut run = SeasonRun::start_planned(&mut w, t, 1, seed, &mut activity, plan.to_vec());
+        assert_eq!(run.progress(), (0, u8::try_from(plan.len()).unwrap()));
+        while !run.is_done() {
+            run.substep(&mut w, &mut activity, exec);
+        }
+        let mut r = run.finish(&mut w);
+        assert_eq!(r.substep_ms.len(), plan.len());
+        r.substep_ms.clear();
+        (w, r)
+    }
+
+    #[test]
+    fn planned_run_of_the_flat_row_equals_season_tick() {
+        let t = tables();
+        for (seed, season) in [(3, 0), (11, 1), (19, 3)] {
+            let mut whole = random_world(&t, seed);
+            let mut planned = whole.clone();
+            let (mut a1, mut a2) = (
+                Activity::new(t.params().quiet_skip),
+                Activity::new(t.params().quiet_skip),
+            );
+            let mut expected = season_tick(&mut whole, &t, season, seed, &mut a1, Exec::Parallel);
+            let plan = flat_plan(&t, season);
+            let mut run = SeasonRun::start_planned(&mut planned, &t, season, seed, &mut a2, plan);
+            assert_eq!(run.weather(0).map(|w| w.pattern), Some(season));
+            while !run.is_done() {
+                run.substep(&mut planned, &mut a2, Exec::Parallel);
+            }
+            let mut got = run.finish(&mut planned);
+            expected.substep_ms.clear();
+            got.substep_ms.clear();
+            assert_eq!(got, expected, "seed {seed}");
+            assert_eq!(planned.hash(), whole.hash(), "seed {seed}");
+        }
+        assert_eq!(
+            SeasonRun::start(&mut random_world(&t, 1), &t, 0, 1, &mut Activity::new(1)).weather(0),
+            None,
+            "a flat season has no plan"
+        );
+    }
+
+    #[test]
+    fn planned_run_grows_plants_only_in_plant_hours() {
+        let t = tables();
+        let mut plan = day_plan(150, 0, 24);
+        for (h, w) in plan.iter_mut().enumerate() {
+            w.plants = h == 12;
+        }
+        let mut w = random_world(&t, 5);
+        let mut activity = Activity::new(t.params().quiet_skip);
+        let mut run = SeasonRun::start_planned(&mut w, &t, 0, 5, &mut activity, plan);
+        let mut seen: Vec<(u8, PassId)> = Vec::new();
+        while !run.is_done() {
+            run.substep_observed(&mut w, &mut activity, Exec::Serial, &mut |i, pass, _, _| {
+                if matches!(pass, PassId::Growth | PassId::Spread | PassId::Light) {
+                    seen.push((i, pass));
+                }
+            });
+        }
+        let plant_hours: Vec<(u8, PassId)> = seen
+            .iter()
+            .copied()
+            .filter(|&(_, p)| p != PassId::Light)
+            .collect();
+        assert_eq!(plant_hours, [(12, PassId::Growth), (12, PassId::Spread)]);
+        assert_eq!(
+            seen.iter().filter(|&&(_, p)| p == PassId::Light).count(),
+            24,
+            "every other pass still runs every hour"
+        );
+    }
+
+    #[test]
+    fn planned_run_clamps_open_air_to_each_hour() {
+        let t = tables();
+        let seed = 5;
+        let plan = day_plan(150, 2, 12);
+        let mut w = random_world(&t, seed);
+        // Air above its column's surface, as the hour's clamp finds it
+        // (rain pools and raises the surface): clamped each hour.
+        let open = |w: &World| -> Vec<CellPos> {
+            crate::reference::global_order(w.bounds())
+                .filter(|&c| {
+                    w.get_cell(c) == Some(MaterialId::AIR)
+                        && c.0.y > i32::from(w.surface_y(c.0.x, c.0.z))
+                })
+                .collect()
+        };
+        assert!(!open(&w).is_empty());
+        let mut activity = Activity::new(t.params().quiet_skip);
+        let mut run = SeasonRun::start_planned(&mut w, &t, 1, seed, &mut activity, plan.clone());
+        let mut seen = Vec::new();
+        while !run.is_done() {
+            run.substep_observed(&mut w, &mut activity, Exec::Serial, &mut |i, pass, w, _| {
+                if pass == PassId::Temperature {
+                    let temps: Vec<i32> = open(w)
+                        .into_iter()
+                        .map(|c| w.layer(c, LayerId::Temperature))
+                        .collect();
+                    assert!(!temps.is_empty());
+                    seen.push((i, temps));
+                }
+            });
+        }
+        run.finish(&mut w);
+        assert_eq!(seen.len(), plan.len());
+        for (i, temps) in seen {
+            let want = i32::from(plan[usize::from(i)].air_temp);
+            assert!(temps.iter().all(|&t| t == want), "hour {i}: {want}");
+        }
+    }
+
+    #[test]
+    fn planned_run_is_deterministic_and_skipping_is_exact() {
+        let t = tables();
+        let plan = day_plan(80, 9, 16);
+        for seed in [2, 13] {
+            let (a, ra) = run_planned(&t, seed, &plan, t.params().quiet_skip, Exec::Parallel);
+            let (b, rb) = run_planned(&t, seed, &plan, t.params().quiet_skip, Exec::Serial);
+            let (c, rc) = run_planned(&t, seed, &plan, u8::MAX, Exec::Parallel);
+            assert_eq!(a.hash(), b.hash(), "seed {seed}: parallel vs serial");
+            assert_eq!(ra, rb, "seed {seed}");
+            assert_eq!(a.hash(), c.hash(), "seed {seed}: skipping quiet chunks");
+            assert_eq!(ra.ledger, rc.ledger, "seed {seed}");
+            assert!(ra.ledger.rain_in > 0, "seed {seed}: the wet hours rained");
+            // The plan matters: a cooler day gives another world.
+            let (d, _) = run_planned(&t, seed, &day_plan(-120, 9, 16), u8::MAX, Exec::Parallel);
+            assert_ne!(a.hash(), d.hash(), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn planned_run_keeps_the_invariants() {
+        let t = tables();
+        let seed = 21;
+        let mut plan = day_plan(-30, 4, 10);
+        for w in &mut plan[5..] {
+            w.snow = true;
+            w.rain = 60;
+        }
+        let mut w = random_world(&t, seed);
+        let checker = crate::invariants::InvariantChecker::new(&w);
+        let mut activity = Activity::new(t.params().quiet_skip);
+        let mut run = SeasonRun::start_planned(&mut w, &t, 3, seed, &mut activity, plan);
+        while !run.is_done() {
+            run.substep(&mut w, &mut activity, Exec::Parallel);
+        }
+        let r = run.finish(&mut w);
+        checker
+            .check(&w, &r.ledger)
+            .expect("conserved over a planned season");
     }
 
     #[test]

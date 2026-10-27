@@ -2,8 +2,6 @@
 //! runs seasons headless (`--headless --seasons N`).
 #![deny(unsafe_code)]
 
-use std::time::Duration;
-
 use anyhow::Context;
 use bevy::prelude::AppExit;
 use clap::Parser;
@@ -15,6 +13,7 @@ use rmc_app::headless::{REPORT_FILE, run_headless};
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = GameConfig::from_cli(&cli)?;
+    let hours = config.calendar.as_ref().map(|c| c.hours);
     if cli.headless {
         let seasons = cli.seasons.context("--headless needs --seasons")?;
         let report = run_headless(config, seasons, |s| {
@@ -36,7 +35,12 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let mut app = build_game_app(config, true)?;
-    app.insert_resource(EcoClock::new(Some(Duration::from_millis(cli.eco_tick_ms))));
+    let interval = cli.eco_interval(hours);
+    app.insert_resource(EcoClock::new(interval));
+    if let Some(interval) = interval {
+        // The time of day moves smoothly between the host's hourly clocks.
+        app.insert_resource(rmc_client::ClockPace(interval));
+    }
     match app.run() {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => anyhow::bail!("the game exited with code {code}"),

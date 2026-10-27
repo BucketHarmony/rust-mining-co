@@ -57,6 +57,30 @@ pub struct SeasonReport {
     pub active_chunks_per_jacobi: Vec<u32>,
 }
 
+/// The game calendar's hour (`docs/CALENDAR.md`): where a calendar season
+/// stands after a sub-step, and the weather that sub-step ran with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameClock {
+    pub season: u32,
+    /// Day of the season, from 0, of `days`.
+    pub day: u8,
+    pub days: u8,
+    /// Hour of the day, from 0, of `hours`: the sub-step just run.
+    pub hour: u8,
+    pub hours: u8,
+    /// The hour's air temperature, 0.1 °C.
+    pub air_temp: i16,
+    /// The hour's rain per column before the pattern; 0 when dry.
+    pub rain: u8,
+    /// The calendar's wettest hour (the largest season `rain`), so the
+    /// client can tell light rain from heavy.
+    pub peak_rain: u8,
+    /// Whether the hour's precipitation is snow.
+    pub snow: bool,
+    /// Sunrise and sunset of the season, in hours.
+    pub daylight: (u8, u8),
+}
+
 /// Host → client.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMsg {
@@ -106,6 +130,10 @@ pub enum ServerMsg {
         report: Box<SeasonReport>,
         changed_chunks: u32,
     },
+    /// A sub-step of a calendar season ran (after its snapshots): the
+    /// clock and the hour's weather. Hosts without a calendar never send
+    /// it, so the version stays 2.
+    Clock(GameClock),
 }
 
 impl ServerMsg {

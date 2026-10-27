@@ -746,9 +746,14 @@ pub struct Rain {
     /// Per material id: whether it is a plant (the material of a
     /// `plants.ron` row).
     plant: Vec<bool>,
-    /// The season row's `rain`.
+    /// The season row's `rain`, or the calendar hour's
+    /// ([`Rain::set_weather`]).
     rain: u8,
-    season: u32,
+    /// What keys the column pattern: the season, or the calendar day.
+    pattern: u32,
+    /// Calendar snow: it soaks into a porous surface and does not stand on
+    /// any other.
+    snow: bool,
     seed: u64,
 }
 
@@ -766,9 +771,18 @@ impl Rain {
             flow: WaterPass::new(tables),
             plant,
             rain: rows[season as usize % rows.len()].rain,
-            season,
+            pattern: season,
+            snow: false,
             seed,
         }
+    }
+
+    /// The weather of a calendar hour (`crate::calendar`): its rain, the
+    /// key of its column pattern, and whether it is snow.
+    pub fn set_weather(&mut self, rain: u8, pattern: u32, snow: bool) {
+        self.rain = rain;
+        self.pattern = pattern;
+        self.snow = snow;
     }
 
     fn is_plant(&self, id: MaterialId) -> bool {
@@ -787,6 +801,19 @@ impl Rain {
         let above = CellPos::new(x, surface + 1, z);
         let m = world.get_cell(above)?;
         let air = WaterPass::is_air(world, m);
+        if air && self.snow {
+            // Snow melts into open water or soaks into a porous surface,
+            // and stands on no other: no film of water on rock or ice.
+            let ground = CellPos::new(x, surface, z);
+            let g = world.get_cell(ground)?;
+            let held = moisture(world, ground);
+            let cap = if g == water {
+                FULL
+            } else {
+                self.flow.porous(g)?.capacity
+            };
+            return Some((ground, held, (cap - held).max(0), false));
+        }
         if air || m == water {
             let held = moisture(world, above);
             return Some((above, held, FULL - held, air));
@@ -817,7 +844,7 @@ impl Rain {
             let Some((cell, _, room, air)) = self.target(world, x, z) else {
                 continue;
             };
-            let pattern = i32::from(rain_pattern(self.seed, self.season, x, z));
+            let pattern = i32::from(rain_pattern(self.seed, self.pattern, x, z));
             let amount = (i32::from(self.rain) * pattern / PATTERN_DEN).min(room);
             if amount <= 0 {
                 continue;
@@ -2406,6 +2433,71 @@ mod tests {
         checker
             .check(&w, &ledger)
             .expect("rain_in explains the water");
+    }
+
+    #[test]
+    fn snow_soaks_into_porous_ground_and_open_water_only() {
+        let f = Fix::new();
+        let t = f.t.with_season_override(SeasonOverride {
+            rain: Some(u8::MAX),
+            air_temp: None,
+        });
+        let season = 3;
+        let soil = (4, 4);
+        let wet_soil = (8, 8);
+        let rock = (12, 12);
+        let pond = (16, 16);
+        let seed = strong_seed(season, &[soil, wet_soil, rock, pond]);
+        let c = |(x, z): (i32, i32), y: i32| CellPos::new(x, y, z);
+        let (mut w, _) = pocket_world(
+            &f,
+            &[
+                (c(soil, SLAB_Y), f.loam, 0),
+                (c(wet_soil, SLAB_Y), f.loam, LOAM_CAP - 5),
+                (c(pond, SLAB_Y), f.water, 100),
+            ],
+        );
+        let before = moistures(&w);
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut snow = Rain::new(&t, season, seed);
+        snow.set_weather(u8::MAX, season, true);
+
+        snow.run(&mut w, &mut ledger);
+
+        // Into the surface cell, never onto the air above it: the soil up
+        // to its field capacity, the pond up to full; on the rock the
+        // surface is the slab's stone and nothing lands.
+        let r = |xz: (i32, i32)| rain_of(u8::MAX, seed, season, xz.0, xz.1);
+        let target = |xz: (i32, i32)| -> Option<(CellPos, i32)> {
+            if xz == soil {
+                Some((c(xz, SLAB_Y), r(xz).min(LOAM_CAP)))
+            } else if xz == wet_soil {
+                Some((c(xz, SLAB_Y), r(xz).min(5)))
+            } else if xz == pond {
+                Some((c(xz, SLAB_Y), r(xz).min(FULL - 100)))
+            } else {
+                None
+            }
+        };
+        let mut total = 0;
+        for (cell, was) in before {
+            let gained = fill(&w, cell) - was;
+            let want = target((cell.0.x, cell.0.z))
+                .filter(|&(at, _)| at == cell)
+                .map_or(0, |(_, r)| r);
+            assert_eq!(gained, want, "{cell:?}");
+            total += want;
+        }
+        assert!(total > 0, "some snow fell");
+        assert_eq!(ledger.rain_in, i64::from(total));
+        for xz in [soil, wet_soil, rock, pond] {
+            assert_eq!(w.get_cell(c(xz, SLAB_Y + 1)), Some(f.air), "{xz:?}");
+        }
+        assert_eq!(w.get_cell(c(soil, SLAB_Y)), Some(f.loam));
+        checker
+            .check(&w, &ledger)
+            .expect("rain_in explains the snow");
     }
 
     #[test]

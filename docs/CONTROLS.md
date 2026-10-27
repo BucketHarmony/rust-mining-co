@@ -17,7 +17,7 @@ test kit. Keys are named by their position on a US layout.
 | In water | Swim: sink slowly, `Space` swims up, `Space` against a bank climbs out |
 | `Left mouse` | Swing the pickaxe at the targeted cell (hold to keep swinging); it aims through water and magma at the solid behind |
 | `Right mouse` | Place the selected material against the targeted face (hold to keep placing) |
-| `P` | Pause / resume the ecology clock (one season sub-step per second by default, `--eco-tick-ms`) |
+| `P` | Pause / resume the ecology clock and the time of day (one game hour, a season sub-step, every 5 s by default: `--day-seconds 120`; `--eco-tick-ms N` sets the hour directly, 0 stops the clock) |
 | `Mouse wheel` | Select the next (down) / previous (up) material in the inventory |
 | `E` / `Q` | Select the next / previous material in the inventory |
 

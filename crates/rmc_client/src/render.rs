@@ -355,26 +355,58 @@ pub fn fog_amount(distance_m: f32) -> f32 {
     ((distance_m - FOG_START_M) / (FOG_END_M - FOG_START_M)).clamp(0.0, 1.0)
 }
 
+/// What a sky is made of. The default is the fixed sky of a game without
+/// a clock: [`HORIZON_COLOR`], [`ZENITH_COLOR`], the glow and the disc at
+/// [`sun_direction`]. The day and night cycle (`crate::daynight`) makes
+/// one for each time of day, without the disc (the sun is drawn apart).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyParams {
+    pub horizon: LinearRgba,
+    pub zenith: LinearRgba,
+    /// The unit vector toward the sun.
+    pub sun: Vec3,
+    pub glow: LinearRgba,
+    /// Whether the sun disc is drawn into the sky.
+    pub disc: bool,
+}
+
+impl Default for SkyParams {
+    fn default() -> Self {
+        Self {
+            horizon: LinearRgba::from(HORIZON_COLOR),
+            zenith: LinearRgba::from(ZENITH_COLOR),
+            sun: sun_direction(),
+            glow: SUN_GLOW_COLOR,
+            disc: true,
+        }
+    }
+}
+
 /// The sky seen along `dir` (any length), linear, as it reaches the screen
 /// before tonemapping: [`HORIZON_COLOR`] at and below the horizon, rising
 /// to [`ZENITH_COLOR`] overhead, with the sun's glow and disc around
 /// [`sun_direction`].
 pub fn sky_radiance(dir: Vec3) -> LinearRgba {
+    sky_radiance_with(dir, &SkyParams::default())
+}
+
+/// [`sky_radiance`] for the sky `p`.
+pub fn sky_radiance_with(dir: Vec3, p: &SkyParams) -> LinearRgba {
     let dir = dir.normalize_or_zero();
-    let horizon = LinearRgba::from(HORIZON_COLOR);
-    let zenith = LinearRgba::from(ZENITH_COLOR);
     let t = dir.y.max(0.0).powf(SKY_GRADIENT_POWER);
-    let mut sky = horizon * (1.0 - t) + zenith * t;
-    let to_sun = dir.dot(sun_direction());
+    let mut sky = p.horizon * (1.0 - t) + p.zenith * t;
+    let to_sun = dir.dot(p.sun);
     if to_sun > 0.0 {
-        sky += SUN_GLOW_COLOR * to_sun.powi(SUN_GLOW_EXPONENT);
+        sky += p.glow * to_sun.powi(SUN_GLOW_EXPONENT);
     }
-    // 1 inside the disc, 0 outside it, smooth across its edge.
-    let angle = to_sun.clamp(-1.0, 1.0).acos().to_degrees();
-    let edge = ((SUN_DISC_RADIUS_DEG + SUN_DISC_EDGE_DEG - angle) / (2.0 * SUN_DISC_EDGE_DEG))
-        .clamp(0.0, 1.0);
-    let disc = edge * edge * (3.0 - 2.0 * edge);
-    let sky = sky * (1.0 - disc) + SUN_DISC_COLOR * disc;
+    if p.disc {
+        // 1 inside the disc, 0 outside it, smooth across its edge.
+        let angle = to_sun.clamp(-1.0, 1.0).acos().to_degrees();
+        let edge = ((SUN_DISC_RADIUS_DEG + SUN_DISC_EDGE_DEG - angle) / (2.0 * SUN_DISC_EDGE_DEG))
+            .clamp(0.0, 1.0);
+        let disc = edge * edge * (3.0 - 2.0 * edge);
+        sky = sky * (1.0 - disc) + SUN_DISC_COLOR * disc;
+    }
     LinearRgba { alpha: 1.0, ..sky }
 }
 
@@ -401,7 +433,11 @@ pub fn cube_texel_direction(face: u32, x: u32, y: u32, size: u32) -> Vec3 {
 /// white. Shown with [`sky_brightness`], it reaches the screen as
 /// [`sky_radiance`].
 pub fn sky_cubemap() -> Image {
-    let size = SKY_FACE_PX;
+    sky_cubemap_with(&SkyParams::default(), SKY_FACE_PX)
+}
+
+/// The sky `p` as a cubemap of `size`² faces (see [`sky_cubemap`]).
+pub fn sky_cubemap_with(p: &SkyParams, size: u32) -> Image {
     let mut image = Image::new_fill(
         Extent3d {
             width: size,
@@ -416,7 +452,7 @@ pub fn sky_cubemap() -> Image {
     for face in 0..6 {
         for y in 0..size {
             for x in 0..size {
-                let color = sky_radiance(cube_texel_direction(face, x, y, size));
+                let color = sky_radiance_with(cube_texel_direction(face, x, y, size), p);
                 image
                     .set_color_at_3d(x, y, face, color.into())
                     .expect("an Rgba16Float texel inside the cubemap");

@@ -221,6 +221,23 @@ impl TestApp {
         panic!("no SeasonDone within {MAX_SEASON_STEPS} steps");
     }
 
+    /// Runs the host's seasons on the game `calendar` (`calendar.ron`,
+    /// [`rmc_eco::Calendar`]), as the windowed game does; `None` goes back
+    /// to the `seasons.ron` rows.
+    pub fn set_calendar(&mut self, calendar: Option<rmc_eco::Calendar>) {
+        assert!(
+            self.host_mut().set_calendar(calendar),
+            "the host has seasons"
+        );
+    }
+
+    /// Runs one ecology sub-step on the host (an hour of the calendar, as
+    /// the game's clock does) and steps until the client has its messages.
+    pub fn eco_hour(&mut self) {
+        self.host_mut().eco_substep();
+        self.steps(2);
+    }
+
     /// Runs `n` seasons ([`TestApp::advance_season`]).
     pub fn seasons(&mut self, n: u32) {
         for _ in 0..n {

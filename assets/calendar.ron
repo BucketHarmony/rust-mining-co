@@ -1,0 +1,50 @@
+// The game calendar (owner, 2026-10-27; docs/CALENDAR.md). While the game
+// runs the ecology on the wall clock, a season is `days` days of `hours`
+// sub-steps, one sub-step an hour. Each hour gets its own air temperature
+// (the clamp of SAD-P2 §7.1) and its own rain (§7.3 D) from the rows
+// below; everything else in the season tick is unchanged. The editor's
+// Season button, `--headless --seasons` and the tests keep running a
+// season of `seasons.ron` rows (`substeps` sub-steps at the row's flat
+// `air_temp` and `rain`).
+//
+// Not part of the tables hash: the calendar drives the weather, not the
+// shape of the world, so saves made before it load.
+(
+    days: 7,
+    hours: 24,
+    // The air temperature through the day, from midnight, as a share of the
+    // season's `swing` in per cent: coldest just before dawn, warmest in
+    // mid-afternoon.
+    diurnal: [
+        -78, -86, -92, -97, -100, -96,
+        -84, -64, -40, -14, 12, 38,
+        60, 80, 94, 100, 96, 84,
+        64, 42, 20, 0, -24, -54,
+    ],
+    // The hour in which the plants grow and spread, once a day, so plant
+    // stress counts unmet days (a week of winter frost is 7, short of
+    // eco.ron stress_death) and a season feeds its plants 7 times, about
+    // as often as the 8 sub-steps of a seasons.ron season.
+    plant_hour: 12,
+    // mean: the daily mean air temperature at mid-season, 0.1 °C. Day by
+    // day the mean moves on a straight line toward the next season's (and
+    // from the last one's), so the seasons turn gradually.
+    // swing: half the gap between the warmest and coldest hour, 0.1 °C.
+    // wet: the chance in 256 that a day has a spell of rain (snow when the
+    // hour or the next is at or below 0 °C). Spring is wet, summer has few
+    // but heavy storms, autumn is dry, winter snows.
+    // rain: what a wet hour rains on each column before the seeded pattern
+    // (as `seasons.ron` `rain`: about (rain - 1) / 2 lands).
+    // spell: the shortest and longest spell, in hours.
+    // daylight: sunrise and sunset, in hours (the client's sun and sky).
+    seasons: [
+        (key: "spring", mean: 110, swing: 55, wet: 168, rain: 24,
+         spell: (4, 12), daylight: (6, 19)),
+        (key: "summer", mean: 255, swing: 80, wet: 56, rain: 48,
+         spell: (1, 3), daylight: (5, 21)),
+        (key: "autumn", mean: 95, swing: 70, wet: 36, rain: 12,
+         spell: (2, 5), daylight: (7, 18)),
+        (key: "winter", mean: -55, swing: 45, wet: 128, rain: 16,
+         spell: (3, 10), daylight: (8, 17)),
+    ],
+)

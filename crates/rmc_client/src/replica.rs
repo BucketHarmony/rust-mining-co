@@ -273,7 +273,8 @@ impl Replica {
             | ServerMsg::PlayerStates(_)
             | ServerMsg::Saved { .. }
             | ServerMsg::SeasonStarted { .. }
-            | ServerMsg::SeasonDone { .. } => {}
+            | ServerMsg::SeasonDone { .. }
+            | ServerMsg::Clock(_) => {}
         }
         Ok(())
     }

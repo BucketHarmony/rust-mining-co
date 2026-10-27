@@ -3931,3 +3931,42 @@ Decisions:
 - Rule 21: no pixel thresholds; the playtester judges the look.
 Next: owner checks F1/F11 in the game; move the HUD onto `HudSlot`s if the season chip and the HUD should share anchors.
 Blockers: none.
+
+## 2026-10-27 — Owner: day/night cycle, 7-day seasons, seasonal weather; vegetation plan — passed
+Done:
+- Ecology deep dive. Before this change:
+  - a season was 8 sub-steps at one sub-step a second, so a year took 32 s;
+  - each season had one flat air temperature and rain on every sub-step, so every warm sub-step rained;
+  - the sky had no night.
+  - Details in `docs/CALENDAR.md`.
+- `assets/calendar.ron` and `rmc_eco::calendar`:
+  - 7 days × 24 hours = 168 sub-steps a season;
+  - an hourly air clamp: a daily mean that moves gradually between seasons, plus a diurnal swing;
+  - seeded wet days with one rain spell each, varied by season: wet spring, hot summer with short storms, dry autumn, snowy winter;
+  - snow: soaks into porous ground or open water, never stands as a film;
+  - `plant_hour`: growth and spread once a day.
+- `SeasonRun::start_planned` runs a calendar season. `Host::set_calendar` makes the windowed game use it. `ServerMsg::Clock(GameClock)` tells the client the hour, the weather and the daylight.
+- Client:
+  - `GameTime` and `DayNightPlugin` add the sun path, the moon, night ambient, dusk glow and cloud cover from rain;
+  - the sky cubemap, fog and clear colour follow the time of day, and sun and moon discs are drawn;
+  - the HUD chip shows the day, hour, temperature and rain.
+- CLI: `--day-seconds` (default 120). `--eco-tick-ms` is now optional; 0 still stops the clock.
+- `docs/VEGETATION.md`: the vegetation research and plan (V1–V7), covering NPK and Liebig growth, the soil nutrient cycle, multi-cell trees and vines, and plant rendering.
+Tests added:
+- `calendar::tests` (6): shipped calendar, bad calendars refused, temperature curve, spells, determinism and patterns, plant hour.
+- `water::tests::snow_soaks_into_porous_ground_and_open_water_only`.
+- `tick::tests`: `planned_run_of_the_flat_row_equals_season_tick`, `planned_run_clamps_open_air_to_each_hour`, `planned_run_is_deterministic_and_skipping_is_exact`, `planned_run_keeps_the_invariants`, `planned_run_grows_plants_only_in_plant_hours`.
+- `season::tests::calendar_seasons_run_hourly_and_send_the_clock`; the codec samples for Clock.
+- `cli::tests::eco_interval_is_a_calendar_hour_unless_given`.
+- `daynight::tests` (5) and two `weather::tests`.
+- `e2e:day_night_renders`: asserts the sun, light, fog, clear colour, ambient and HUD at 07, 13, 19 and 23 h. Shots: `docs/screens/day_night_renders-{morning,noon,sunset,night}.png`. Re-ran `weather_shows`: pass.
+Decisions:
+- The calendar is not in the tables hash, so saves load. Only the windowed game runs planned seasons. Headless, the editor Season button and the tests keep the `seasons.ron` rows.
+- A clamp change resets activity like a season boundary, so skipping stays exact.
+- Snow soaks into porous ground or joins open water and never stands on impermeable ground, so it cannot leave films that freeze into ice blocks.
+- Plants grow and spread only at `plant_hour`. With hourly sub-steps, `stress_death` 16 would kill every plant on the first winter day (168 hours below 0 °C) or after 16 dry hours. Once a day, stress counts days, and a season gets 7 growth passes against the rows' 8, so the plant balance holds.
+- `ServerMsg::Clock` is additive and only calendar hosts send it, so `PROTOCOL_VERSION` stays 2.
+- Rule 21: semantic asserts only; the playtester judges the look.
+- Vegetation is a plan only. It changes SAD-P2 (§5–§8), the tables hash and the save format, so it waits for the owner.
+Next: owner playtests the calendar pacing (`--day-seconds`) and answers the open questions in `docs/VEGETATION.md` §6. V1 (soil that can feed plants) comes first: today the shipped world grows essentially no plants, because topsoil holds no moisture and no soil holds NPK.
+Blockers: none.

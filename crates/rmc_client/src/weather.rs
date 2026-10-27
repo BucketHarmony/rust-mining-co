@@ -13,6 +13,12 @@
 //! the precipitation is drawn as snow. While [`SeasonClockPaused`] is set
 //! (the app's `P`), nothing falls.
 //!
+//! With the game calendar the host sends a `Clock` each hour
+//! ([`GameTime`]): the weather is then that hour's ([`weather_at`]), its
+//! rain a share of the calendar's wettest hour and its snow the host's,
+//! and the chip shows the day and the time ("Spring · Day 3 · Year 1",
+//! "14:15 · 24.5 C · Rain").
+//!
 //! Drops are thin unlit streaks spawned in a cylinder around the
 //! [`GameCamera`], none within [`RAIN_NEAR_M`] of it. Each falls until it reaches the top of its cell column
 //! in the replica (so it does not rain in caves or through roofs) or drops
@@ -21,10 +27,13 @@
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use rmc_protocol::GameClock;
 use rmc_world::coords::CELL_SIZE_M;
 
+use crate::daynight::{ClockPace, GameTime, clock_label, follow_clock};
 use crate::eco::SeasonSummary;
 use crate::hud::format_temperature;
+use crate::net::FromHost;
 use crate::render::GameCamera;
 use crate::replica::Replica;
 use crate::ui::{ColorToken, HudAnchor, HudSlot, TextRole, UiFonts, UiTheme, text};
@@ -97,16 +106,31 @@ pub struct Weather {
     pub air_temp: i16,
     /// The rain that lands, as a share of the wettest row's: 0 to 1.
     pub rain: f32,
+    /// Whether what falls is snow: below 0 °C, or the calendar hour's.
+    pub snow: bool,
     pub paused: bool,
+    /// The calendar's day and time; `None` without a clock.
+    pub clock: Option<ClockView>,
+}
+
+/// The calendar day and time the chip shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ClockView {
+    /// Day of the season, from 0.
+    pub day: u8,
+    pub days: u8,
+    /// Time of day in hours, from 0 to `hours`.
+    pub time_h: f32,
+    pub hours: u8,
 }
 
 impl Weather {
     pub fn sky(&self) -> Sky {
-        match (self.rain > 0.0, self.air_temp < 0) {
-            (true, false) => Sky::Rain,
-            (true, true) => Sky::Snow,
-            (false, false) => Sky::Dry,
-            (false, true) => Sky::Frost,
+        match (self.rain > 0.0, self.snow, self.air_temp < 0) {
+            (true, false, _) => Sky::Rain,
+            (true, true, _) => Sky::Snow,
+            (false, _, false) => Sky::Dry,
+            (false, _, true) => Sky::Frost,
         }
     }
 
@@ -153,7 +177,38 @@ pub fn weather(seasons: &ClientSeasons, season: u32, paused: bool) -> Weather {
         } else {
             0.0
         },
+        snow: row.air_temp < 0,
         paused,
+        clock: None,
+    }
+}
+
+/// The weather of the calendar hour `clock`, at `time_h` of its day: the
+/// season's name from `seasons`, the hour's air and rain (as a share of
+/// the calendar's wettest hour) and its snow.
+pub fn weather_at(
+    seasons: &ClientSeasons,
+    clock: &GameClock,
+    time_h: f32,
+    paused: bool,
+) -> Weather {
+    let lands = |rain: u8| f32::from(rain.saturating_sub(1));
+    let peak = lands(clock.peak_rain);
+    Weather {
+        air_temp: clock.air_temp,
+        rain: if peak > 0.0 {
+            (lands(clock.rain) / peak).min(1.0)
+        } else {
+            0.0
+        },
+        snow: clock.snow,
+        clock: Some(ClockView {
+            day: clock.day,
+            days: clock.days,
+            time_h,
+            hours: clock.hours,
+        }),
+        ..weather(seasons, clock.season, paused)
     }
 }
 
@@ -191,9 +246,20 @@ pub fn weather_lines(w: &Weather) -> [String; 3] {
     } else {
         title(&w.key)
     };
+    let (day, time) = match w.clock {
+        Some(c) => (
+            format!(" · Day {}", c.day + 1),
+            format!("{} · ", clock_label(c.time_h, c.hours)),
+        ),
+        None => (String::new(), String::new()),
+    };
     [
-        format!("{season} · Year {}", w.year),
-        format!("{} · {}", format_temperature(w.air_temp), sky_label(w)),
+        format!("{season}{day} · Year {}", w.year),
+        format!(
+            "{time}{} · {}",
+            format_temperature(w.air_temp),
+            sky_label(w)
+        ),
         if w.paused {
             "Seasons paused (P)".into()
         } else {
@@ -252,6 +318,8 @@ pub struct WeatherPlugin;
 impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClientSeasons>()
+            .add_message::<FromHost>()
+            .init_resource::<GameTime>()
             .init_resource::<SeasonSummary>()
             .init_resource::<SeasonClockPaused>()
             .init_resource::<Weather>()
@@ -259,6 +327,7 @@ impl Plugin for WeatherPlugin {
             .add_systems(
                 Update,
                 (
+                    follow_clock,
                     update_weather,
                     spawn_weather_hud,
                     update_weather_hud,
@@ -274,9 +343,15 @@ fn update_weather(
     seasons: Res<ClientSeasons>,
     summary: Res<SeasonSummary>,
     paused: Res<SeasonClockPaused>,
+    game_time: Res<GameTime>,
+    pace: Option<Res<ClockPace>>,
     mut out: ResMut<Weather>,
 ) {
-    let w = weather(&seasons, current_season(&summary), paused.0);
+    let now = game_time.clock.zip(game_time.time_h(pace.map(|p| p.0)));
+    let w = match now {
+        Some((clock, t)) => weather_at(&seasons, &clock, t, paused.0),
+        None => weather(&seasons, current_season(&summary), paused.0),
+    };
     if *out != w {
         *out = w;
     }
@@ -483,6 +558,7 @@ mod tests {
     use crate::eco::SeasonDone;
     use crate::ui::UiKitPlugin;
     use crate::ui::theme::tests::THEME_PATH;
+    use rmc_protocol::ServerMsg;
 
     fn row(key: &str, air_temp: i16, rain: u8) -> SeasonView {
         SeasonView {
@@ -571,6 +647,75 @@ mod tests {
         let w = weather(&ClientSeasons::default(), 5, false);
         assert_eq!(weather_lines(&w)[0], "Season 5 · Year 1");
         assert_eq!(w.sky(), Sky::Dry);
+    }
+
+    #[test]
+    fn calendar_hours_give_the_day_the_time_and_the_hours_weather() {
+        let s = seasons();
+        let mut clock = GameClock {
+            season: 5,
+            day: 2,
+            days: 7,
+            hour: 13,
+            hours: 24,
+            air_temp: 245,
+            rain: 25,
+            peak_rain: 49,
+            snow: false,
+            daylight: (5, 21),
+        };
+        let w = weather_at(&s, &clock, 14.25, false);
+        assert_eq!((w.key.as_str(), w.year, w.season), ("summer", 2, 5));
+        assert_eq!(w.rain, 0.5);
+        assert_eq!(w.sky(), Sky::Rain);
+        assert_eq!(
+            weather_lines(&w),
+            [
+                "Summer · Day 3 · Year 2".to_string(),
+                "14:15 · 24.5 C · Rain".into(),
+                String::new()
+            ]
+        );
+        // A dry hour; snow is the host's word, not the temperature's.
+        clock.rain = 0;
+        assert_eq!(weather_at(&s, &clock, 14.25, false).sky(), Sky::Dry);
+        clock.rain = 49;
+        clock.snow = true;
+        clock.air_temp = 5;
+        let w = weather_at(&s, &clock, 3.0, false);
+        assert_eq!((w.sky(), sky_label(&w).as_str()), (Sky::Snow, "Heavy snow"));
+        clock.snow = false;
+        clock.rain = 0;
+        clock.air_temp = -40;
+        assert_eq!(weather_at(&s, &clock, 3.0, false).sky(), Sky::Frost);
+    }
+
+    #[test]
+    fn a_clock_from_the_host_drives_the_weather() {
+        let mut app = rain_app(seasons());
+        set_season(&mut app, 3);
+        app.update();
+        assert_eq!(app.world().resource::<Weather>().clock, None);
+        let clock = GameClock {
+            season: 0,
+            day: 0,
+            days: 7,
+            hour: 7,
+            hours: 24,
+            air_temp: 120,
+            rain: 48,
+            peak_rain: 48,
+            snow: false,
+            daylight: (6, 19),
+        };
+        app.world_mut()
+            .write_message(FromHost(ServerMsg::Clock(clock)));
+        app.update();
+        let w = app.world().resource::<Weather>().clone();
+        assert_eq!((w.key.as_str(), w.air_temp, w.rain), ("spring", 120, 1.0));
+        assert_eq!(w.clock.map(|c| c.time_h), Some(8.0));
+        app.update();
+        assert!(!drops(&mut app).is_empty(), "the wet hour rains");
     }
 
     fn rain_app(seasons: ClientSeasons) -> App {

@@ -66,7 +66,8 @@ pub fn decode_server(bytes: &[u8]) -> Result<ServerMsg, CodecError> {
         | ServerMsg::PlayerStates(_)
         | ServerMsg::Saved { .. }
         | ServerMsg::SeasonStarted { .. }
-        | ServerMsg::SeasonDone { .. } => true,
+        | ServerMsg::SeasonDone { .. }
+        | ServerMsg::Clock(_) => true,
     };
     if well_formed {
         Ok(msg)
@@ -155,9 +156,10 @@ mod tests {
             ServerMsg::LayerSnapshot { .. } => 7,
             ServerMsg::SeasonStarted { .. } => 8,
             ServerMsg::SeasonDone { .. } => 9,
+            ServerMsg::Clock(_) => 10,
         }
     }
-    const SERVER_VARIANTS: usize = 10;
+    const SERVER_VARIANTS: usize = 11;
 
     fn ops() -> Vec<EditOp> {
         vec![
@@ -581,6 +583,19 @@ mod tests {
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
         });
+        msgs.push(ServerMsg::Clock(crate::msg::GameClock::default()));
+        msgs.push(ServerMsg::Clock(crate::msg::GameClock {
+            season: u32::MAX,
+            day: 6,
+            days: 7,
+            hour: 23,
+            hours: 24,
+            air_temp: i16::MIN,
+            rain: u8::MAX,
+            peak_rain: 48,
+            snow: true,
+            daylight: (6, 19),
+        }));
         msgs.push(ServerMsg::SeasonStarted { season: 0 });
         msgs.push(ServerMsg::SeasonStarted { season: u32::MAX });
         msgs.push(ServerMsg::SeasonDone {

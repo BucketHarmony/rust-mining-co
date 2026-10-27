@@ -3,6 +3,7 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 use clap::Parser;
 use rmc_world::coords::{CHUNK_SIZE, CellAabb, CellPos};
@@ -19,7 +20,7 @@ pub const DEFAULT_WORLD_SIZE: WorldSize = WorldSize {
 };
 
 /// `rmc_app [--seed N] [--save DIR] [--world-size WxHxD]
-/// [--headless --seasons N] [--eco-tick-ms MS]`.
+/// [--headless --seasons N] [--day-seconds S] [--eco-tick-ms MS]`.
 #[derive(Parser, Clone, Debug, PartialEq, Eq)]
 #[command(name = "rmc_app", version, about = "Rust Mining Co")]
 pub struct Cli {
@@ -44,10 +45,32 @@ pub struct Cli {
     /// Seasons a `--headless` run advances.
     #[arg(long, value_name = "N", requires = "headless")]
     pub seasons: Option<u32>,
-    /// Milliseconds of real time between ecology sub-steps while playing
-    /// (a season is 8 sub-steps); 0 turns the ecology clock off.
-    #[arg(long, value_name = "MS", default_value_t = 1000)]
-    pub eco_tick_ms: u64,
+    /// Seconds of real time a calendar day lasts while playing
+    /// (`assets/calendar.ron`: 7 days of 24 hourly sub-steps a season).
+    #[arg(long, value_name = "S", default_value_t = DEFAULT_DAY_SECONDS)]
+    pub day_seconds: u64,
+    /// Milliseconds of real time between ecology sub-steps while playing,
+    /// instead of `--day-seconds` / hours; 0 turns the ecology clock off.
+    #[arg(long, value_name = "MS")]
+    pub eco_tick_ms: Option<u64>,
+}
+
+/// A calendar day of the game's wall clock, in seconds: two minutes, so a
+/// season of 7 days is 14 minutes.
+pub const DEFAULT_DAY_SECONDS: u64 = 120;
+
+impl Cli {
+    /// Real time between two ecology sub-steps: `--eco-tick-ms` if given,
+    /// else a calendar day of `--day-seconds` over its `hours`, else one
+    /// second (seasons of `seasons.ron` rows). `None`: the clock is off.
+    pub fn eco_interval(&self, hours: Option<u8>) -> Option<Duration> {
+        let interval = match (self.eco_tick_ms, hours) {
+            (Some(ms), _) => Duration::from_millis(ms),
+            (None, Some(hours)) => Duration::from_secs(self.day_seconds) / u32::from(hours.max(1)),
+            (None, None) => Duration::from_secs(1),
+        };
+        (!interval.is_zero()).then_some(interval)
+    }
 }
 
 /// A world's extent in cells, from the origin. Each side is a positive
@@ -333,6 +356,33 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad:?} should not parse");
         }
+    }
+
+    #[test]
+    fn eco_interval_is_a_calendar_hour_unless_given() {
+        let cli = parse(&[]).unwrap();
+        assert_eq!(cli.day_seconds, DEFAULT_DAY_SECONDS);
+        assert_eq!(cli.eco_interval(Some(24)), Some(Duration::from_secs(5)));
+        assert_eq!(cli.eco_interval(None), Some(Duration::from_secs(1)));
+        let fast = parse(&["--day-seconds", "48"]).unwrap();
+        assert_eq!(fast.eco_interval(Some(24)), Some(Duration::from_secs(2)));
+        let given = parse(&["--day-seconds", "48", "--eco-tick-ms", "250"]).unwrap();
+        assert_eq!(
+            given.eco_interval(Some(24)),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            parse(&["--eco-tick-ms", "0"])
+                .unwrap()
+                .eco_interval(Some(24)),
+            None
+        );
+        assert_eq!(
+            parse(&["--day-seconds", "0"])
+                .unwrap()
+                .eco_interval(Some(24)),
+            None
+        );
     }
 
     #[test]

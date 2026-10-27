@@ -23,11 +23,12 @@ use rmc_client::controller::Player;
 use rmc_client::surfaces::SurfacesPlugin;
 use rmc_client::tiles::TileDir;
 use rmc_client::{
-    CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, EditorPanelPlugin, EditorPlugin,
-    FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection, HudPlugin, MeshPipelinePlugin,
-    NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SavePlugin, SoundConfig,
-    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin, WeatherPlugin,
+    CameraStart, ClientMaterials, ControllerPlugin, CursorPlugin, DayNightPlugin,
+    EditorPanelPlugin, EditorPlugin, FlyCamPlugin, FromHost, GameRenderPlugin, HostConnection,
+    HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin,
+    SavePlugin, SoundConfig, SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin, WeatherPlugin,
 };
+use rmc_eco::{CALENDAR_FILE, Calendar};
 use rmc_host::{ChannelTransport, spawn_host_thread};
 
 use crate::eco_clock::EcoClockPlugin;
@@ -53,6 +54,10 @@ pub struct GameConfig {
     /// `None`: the save's seed, else [`DEFAULT_SEED`](crate::session::DEFAULT_SEED).
     pub seed: Option<u64>,
     pub save_dir: PathBuf,
+    /// The game calendar the windowed game's seasons run on
+    /// (`calendar.ron`); `None`: seasons of `seasons.ron` rows. Headless
+    /// runs ignore it.
+    pub calendar: Option<Calendar>,
 }
 
 impl GameConfig {
@@ -64,6 +69,10 @@ impl GameConfig {
             assets: GameAssets::load(&assets_dir())?.with_world_bounds(bounds)?,
             seed: cli.seed,
             save_dir: cli.save.clone(),
+            calendar: Some(anyhow::Context::with_context(
+                Calendar::load(assets_dir()),
+                || format!("loading {CALENDAR_FILE}"),
+            )?),
         })
     }
 }
@@ -95,6 +104,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
         assets,
         seed,
         save_dir,
+        calendar,
     } = config;
     let mut app = App::new();
     if windowed {
@@ -109,8 +119,11 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
     let start = start_world(&assets, seed, &save_dir)?;
     let mut transport = ChannelTransport::new();
     let endpoint = transport.connect();
-    let handle = spawn_host_thread(start.into_host(Box::new(transport)), HOST_HZ);
-    info!(hz = HOST_HZ, windowed, "host thread started");
+    let mut host = start.into_host(Box::new(transport));
+    let calendar_on = calendar.is_some();
+    host.set_calendar(calendar);
+    let handle = spawn_host_thread(host, HOST_HZ);
+    info!(hz = HOST_HZ, windowed, calendar_on, "host thread started");
 
     app.insert_resource(CameraStart::overview(assets.worldgen.bounds.aabb()))
         .add_plugins((
@@ -135,6 +148,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             SurfacesPlugin,
             CursorPlugin,
             WeatherPlugin,
+            DayNightPlugin,
         ));
         // Sound is a nicety: without its config the game runs silent.
         let dir = crate::session::assets_dir();
@@ -320,6 +334,7 @@ mod tests {
             assets,
             seed,
             save_dir: dir.to_path_buf(),
+            calendar: None,
         }
     }
 

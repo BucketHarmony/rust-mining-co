@@ -4,6 +4,7 @@
 
 pub mod activity;
 pub mod bench_support;
+pub mod calendar;
 pub mod chemistry;
 pub mod gases;
 pub mod invariants;
@@ -20,6 +21,7 @@ pub mod water;
 pub mod weathering;
 
 pub use activity::{Activity, ActivityReport, JacobiKind, N_JACOBI};
+pub use calendar::{CALENDAR_FILE, Calendar, CalendarSeason, SubstepWeather};
 pub use chemistry::{Move, MoveLog, ReactionsPass, Transport, TransportReport};
 pub use gases::GasPass;
 pub use invariants::{InvariantChecker, Totals, Violation, Violations};

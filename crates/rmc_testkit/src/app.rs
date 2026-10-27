@@ -70,7 +70,8 @@ pub struct TestConfig {
     /// `assets/ui.ron` and fonts, as the windowed game does. Off by default.
     pub ui: bool,
     /// Add the season and weather HUD chip and the rain
-    /// (`rmc_client::weather`), as the windowed game does. Off by default,
+    /// (`rmc_client::weather`) and the day/night cycle
+    /// (`rmc_client::daynight`), as the windowed game does. Off by default,
     /// so other scenarios' shots have no rain in them.
     pub weather: bool,
 }
@@ -261,7 +262,7 @@ impl TestApp {
         }
         if config.weather {
             app.insert_resource(crate::eco::client_seasons(&eco))
-                .add_plugins(rmc_client::WeatherPlugin);
+                .add_plugins((rmc_client::WeatherPlugin, rmc_client::DayNightPlugin));
         }
         if config.ui {
             let theme =

@@ -17,14 +17,20 @@
 //! the between-seasons ledger, which the next `SeasonDone` reports (and
 //! empties). Seasons count from 0: the first tick runs season 0 (row 0 of
 //! `seasons.ron`, the row worldgen starts from).
+//!
+//! With the game calendar ([`Host::set_calendar`], `docs/CALENDAR.md`), a
+//! season is the calendar's days of hourly sub-steps, each with its own air
+//! temperature and rain ([`SeasonRun::start_planned`]), and every call that
+//! runs sub-steps sends `Clock` after its snapshots (before `SeasonDone`):
+//! the hour last run and its weather.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmc_eco::ledger::merge;
 use rmc_eco::runner::activate_holders;
-use rmc_eco::{Activity, EcoTables, Exec, GasPass, SeasonRun, WaterPass};
-use rmc_protocol::{SeasonReport, ServerMsg};
+use rmc_eco::{Activity, Calendar, EcoTables, Exec, GasPass, SeasonRun, WaterPass};
+use rmc_protocol::{GameClock, SeasonReport, ServerMsg};
 use rmc_world::coords::ChunkPos;
 use rmc_world::edit::PlayerId;
 use rmc_world::ledger::SeasonLedger;
@@ -46,6 +52,8 @@ pub(crate) struct Seasons {
     /// The season being run a sub-step at a time ([`Host::eco_substep`]),
     /// and the snapshots sent for it so far.
     run: Option<(SeasonRun, u32)>,
+    /// The game calendar; `None`: seasons of `seasons.ron` rows.
+    calendar: Option<Arc<Calendar>>,
 }
 
 impl Seasons {
@@ -56,6 +64,7 @@ impl Seasons {
             next: 0,
             between_seasons: SeasonLedger::default(),
             run: None,
+            calendar: None,
         }
     }
 
@@ -122,6 +131,24 @@ impl Host {
         true
     }
 
+    /// Runs the seasons from the next one on the game `calendar`: hourly
+    /// sub-steps with the calendar's weather, and a `Clock` message after
+    /// each call that runs some (see the module docs); `None` goes back to
+    /// the `seasons.ron` rows. A season part-run keeps the plan it started
+    /// with. Returns `false`, changing nothing, without the Phase 2 tables.
+    pub fn set_calendar(&mut self, calendar: Option<Calendar>) -> bool {
+        let Some(eco) = self.eco.as_mut() else {
+            return false;
+        };
+        eco.calendar = calendar.map(Arc::new);
+        true
+    }
+
+    /// The game calendar the seasons run on, if any.
+    pub fn calendar(&self) -> Option<&Calendar> {
+        self.eco.as_ref()?.calendar.as_deref()
+    }
+
     /// The season the next tick runs; `None` without the Phase 2 tables.
     pub fn season(&self) -> Option<u32> {
         self.eco.as_ref().map(|e| e.next)
@@ -178,27 +205,46 @@ impl Host {
             None => {
                 let season = eco.next;
                 broadcast(transport, &to, &ServerMsg::SeasonStarted { season });
-                let run = SeasonRun::start(
-                    &mut self.world,
-                    &eco.tables,
-                    season,
-                    seed,
-                    &mut eco.activity,
-                );
+                let run = match &eco.calendar {
+                    Some(calendar) => SeasonRun::start_planned(
+                        &mut self.world,
+                        &eco.tables,
+                        season,
+                        seed,
+                        &mut eco.activity,
+                        calendar.plan(seed, season),
+                    ),
+                    None => SeasonRun::start(
+                        &mut self.world,
+                        &eco.tables,
+                        season,
+                        seed,
+                        &mut eco.activity,
+                    ),
+                };
                 (run, 0)
             }
         };
         let before = revisions(&self.world);
+        let first = run.progress().0;
         for _ in 0..n {
             if run.is_done() {
                 break;
             }
             run.substep(&mut self.world, &mut eco.activity, Exec::Parallel);
         }
+        let clock = eco
+            .calendar
+            .as_deref()
+            .zip(run.progress().0.checked_sub(1).filter(|&i| i >= first))
+            .and_then(|(calendar, i)| clock(calendar, &run, i));
         if !run.is_done() {
             let snapshots = season_snapshots(&self.world, &before);
             for msg in &snapshots {
                 broadcast(transport, &to, msg);
+            }
+            if let Some(clock) = clock {
+                broadcast(transport, &to, &ServerMsg::Clock(clock));
             }
             sent = sent.saturating_add(u32::try_from(snapshots.len()).unwrap_or(u32::MAX));
             eco.run = Some((run, sent));
@@ -211,6 +257,9 @@ impl Host {
         let snapshots = season_snapshots(&self.world, &before);
         for msg in &snapshots {
             broadcast(transport, &to, msg);
+        }
+        if let Some(clock) = clock {
+            broadcast(transport, &to, &ServerMsg::Clock(clock));
         }
         let changed_chunks =
             sent.saturating_add(u32::try_from(snapshots.len()).unwrap_or(u32::MAX));
@@ -239,6 +288,24 @@ impl Host {
         );
         Some(report)
     }
+}
+
+/// The clock after sub-step `i` of a calendar season `run`.
+fn clock(calendar: &Calendar, run: &SeasonRun, i: u8) -> Option<GameClock> {
+    let w = run.weather(i)?;
+    let (day, hour) = calendar.day_hour(i);
+    Some(GameClock {
+        season: run.season(),
+        day,
+        days: calendar.days,
+        hour,
+        hours: calendar.hours,
+        air_temp: w.air_temp,
+        rain: w.rain,
+        peak_rain: calendar.seasons.iter().map(|s| s.rain).max().unwrap_or(0),
+        snow: w.snow,
+        daylight: calendar.season(run.season()).daylight,
+    })
 }
 
 fn broadcast(transport: &mut dyn Transport, to: &[PlayerId], msg: &ServerMsg) {
@@ -444,6 +511,105 @@ mod tests {
         let report = host.advance_season().expect("the season finishes");
         assert_eq!(report.substep_ms.len(), usize::from(substeps));
         assert_eq!(host.season(), Some(2));
+    }
+
+    /// A short calendar: two days of four hours, wet every day.
+    fn short_calendar() -> rmc_eco::Calendar {
+        let season = |key: &str, mean: i16| rmc_eco::CalendarSeason {
+            key: key.into(),
+            mean,
+            swing: 60,
+            wet: u8::MAX,
+            rain: 40,
+            spell: (1, 2),
+            daylight: (1, 3),
+        };
+        rmc_eco::Calendar {
+            days: 2,
+            hours: 4,
+            diurnal: vec![-100, 0, 100, 0],
+            plant_hour: 2,
+            seasons: vec![season("warm", 200), season("cold", -100)],
+        }
+    }
+
+    #[test]
+    fn calendar_seasons_run_hourly_and_send_the_clock() {
+        let t = tables();
+        let (mut host, eps) = host_with(world(&t, true), 1);
+        let a = &eps[0];
+        let mut replica = Replica::new(t.materials().clone());
+        a.send(replica.hello()).unwrap();
+        host.tick();
+        for msg in a.drain() {
+            replica.handle(msg).unwrap();
+        }
+        let calendar = short_calendar();
+        assert!(host.set_calendar(Some(calendar.clone())));
+        assert_eq!(host.calendar(), Some(&calendar));
+        let seed = host.config().seed;
+        let plan = calendar.plan(seed, 0);
+        let mut msgs = Vec::new();
+        let mut clocks = Vec::new();
+        for i in 0..calendar.substeps() {
+            assert_eq!(host.eco_substep().is_some(), i + 1 == calendar.substeps());
+            let got = a.drain();
+            // The clock follows the sub-step's snapshots, and comes before
+            // SeasonDone.
+            let at = got
+                .iter()
+                .position(|m| matches!(m, ServerMsg::Clock(_)))
+                .expect("a clock each hour");
+            assert!(
+                got[at + 1..]
+                    .iter()
+                    .all(|m| matches!(m, ServerMsg::SeasonDone { .. }))
+            );
+            let ServerMsg::Clock(c) = got[at] else {
+                unreachable!()
+            };
+            clocks.push(c);
+            msgs.extend(got);
+        }
+        for (i, c) in clocks.iter().enumerate() {
+            let w = plan[i];
+            assert_eq!(
+                (c.season, c.day, c.days, c.hour, c.hours),
+                (0, (i / 4) as u8, 2, (i % 4) as u8, 4),
+                "hour {i}"
+            );
+            assert_eq!((c.air_temp, c.rain, c.snow), (w.air_temp, w.rain, w.snow));
+            assert_eq!((c.daylight, c.peak_rain), ((1, 3), 40));
+        }
+        let Some(ServerMsg::SeasonDone { report, .. }) = msgs.last() else {
+            panic!("expected SeasonDone last");
+        };
+        assert_eq!(report.substep_ms.len(), plan.len());
+        for msg in msgs {
+            replica.handle(msg).unwrap();
+        }
+        assert_eq!(replica.world().unwrap().hash(), host.world().hash());
+
+        // The Season button runs a whole calendar season: one clock, its
+        // last hour.
+        host.advance_season().expect("a season");
+        let clocks: Vec<GameClock> = a
+            .drain()
+            .into_iter()
+            .filter_map(|m| match m {
+                ServerMsg::Clock(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(clocks.len(), 1);
+        assert_eq!((clocks[0].season, clocks[0].day, clocks[0].hour), (1, 1, 3));
+        assert_eq!(clocks[0].air_temp, calendar.plan(seed, 1)[7].air_temp);
+
+        // Back to the season rows: no clock.
+        assert!(host.set_calendar(None));
+        let report = host.advance_season().expect("a season");
+        assert_eq!(report.substep_ms.len(), usize::from(t.seasons().substeps));
+        assert!(!a.drain().iter().any(|m| matches!(m, ServerMsg::Clock(_))));
     }
 
     #[test]

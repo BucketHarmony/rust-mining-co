@@ -71,6 +71,7 @@ pub fn run_headless(
         assets,
         seed,
         save_dir,
+        calendar: _,
     } = config;
     let start = start_world(&assets, seed, &save_dir)?;
     let loaded = start.origin == WorldOrigin::Loaded;

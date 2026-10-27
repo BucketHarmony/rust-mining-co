@@ -3,6 +3,7 @@
 
 pub mod controller;
 pub mod cursor;
+pub mod daynight;
 pub mod eco;
 pub mod editor;
 pub mod flycam;
@@ -33,6 +34,9 @@ pub use controller::{
 pub use cursor::{
     CursorGrab, CursorPlugin, CursorSystems, GRAB_BUTTON, GRABBED_MODE, RELEASE_KEY, look_allowed,
     swing_allowed,
+};
+pub use daynight::{
+    ClockPace, DayNight, DayNightPlugin, DayNightSystems, DaySky, GameTime, SkyDisc, day_sky,
 };
 pub use eco::{
     CellReadout, ClientEco, EditorReadout, PlantReadout, SeasonDone, SeasonSummary, cell_readout,
@@ -94,5 +98,6 @@ pub use ui::{
 };
 pub use viewmodel::{ViewModel, ViewModelPlugin, ViewModelSystems};
 pub use weather::{
-    ClientSeasons, SeasonClockPaused, SeasonView, Sky, Weather, WeatherPlugin, WeatherSystems,
+    ClientSeasons, ClockView, SeasonClockPaused, SeasonView, Sky, Weather, WeatherPlugin,
+    WeatherSystems, weather_at,
 };
