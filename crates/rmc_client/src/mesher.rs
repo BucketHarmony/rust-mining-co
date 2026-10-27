@@ -50,6 +50,8 @@ use rmc_world::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
 use rmc_world::query::SubstanceTint;
 use rmc_world::world::World;
 
+use crate::liquid::{MIN_DRAWN_FILL, poured, run_beyond};
+
 /// Edge length of a [`MeshInput`] in cells: the chunk plus one border cell on
 /// each side.
 pub const MESH_INPUT_EDGE: usize = CHUNK_SIZE as usize + 2;
@@ -322,8 +324,57 @@ impl MeshInput {
                 }
             }
         }
+        input.pour_liquid_runs(world, &liquid);
         input.open_shell_above_surface(world);
         Some(input)
+    }
+
+    /// Replaces the fill of every vertical run of one [`is_liquid_pass`]
+    /// material with its poured fill ([`crate::liquid`]): a rain film over
+    /// a shallow cell is drawn in that cell, not a cell above it. A run
+    /// that leaves the box is followed into the world, so both chunks of a
+    /// run across a chunk face read the same level. A poured fill under
+    /// [`MIN_DRAWN_FILL`] is not drawn.
+    fn pour_liquid_runs(&mut self, world: &World, liquid: &[bool]) {
+        const N: i32 = CHUNK_SIZE;
+        let is_liquid = |id: MaterialId| liquid.get(usize::from(id.0)).copied().unwrap_or(false);
+        let origin = self.pos.origin_cell().0;
+        let at = |x, y, z| CellPos(origin + IVec3::new(x, y, z));
+        for z in -1..=N {
+            for x in -1..=N {
+                let mut y = -1;
+                while y <= N {
+                    let m = self.get(x, y, z);
+                    if !is_liquid(m) {
+                        y += 1;
+                        continue;
+                    }
+                    let start = y;
+                    let mut total = 0;
+                    while y <= N && self.get(x, y, z) == m {
+                        total += u32::from(self.fill(x, y, z));
+                        y += 1;
+                    }
+                    let (below, under) = if start == -1 {
+                        run_beyond(world, at(x, start, z), m, -1)
+                    } else {
+                        (0, 0)
+                    };
+                    let over = if y > N {
+                        run_beyond(world, at(x, N, z), m, 1).1
+                    } else {
+                        0
+                    };
+                    let total = total + under + over;
+                    for (k, cy) in (start..y).enumerate() {
+                        let k = u32::try_from(k).unwrap_or(u32::MAX);
+                        let fill = poured(total, below.saturating_add(k));
+                        self.fills[Self::index(x, cy, z)] =
+                            if fill < MIN_DRAWN_FILL { 0 } else { fill };
+                    }
+                }
+            }
+        }
     }
 
     /// Turns the bounds shell above the surface into air (F095), so the
@@ -2096,6 +2147,62 @@ mod tests {
         let top = with_normal(&qs, IVec3::Y);
         assert_eq!(top.len(), 1);
         assert!((top[0].plane() - (6.0 + h(77))).abs() < 1e-5);
+    }
+
+    /// The rain film the host leaves on a pond after each sub-step (one
+    /// cell above a top cell that is not full) is drawn poured into the
+    /// cell below; across a chunk face both chunks read the same level; a
+    /// lone film thinner than `MIN_DRAWN_FILL` is wet ground, not drawn.
+    #[test]
+    fn stacked_liquid_is_drawn_poured_down() {
+        let t = table();
+        let water = t.id("water").unwrap();
+        let stone = t.id("stone").unwrap();
+        let mut world = world_3x3x3(&t);
+        let (low, high) = (ChunkPos::new(0, 0, 0), ChunkPos::new(0, 1, 0));
+        let mut a = Chunk::uniform(MaterialId::AIR);
+        let mut b = Chunk::uniform(MaterialId::AIR);
+        let wet = |chunk: &mut Chunk, (x, y, z): (u32, u32, u32), fill: u8| {
+            chunk.storage.set(LocalPos::new(x, y, z), water);
+            chunk
+                .layers
+                .set_u8(LayerId::Moisture, LocalPos::new(x, y, z), fill);
+        };
+        // A shallow cell with a film over it, on stone.
+        a.storage.set(LocalPos::new(6, 4, 6), stone);
+        wet(&mut a, (6, 5, 6), 60);
+        wet(&mut a, (6, 6, 6), 20);
+        // A lone film on stone.
+        a.storage.set(LocalPos::new(12, 5, 12), stone);
+        wet(&mut a, (12, 6, 12), 4);
+        // A run across the face y 31 | 32, on stone.
+        a.storage.set(LocalPos::new(20, 30, 20), stone);
+        wet(&mut a, (20, 31, 20), 100);
+        wet(&mut b, (20, 0, 20), 50);
+        insert(&mut world, low, a);
+        insert(&mut world, high, b);
+
+        let input = MeshInput::from_world(&world, low).unwrap();
+        assert_eq!(input.fill(6, 5, 6), 80, "the film poured in");
+        assert_eq!(input.fill(6, 6, 6), 0, "nothing left above");
+        assert_eq!(input.fill(12, 6, 12), 0, "a lone film is not drawn");
+        assert_eq!(input.fill(20, 31, 20), 150);
+        assert_eq!(input.fill(20, 32, 20), 0);
+        let qs = liquid(&input);
+        let tops = with_normal(&qs, IVec3::Y);
+        let planes: Vec<f32> = tops.iter().map(|q| q.plane()).collect();
+        assert_eq!(tops.len(), 2, "{planes:?}");
+        assert!(planes.iter().any(|p| (p - (5.0 + h(80))).abs() < 1e-5));
+        assert!(planes.iter().any(|p| (p - (31.0 + h(150))).abs() < 1e-5));
+        assert!(
+            qs.iter().all(|q| q.max().y <= 32.0),
+            "nothing is drawn in the film's cell"
+        );
+
+        let above = MeshInput::from_world(&world, high).unwrap();
+        assert_eq!(above.fill(20, -1, 20), 150, "the same level from above");
+        assert_eq!(above.fill(20, 0, 20), 0);
+        assert!(liquid(&above).is_empty());
     }
 
     /// `eco.tint`'s iron row: layer 1 is `fe` in `substances.ron`.

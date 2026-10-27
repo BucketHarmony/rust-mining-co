@@ -72,6 +72,7 @@ use crate::cursor::{CursorGrab, look_allowed};
 use crate::editor::free_feet_near;
 use crate::flycam::{FlyCam, MAX_PITCH_DEG};
 use crate::interp::InterpolatedEye;
+use crate::liquid::settled_fill;
 use crate::net::ToHost;
 use crate::render::GameCamera;
 use crate::replica::Replica;
@@ -284,15 +285,30 @@ pub fn blocks(world: &World, cell: CellPos) -> bool {
     world.get_cell(cell).is_none() || collides(world, cell)
 }
 
-/// Whether the cell at the middle of a box `height` meters tall with its
-/// feet at `feet` holds a `Liquid` material: the player swims. With a
-/// `height` of 0, whether the feet are in a liquid.
+/// Whether the middle of a box `height` meters tall with its feet at `feet`
+/// is under a liquid's surface: the player swims. With a `height` of 0,
+/// whether the feet are. The surface is the cell's poured fill
+/// ([`crate::liquid`]), so a rain film over a shallow cell is not one; a
+/// liquid run that holds no fill (placed without the ecology) is liquid
+/// all through.
 pub fn in_liquid(world: &World, feet: Vec3, height: f32) -> bool {
-    let waist = CellPos::from_meters(feet + Vec3::Y * (height / 2.0));
-    world
+    let point = feet + Vec3::Y * (height / 2.0);
+    let waist = CellPos::from_meters(point);
+    let liquid = world
         .get_cell(waist)
         .and_then(|id| world.materials().get(id))
-        .is_some_and(|d| d.phase == Phase::Liquid)
+        .is_some_and(|d| d.phase == Phase::Liquid);
+    if !liquid {
+        return false;
+    }
+    let Some((fill, total)) = settled_fill(world, waist) else {
+        return false;
+    };
+    if total == 0 {
+        return true;
+    }
+    let depth = (point.y / CELL_SIZE_M).fract();
+    depth * f32::from(u8::MAX) < f32::from(fill)
 }
 
 /// Whether `cell` holds a `Solid`, non-`passable` material.
@@ -717,6 +733,7 @@ mod tests {
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::CellAabb;
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, PlayerId};
+    use rmc_world::layers::LayerId;
     use rmc_world::materials::{MaterialId, MaterialTable};
     use rmc_world::shape::Shape;
     use std::sync::Arc;
@@ -1652,6 +1669,50 @@ mod tests {
             player.feet
         );
         assert!(!player.swimming);
+    }
+
+    /// Sets the fill of every cell in the inclusive box.
+    fn set_fill(world: &mut World, min: (i32, i32, i32), max: (i32, i32, i32), fill: u8) {
+        for x in min.0..=max.0 {
+            for y in min.1..=max.1 {
+                for z in min.2..=max.2 {
+                    let (pos, local) = CellPos::new(x, y, z).split();
+                    let mut chunk = world.chunk(pos).unwrap().clone();
+                    chunk.layers.set_u8(LayerId::Moisture, local, fill);
+                    world.insert_chunk(pos, chunk).unwrap();
+                }
+            }
+        }
+    }
+
+    /// A shallow pool (cell row 4, fill 40) with the host's rain film over
+    /// it (row 5, fill 10) at the player's waist: the film pours into the
+    /// pool, so the player wades, not swims; a full row 5 is swum in, and a
+    /// half-full one only below its surface.
+    #[test]
+    fn rain_film_over_a_shallow_pool_is_not_swum_in() {
+        let mut world = floor_world();
+        let water = world.materials().id("water").unwrap();
+        fill(&mut world, (24, 4, 24), (40, 5, 40), water);
+        set_fill(&mut world, (24, 4, 24), (40, 4, 40), 40);
+        set_fill(&mut world, (24, 5, 24), (40, 5, 40), 10);
+        let feet = Vec3::new(16.0, 2.0, 16.0);
+        let waist = CellPos::from_meters(feet + Vec3::Y * PLAYER_HEIGHT_M / 2.0);
+        assert_eq!(waist.0.y, 5, "the waist is in the film's row");
+        assert!(!in_liquid(&world, feet, PLAYER_HEIGHT_M));
+        assert!(in_liquid(&world, feet, 0.0), "the feet are in the pool");
+        let mut player = Player::at(feet);
+        run(&world, &mut player, MoveInput::default(), 30);
+        assert!(!player.swimming);
+        assert!(player.grounded, "it stands on the floor");
+
+        set_fill(&mut world, (24, 4, 24), (40, 5, 40), 255);
+        assert!(in_liquid(&world, feet, PLAYER_HEIGHT_M));
+        // Row 5 half full: its surface is at 2.75 m.
+        set_fill(&mut world, (24, 5, 24), (40, 5, 40), 128);
+        let at = |waist_m: f32| feet.with_y(waist_m - PLAYER_HEIGHT_M / 2.0);
+        assert!(in_liquid(&world, at(2.6), PLAYER_HEIGHT_M));
+        assert!(!in_liquid(&world, at(2.9), PLAYER_HEIGHT_M));
     }
 
     #[test]

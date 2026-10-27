@@ -3896,3 +3896,20 @@ Decisions:
 - Rule 21: no pixel thresholds; the playtester judges the look.
 Next: owner tunes the palettes in the game and saves; per-cell variants (two seeds picked by cell hash) would hide repetition on large faces.
 Blockers: none.
+
+## 2026-10-26 — Owner: water drawn at its level, rain film not swum in — passed
+Done:
+- Owner report: the water surface floats one block too high, and it seems walkable. Cause, checked on `saves/castle`:
+  - Rain lands at `surface_y + 1` at the end of each sub-step, after the flow sweeps (SAD-P2 §7.3 D). A pond is its column's surface, so rain makes a thin film cell (fill 1-10) on top of a pond whose top cell is not full.
+  - The next sweep pours that film down, but every snapshot and save is taken right after the rain. The castle save holds 11,584 such films over water (4,511 of them over cells under 1/16 full), plus 8,100 films on topsoil.
+  - The mesher hid the lower cell's top (same liquid above) and drew the film's top, so the surface showed a cell above the water. The controller swam whenever the waist cell was a liquid, so a film at waist height made the player swim, and Space held them at the film.
+- `rmc_client::liquid`: the client reads each vertical run of one liquid as if it had already poured down. The run's total fills cells from the bottom, a full cell at a time (`poured`, `run_beyond`, `settled_fill`). The replica is unchanged.
+- Mesher: `MeshInput::from_world_colored` pours every liquid run in the box before meshing. A run that leaves the box is followed into the world, so both chunks read the same level. A poured fill under `MIN_DRAWN_FILL` (16) is not drawn: a fresh rain film is wet ground.
+- Controller: `in_liquid` swims only while the waist (or the feet, for wading) is below the cell's poured surface. A run that holds no fill (water placed without the ecology, as in the controller tests) stays liquid all through, as before.
+- Shots on the castle save from the same camera: `docs/screens/water_poured-castle-{before,after}.png`. Before, blue sheets cover every terrace; after, the water sits in the moat and the low ground.
+Tests added: `liquid::tests::{poured_fills_full_cells_from_the_bottom, a_film_over_a_shallow_cell_pours_into_it}`, `mesher::tests::stacked_liquid_is_drawn_poured_down`, `controller::tests::rain_film_over_a_shallow_pool_is_not_swum_in`.
+Decisions:
+- Fixed in the client, not the sim. The rain target is SAD-P2 §7.3 D as written and is covered by `rain_targets_surface_plus_one_or_anchor_never_overhang`; the state is transient (the next sweep pours it), so only how it is read changes.
+- `MIN_DRAWN_FILL` is a look constant (rule 21); the playtester judges it.
+Next: if the owner wants the sim itself to hold no films, the rain target would have to fill a non-full top water cell first. That is a SAD-P2 change, for the owner.
+Blockers: none.

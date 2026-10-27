@@ -9,6 +9,7 @@ pub mod flycam;
 pub mod gizmo;
 pub mod hud;
 pub mod interp;
+pub mod liquid;
 pub mod material;
 pub mod mesher;
 pub mod meshpipe;
