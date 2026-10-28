@@ -101,8 +101,8 @@ pub use save::{
 };
 pub use sound::{SoundConfig, SoundCue, SoundPlugin, SoundSystems, WindLevel};
 pub use ui::{
-    HudAnchor, HudSlot, Screen, Toast, UiAction, UiKitPlugin, UiLayer, UiScreens, UiSettings,
-    UiSystems, UiTheme,
+    HudAnchor, HudSlot, SETTINGS_FILE, Screen, SettingsFilePlugin, Toast, UiAction, UiKitPlugin,
+    UiLayer, UiScreens, UiSettings, UiSystems, UiTheme,
 };
 pub use viewmodel::{ViewModel, ViewModelPlugin, ViewModelSystems};
 pub use weather::{

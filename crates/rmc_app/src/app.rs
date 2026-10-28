@@ -26,8 +26,8 @@ use rmc_client::{
     CameraStart, CharacterPlugin, ClientItems, ClientMaterials, ControllerPlugin, CursorPlugin,
     DayNightPlugin, EditorPanelPlugin, EditorPlugin, FlyCamPlugin, FromHost, GameRenderPlugin,
     HostConnection, HotbarPlugin, HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin,
-    Replica, ReplicaPlugin, SavePlugin, SoundConfig, SoundPlugin, UiKitPlugin, UiTheme,
-    ViewModelPlugin, WeatherPlugin,
+    Replica, ReplicaPlugin, SETTINGS_FILE, SavePlugin, SettingsFilePlugin, SoundConfig,
+    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin, WeatherPlugin,
 };
 use rmc_eco::{CALENDAR_FILE, Calendar};
 use rmc_host::{ChannelTransport, spawn_host_thread};
@@ -181,6 +181,10 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
                 app.add_plugins(UiKitPlugin {
                     theme,
                     assets_dir: Some(dir),
+                });
+                // The player's settings, kept beside the world's save.
+                app.add_plugins(SettingsFilePlugin {
+                    path: save_dir.join(SETTINGS_FILE),
                 });
             }
             Err(e) => warn!("no ui kit: {e}"),

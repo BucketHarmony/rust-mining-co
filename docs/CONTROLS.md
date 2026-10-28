@@ -104,7 +104,10 @@ Settings has the UI scale: Larger and Smaller step it by 10 % (75 % to
 200 %), Default size resets it. It also has the temperature unit:
 Fahrenheit by default, and the Fahrenheit / Celsius button switches every
 readout (the top-right temperature, the season chip, the character
-screen's warmth) to Celsius and back. The editor panel stays in Celsius. The UI also scales with the window height,
+screen's warmth) to Celsius and back. The editor panel stays in Celsius.
+Both settings are kept in `settings.ron` in the save directory (`save/`, or
+`--save DIR`): they are written when you change them and read when the game
+starts. The UI also scales with the window height,
 so it is the same size relative to the screen at any resolution.
 
 ## Fly camera

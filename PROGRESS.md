@@ -4092,3 +4092,15 @@ Decisions:
 - The setting is not saved between runs, the same as the UI scale.
 Next: the vegetation plan (V1–V7).
 Blockers: none.
+
+## 2026-10-28 — Settings saved to disk — passed
+Done:
+- `rmc_client::ui::prefs`: `SettingsFilePlugin { path }` reads `SavedSettings` (`ui_scale`, `temperature_unit`, RON, each optional) when added after the UI kit, and writes the file (through a temporary file) whenever the scale or the unit differs from what was last read or written.
+- The windowed game keeps it at `<save dir>/settings.ron` (`SETTINGS_FILE`). A missing file keeps the defaults; an unreadable one is logged and ignored; a saved scale is clamped to the theme's range.
+- Docs: `docs/CONTROLS.md`.
+Tests added: `ui::prefs::tests::{settings_are_saved_on_change_and_loaded_on_start, a_bad_or_partial_file_keeps_the_defaults}`.
+Decisions:
+- The file lives in the save directory instead of a new CLI flag, so `GameConfig` and the command line are unchanged; world saves write only their own files, so it is never touched by them. A different `--save` directory has its own settings.
+- Nothing is written until a setting changes.
+Next: the vegetation plan (V1–V7).
+Blockers: none.

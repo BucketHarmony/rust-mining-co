@@ -570,7 +570,9 @@ pub struct LanternIcon;
 /// The UI kit starts it at [`TemperatureUnit::Fahrenheit`]; without the
 /// kit (the headless host, tests) readouts stay in the world's own unit,
 /// Celsius.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Resource, Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum TemperatureUnit {
     #[default]
     Fahrenheit,

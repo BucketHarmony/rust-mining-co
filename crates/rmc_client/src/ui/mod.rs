@@ -13,9 +13,11 @@
 //!   keyboard focus is always visible ([`widgets`]).
 //! - Menus are a screen stack that pauses play ([`screens`]); notices are
 //!   toasts ([`toast`]).
+//! - The settings (scale, temperature unit) are kept on disk ([`prefs`]).
 
 pub mod egui_theme;
 pub mod layers;
+pub mod prefs;
 pub mod scale;
 pub mod screens;
 pub mod theme;
@@ -31,6 +33,7 @@ use bevy::prelude::*;
 use crate::hud::TemperatureUnit;
 
 pub use layers::{HudAnchor, HudSlot, UiLayer};
+pub use prefs::{SETTINGS_FILE, SavedSettings, SettingsFile, SettingsFilePlugin};
 pub use scale::{UiSettings, effective_scale};
 pub use screens::{
     MENU_TITLE, ScaleReadout, Screen, ScreenBody, ScreenRoot, UiScreens, UnitReadout, scale_label,
