@@ -14,6 +14,7 @@ pub mod parts;
 pub mod plants;
 pub mod reference;
 pub mod runner;
+pub mod stocks;
 pub mod tables;
 pub mod temperature;
 pub mod tick;
@@ -32,6 +33,7 @@ pub use plants::{GrowthPass, PlantStarts, SpreadPass, age_plants, spread_roll};
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };
+pub use stocks::VegetationStocks;
 pub use tables::{EcoTableError, EcoTables, SeasonOverride, ToxKind};
 pub use temperature::{Profile, TemperaturePass};
 pub use tick::{Observer, PassId, SeasonRun, TickReport, season_tick, season_tick_observed};

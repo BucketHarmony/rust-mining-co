@@ -328,6 +328,11 @@ mod tests {
             let jacobi = s.report.active_chunks_per_jacobi.len();
             assert!(jacobi > 0 && jacobi % substeps == 0, "{jacobi}");
             assert_eq!(s.report.between_seasons, Default::default());
+            // The vegetation is measured: worldgen sows plants, and each
+            // plant has one limiting factor.
+            let v = &s.vegetation;
+            assert!(v.plant_count() > 0, "{v:?}");
+            assert_eq!(v.limits.values().sum::<u32>(), v.plant_count());
         }
         assert_eq!(report.seasons[1].before, report.seasons[0].after);
         // The tick moved heat at the surface.

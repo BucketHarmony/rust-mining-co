@@ -293,6 +293,36 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
 
 - A headless report (`report_p2`) gains vegetation stocks per season: cover, biomass, soil NPK, and the limiting-factor histogram.
 - Tune for a world that greens in spring, flowers in summer, colours and sheds in autumn, and rests in winter, with soil that runs down under crops and recovers under fallow and legumes (clover, a nitrogen-fixing groundcover).
+- **Status: done (2026-10-28).**
+  - `rmc_eco::stocks::VegetationStocks::measure` runs after every season. The headless report (`report.json`, `SeasonEntry::vegetation`) and the `--headless` printout carry:
+    - plants per species and part cells per kind;
+    - cover (columns holding a plant or a part) and the roots' summed biomass;
+    - soil nutrients: every substance a species needs, demands or takes up, summed over anchor cells;
+    - the limiting-factor histogram. Each plant counts once under the first need it fails (`moisture`, `light`, `temp`, `n >= 2`, `cu <= 16`, ...), else its short demanded substance (V2 sufficiency), else `fed`.
+  - Balance: the shipped rates already give the intended year, so no rate changed. The garden (`build_garden`, seed 1) over 8 seasons:
+
+    | Season | Plants | Leaf cells | Flowers | Fruit | Soil n | Held back by temp |
+    |---|---|---|---|---|---|---|
+    | spring 0 | 6390 | 0 | 0 | 0 | 3.21 M | 0 |
+    | summer 1 | 6640 | 218 | 4 | 3 | 3.11 M | 0 |
+    | autumn 2 | 7096 | 802 | 0 | 0 | 3.00 M | 0 |
+    | winter 3 | 7290 | 433 | 0 | 8 | 2.92 M | 2542 |
+    | spring 4 | 7753 | 1601 | 75 | 0 | 2.83 M | 0 |
+    | summer 5 | 8282 | 2391 | 76 | 513 | 2.75 M | 0 |
+    | autumn 6 | 7292 | 3053 | 0 | 2 | 2.67 M | 0 |
+    | winter 7 | 7499 | 1878 | 0 | 56 | 2.62 M | 2369 |
+
+    - Leaves come in spring, flowers open in spring and summer, fruit sets in summer, leaves turn in autumn and drop in the winter tick, and winter holds a third of the plants back by temperature.
+    - The grass-heavy garden draws nitrogen down by about 3% a season. Grass short of nitrogen (`n >= 2`) appears from the second autumn.
+  - Soil recovery: one year on an 8 by 8 plot (`stocks::tests::soil_runs_down_under_grass_and_recovers_under_clover_and_fallow`). Nitrogen in the loam goes 2560 → 733 under grass, 256 → 3595 under clover, and 256 → 2176 fallow with litter (`decompose`).
+  - `plants_render` now runs with the weather plugin, so its "later" shot shows autumn colors (test-fix, own commit).
+  - Tests:
+    - `stocks::tests::{stocks_count_plants_parts_cover_soil_and_limits, soil_runs_down_under_grass_and_recovers_under_clover_and_fallow}`
+    - `cli::tests::headless_seasons_writes_report` (now also checks the vegetation)
+  - Decisions:
+    - The plan's `report_p2` is the existing headless `report.json`. The stocks are a `#[serde(default)]` field, so older reports still load.
+    - Deciduous leaves drop in their `shed` season (winter). They turn in autumn, so on screen autumn colors and winter is bare.
+    - Soil counts anchor cells only. Substance deeper in the ground is not what roots see.
 
 ## 5. Pacing
 

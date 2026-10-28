@@ -18,10 +18,20 @@ fn main() -> anyhow::Result<()> {
         let seasons = cli.seasons.context("--headless needs --seasons")?;
         let report = run_headless(config, seasons, |s| {
             let ms: u32 = s.report.substep_ms.iter().sum();
+            let v = &s.vegetation;
             println!(
                 "season {}: {} chunks changed, {ms} ms",
                 s.season, s.changed_chunks
             );
+            println!(
+                "  {} plants over {} columns, biomass {}, parts {:?}",
+                v.plant_count(),
+                v.cover,
+                v.biomass,
+                v.parts
+            );
+            println!("  plants {:?}", v.plants);
+            println!("  soil {:?}, limits {:?}", v.soil, v.limits);
         })?;
         println!(
             "{} seasons on seed {}: world hash {:016x}, {} chunks saved, {} written to {}",

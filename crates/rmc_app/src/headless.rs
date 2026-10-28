@@ -4,14 +4,15 @@
 //! [`run_headless`] starts the world as the game does ([`start_world`]:
 //! the save in the save directory, else generated), builds a host with no
 //! players over it, and advances N seasons. After each season it checks
-//! the conservation invariants of SAD-P2 §7 against the season's ledger.
+//! the conservation invariants of SAD-P2 §7 against the season's ledger
+//! and measures the vegetation (docs/VEGETATION.md V7).
 //! It then saves the world and writes [`REPORT_FILE`] into the save
 //! directory. A violated invariant still writes both, then fails the run.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
-use rmc_eco::{InvariantChecker, Totals, Violation};
+use rmc_eco::{InvariantChecker, Totals, VegetationStocks, Violation};
 use rmc_host::ChannelTransport;
 use rmc_protocol::SeasonReport;
 use rmc_world::coords::ChunkPos;
@@ -57,6 +58,9 @@ pub struct SeasonEntry {
     pub violations: Vec<Violation>,
     /// What `SeasonDone` reports.
     pub report: SeasonReport,
+    /// The plants after the season.
+    #[serde(default)]
+    pub vegetation: VegetationStocks,
 }
 
 /// Runs `seasons` seasons on the world `config` starts, saves it and
@@ -102,6 +106,7 @@ pub fn run_headless(
                 .err()
                 .map_or_else(Vec::new, |v| v.0),
             report,
+            vegetation: VegetationStocks::measure(world, &assets.eco),
         };
         on_season(&entry);
         entries.push(entry);

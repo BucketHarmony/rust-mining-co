@@ -4209,3 +4209,16 @@ Decisions:
 - Clematis `substance_min` n is 3 and grape `take` is 52, so that the strings existing tests edit once stay unique.
 Next: V7, the ecology report and balance pass.
 Blockers: none.
+
+## 2026-10-28 — V7 ecology report and balance (docs/VEGETATION.md) — passed
+Done:
+- `rmc_eco::stocks::VegetationStocks`: per season, plants per species, part cells per kind, cover, biomass, soil nutrients in anchors, and the limiting-factor histogram. It goes into the headless `report.json` (`SeasonEntry::vegetation`) and the `--headless` printout.
+- Balance: an 8-season garden run greens in spring, flowers in spring and summer, fruits in summer, colors in autumn, sheds and rests in winter. The shipped rates needed no change. The numbers are in `docs/VEGETATION.md` V7.
+- `plants_render` re-shot with the weather plugin (autumn colors in the "later" shot).
+Tests added: `stocks::tests::{stocks_count_plants_parts_cover_soil_and_limits, soil_runs_down_under_grass_and_recovers_under_clover_and_fallow}`; `cli::tests::headless_seasons_writes_report` checks the vegetation.
+Decisions:
+- test-fix (own commit): e2e `plants_render` sets `weather: true` and asserts the client's autumn before the "later" shot.
+- `report_p2` is the existing headless report; the stocks field is `#[serde(default)]`.
+- Deciduous leaves drop in the winter tick (their `shed` season), after turning in autumn.
+Next: VEGETATION V1–V7 are done. The owner playtests the garden (`saves/garden`, rebuilt for V7).
+Blockers: none.
