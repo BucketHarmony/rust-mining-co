@@ -60,6 +60,9 @@ pub struct PlantLook {
     /// Per `seasons.ron` row: the color (sRGB) the leaves turn toward that
     /// season; `None` keeps the material color.
     pub season_colors: Vec<Option<[u8; 3]>>,
+    /// A tree's leaf material (docs/VEGETATION.md V5): its cubes take the
+    /// season colors too. `None` for a species without parts.
+    pub leaf: Option<MaterialId>,
 }
 
 /// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):

@@ -54,6 +54,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use rmc_protocol::ServerMsg;
 use rmc_world::coords::{CHUNK_SIZE, CellPos, ChunkPos};
+use rmc_world::layers::LayerId;
 
 use crate::eco::{ClientEco, SeasonSummary};
 use crate::mesher::{ChunkMesher, ColorSource, GreedyMesher, MeshData, MeshInput};
@@ -418,7 +419,8 @@ fn follow_color_source(
 /// Plants draw their stage, health and season (docs/VEGETATION.md V3),
 /// which change with layers and the calendar rather than cells: when the
 /// season or the last finished season changes, every resident chunk with
-/// a plant state is queued again.
+/// a plant state or a tree part (whose leaves take the season's color,
+/// V5) is queued again.
 fn follow_plants(
     replica: Option<Res<Replica>>,
     weather: Option<Res<Weather>>,
@@ -439,7 +441,7 @@ fn follow_plants(
     let planted: Vec<ChunkPos> = replica
         .world()
         .iter_chunks_sorted()
-        .filter(|(_, c)| !c.plants.is_empty())
+        .filter(|(_, c)| !c.plants.is_empty() || c.layers.contains(LayerId::Part))
         .map(|(pos, _)| pos)
         .collect();
     debug!(count = planted.len(), "plant chunks queued for the season");

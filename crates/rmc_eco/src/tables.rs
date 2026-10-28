@@ -241,6 +241,37 @@ pub struct PartsDef {
     /// Material of leaf parts.
     pub leaf: String,
     pub form: FormDef,
+    /// Whether the crown grows wood branches (docs/VEGETATION.md V5): the
+    /// crown's center and the cells on its horizontal axes through the
+    /// center, short of the radius, are branches; the rest are leaves.
+    /// Not encoded when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub branches: bool,
+    /// The season key in which the tree is bare (docs/VEGETATION.md V5):
+    /// its leaves fall as litter and none grow. `None` is evergreen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shed: Option<String>,
+    /// The tree's fruit, its seed (docs/VEGETATION.md V5). Not encoded when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fruit: Option<FruitDef>,
+}
+
+/// A tree's fruit (docs/VEGETATION.md V5): cells of the row's material (its
+/// seed) hanging from leaves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FruitDef {
+    /// The season key in which a full crown grows fruit.
+    pub grow: String,
+    /// The season key in which the fruit falls.
+    pub fall: String,
+    /// Most fruit a tree carries.
+    pub count: u8,
+    /// The chance in 256 that a fallen fruit starts a plant where it lands
+    /// (on an anchor passing the species' needs); otherwise it rots there
+    /// as `eco.part_litter`.
+    pub take: u8,
 }
 
 /// The shape a multi-cell plant grows toward.
@@ -724,6 +755,21 @@ impl EcoTables {
                     ));
                 }
             }
+            if let Some(parts) = &p.parts {
+                if let Some(k) = &parts.shed {
+                    key_in(PLANTS_FILE, &p.key, "season", k, &season_keys)?;
+                }
+                if let Some(f) = &parts.fruit {
+                    key_in(PLANTS_FILE, &p.key, "season", &f.grow, &season_keys)?;
+                    key_in(PLANTS_FILE, &p.key, "season", &f.fall, &season_keys)?;
+                    if f.count == 0 || f.grow == f.fall {
+                        return Err(invalid(
+                            PLANTS_FILE,
+                            format!("plant {:?} has an empty fruit rule", p.key),
+                        ));
+                    }
+                }
+            }
         }
 
         validate_params(&params)?;
@@ -999,6 +1045,7 @@ impl EcoTables {
                             .map(|&(_, (r, g, b))| [r, g, b])
                     })
                     .collect(),
+                leaf: p.parts.as_ref().and_then(|d| self.materials.id(&d.leaf)),
             })
             .collect()
     }
@@ -1096,6 +1143,15 @@ impl EcoTables {
                 .plants
                 .iter()
                 .map(|p| self.materials.id(&p.material))
+                .collect(),
+            plant_woods: self
+                .plants
+                .iter()
+                .map(|p| {
+                    p.parts
+                        .as_ref()
+                        .and_then(|parts| self.materials.id(&parts.wood))
+                })
                 .collect(),
             harvest_shift: self.params.harvest_shift,
             substance_yields,
@@ -1486,6 +1542,33 @@ mod tests {
                 (LayerId::Substance(sub("k")), [148, 100, 52]),
             ]
         );
+    }
+
+    #[test]
+    fn tree_looks_name_their_leaves_and_turn_in_autumn() {
+        // docs/VEGETATION.md V5: the leaf cubes of a tree take its season
+        // colors; plants without parts have no leaf material.
+        let t = shipped();
+        let looks = t.plant_looks();
+        let row = |k: &str| t.plants().iter().position(|p| p.key == k).unwrap();
+        let autumn = t
+            .seasons()
+            .seasons
+            .iter()
+            .position(|s| s.key == "autumn")
+            .unwrap();
+        for (tree, leaf) in [("oak", "oak_leaves"), ("birch", "birch_leaves")] {
+            let look = &looks[row(tree)];
+            assert_eq!(look.leaf, t.materials().id(leaf), "{tree}");
+            assert!(
+                look.season_colors[autumn].is_some(),
+                "{tree} turns in autumn"
+            );
+        }
+        let pine = &looks[row("pine")];
+        assert_eq!(pine.leaf, t.materials().id("pine_needles"));
+        assert!(pine.season_colors.iter().all(Option::is_none), "evergreen");
+        assert_eq!(looks[row("clover")].leaf, None);
     }
 
     #[test]

@@ -182,6 +182,56 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
   - fruit is harvestable by digging.
 - Starting species: oak (broad, deciduous, hungry for N), birch (light, pioneer, poor soil), pine (evergreen cone, acid-tolerant), willow (beside water, hanging crown).
 
+- **Status: done (2026-10-28).**
+  - Seeds and wood:
+    - A tree's material is its seed (`acorn`, `birch_seed`, `pine_cone`; passable, `plant`-tagged).
+    - Planted, the seed grows like any plant. Once grown with biomass for a part, the Extend pass ripens it into the species' `wood` (`World::eco_set`).
+    - The §7.0 displacement keeps the plant when a root's seed turns into its own wood (`EcoRules::plant_woods`). Wood placed by hand is never a tree.
+    - The growth and spread passes read a plant's body as its seed or its wood (`Species::is_body`).
+  - Shape:
+    - The trunk grows to a seeded height, then the crown ellipsoid.
+    - With `branches: true`, the crown cells on the four horizontal axes through the trunk top, next to wood, grow as `Branch` parts in the wood material. The rest grow as leaves.
+  - Shedding:
+    - `shed: Some("winter")` names the season the tree stands bare.
+    - In that season, each run of the Extend pass drops every leaf and fruit as `part_litter` organic matter on the soil below (ledger `litter_in`), and the tree grows nothing.
+    - The next season, the crown regrows from biomass.
+  - Fruit:
+    - `fruit: (grow, fall, count, take)`. In its `grow` season, a full crown grows up to `count` fruit parts: the seed material, beside a leaf, chosen by a seeded roll.
+    - In the `fall` season each fruit drops to the first ground below. With a chance of `take` in 256, and where a seedling's needs hold (`PlantStarts`), it starts a new plant (ledger `plants_born`). Otherwise it rots as litter.
+    - Trees spread only by fruit (`spread_chance` 0).
+  - Leaves in the client:
+    - `PlantLook::leaf` names a tree's leaf material.
+    - `MeshInput::with_plants` sets `recolor`, which holds the leaf cubes' color mixed toward the season row's color by `PLANT_SEASON_MIX`.
+    - Chunks with a `Part` layer re-mesh when the season changes.
+    - Oak turns orange-brown and birch yellow in autumn; pine keeps its color.
+  - Harvest: digging wood, leaves or fruit yields that material's item. A fruit item is the seed, so it can be planted.
+  - Species:
+
+    | Species | Material id | Trunk | Crown | Leaves | Fruit |
+    |---|---|---|---|---|---|
+    | oak | 33 (acorn) | 4–6 | 2 × 3 | shed in winter | 6, autumn → winter |
+    | birch | 34–36 | 5–7 | 1 × 3 | shed in winter | 8, summer → autumn |
+    | pine | 37–39 | 6–9 | 2 × 4 | evergreen (`light_attenuation` 80) | 4, summer → autumn |
+
+    - Birch is a poor-soil pioneer with no `substance_min`.
+    - Pine tolerates acid up to 96.
+    - Each species has `worldgen_chance` 2, so worldgen sows tree seedlings.
+  - Tests:
+    - `parts::tests::{a_seed_grows_as_a_seedling_then_ripens_into_its_wood, a_bare_tree_sheds_its_leaves_as_litter_and_regrows_them, a_full_crown_fruits_in_its_season_and_fallen_fruit_takes_root_or_rots, wood_leaves_and_fruit_dig_as_items_and_the_seed_plants, tree_rows_name_known_seasons_and_bear_fruit, a_seed_grows_into_a_tree_that_stands_bare_in_winter}`
+    - `tables::tests::tree_looks_name_their_leaves_and_turn_in_autumn`
+    - `mesher::tests::tree_leaves_take_their_season_color`
+    - e2e `trees_render` (screenshots in `docs/screens/`)
+  - Decisions:
+    - test-fix 524d52e: the crown test allows `Branch` cells exactly on the crown axes. The pinned species list ends with oak, birch and pine. The mesher's plant-look literal gains `leaf: None` (a new field, no assertion changed).
+    - The client's season comes from the weather plugin. The test kit adds it only with `weather: true`, so `trees_render` turns it on. V3's `plants_render` does not, so its "later" shot still shows spring colors. Re-shooting it is left for V7.
+    - Branches are fixed cells on the crown axes rather than space colonization. This keeps them deterministic and cheap, and readable as a silhouette.
+    - The bare season stops all growth, including fruit. Falling leaves and fruit pass through plant cells (the trunk) to the ground.
+    - Not done:
+      - Willow (needs water-side placement).
+      - Old-age crown thinning.
+      - Seedling and sapling sprites (a seedling draws as its seed's crossed quads).
+      - Autumn leaf fall staggered within the season.
+
 ### V6. Vines
 
 - `form: Vine(climb_tags: ["stone", "wood"], reach: 24, flower: "morning_glory_flower", hang: true)`.

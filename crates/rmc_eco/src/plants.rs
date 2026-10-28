@@ -90,6 +90,9 @@ struct Species {
     /// A multi-cell species (docs/VEGETATION.md V4): growth past 255 is
     /// biomass.
     parts: bool,
+    /// A multi-cell species' wood, which its seed ripens into
+    /// (docs/VEGETATION.md V5): the plant cell may be either.
+    wood: Option<MaterialId>,
     /// Per material id: whether it carries one of `anchor_tags`.
     anchors: Vec<bool>,
     spread_chance: u8,
@@ -97,6 +100,12 @@ struct Species {
 }
 
 impl Species {
+    /// Whether a plant cell of material `m` is this species' body: its
+    /// material, or the wood its seed ripened into.
+    fn is_body(&self, m: Option<MaterialId>) -> bool {
+        self.material.is_some() && (m == self.material || (m.is_some() && m == self.wood))
+    }
+
     /// Every `plants.ron` row, in row order.
     fn all(tables: &EcoTables) -> Vec<Self> {
         let sub = |pairs: &[(String, u8)]| -> Vec<(u8, i32)> {
@@ -130,6 +139,7 @@ impl Species {
                 holds: p.holds,
                 tall: p.tall,
                 parts: p.parts.is_some(),
+                wood: p.parts.as_ref().and_then(|parts| m.id(&parts.wood)),
                 anchors: m
                     .iter()
                     .map(|d| p.anchor_tags.iter().any(|tag| d.has_tag(tag)))
@@ -235,10 +245,9 @@ impl JacobiPass for GrowthPass {
             let Some(sp) = self.species.get(usize::from(plant.species)) else {
                 continue;
             };
-            // Only a plant cell of its species' material grows, and only on
-            // an anchor that is not itself a plant.
-            if !bounds.contains(cell) || sp.material.is_none() || view.material(cell) != sp.material
-            {
+            // Only a plant cell of its species' material (or ripened wood)
+            // grows, and only on an anchor that is not itself a plant.
+            if !bounds.contains(cell) || !sp.is_body(view.material(cell)) {
                 continue;
             }
             let anchor = below(cell);
@@ -373,8 +382,7 @@ impl SpreadPass {
     fn mature(&self, world: &World, cell: CellPos) -> Option<(u8, &Species)> {
         let plant = world.plant(cell)?;
         let sp = self.species.get(usize::from(plant.species))?;
-        let mature = sp.material.is_some()
-            && world.get_cell(cell) == sp.material
+        let mature = sp.is_body(world.get_cell(cell))
             && world.layer(cell, LayerId::Growth) == i32::from(u8::MAX);
         mature.then_some((plant.species, sp))
     }

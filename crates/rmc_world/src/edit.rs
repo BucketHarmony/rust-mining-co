@@ -1200,6 +1200,7 @@ mod tests {
             plant_litter: vec![LITTER],
             part_litter: 0,
             plant_materials: Vec::new(),
+            plant_woods: Vec::new(),
             harvest_shift: HARVEST_SHIFT,
             substance_yields,
             soft_regolith: None,

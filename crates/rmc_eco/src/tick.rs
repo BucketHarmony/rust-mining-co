@@ -215,7 +215,7 @@ impl SeasonRun {
             light: LightPass::new(tables),
             growth: GrowthPass::new(tables),
             spread: SpreadPass::new(tables, season, seed),
-            extend: ExtendPass::new(tables, seed),
+            extend: ExtendPass::for_season(tables, season, seed),
         };
         world.eco_clear_freeze_thaw();
         activity.season_boundary(world);

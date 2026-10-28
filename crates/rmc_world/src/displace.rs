@@ -51,6 +51,10 @@ pub struct EcoRules {
     /// `material` per plant species index (`None` while the table lacks
     /// it): a brush edit that makes a cell one of them plants that species.
     pub plant_materials: Vec<Option<MaterialId>>,
+    /// The wood of each multi-cell species (`None` for the others): its
+    /// seed (`plant_materials`) ripens into it and stays the plant
+    /// (docs/VEGETATION.md V5).
+    pub plant_woods: Vec<Option<MaterialId>>,
     /// `eco.harvest_shift`.
     pub harvest_shift: u8,
     /// `yield_material` per substance index.
@@ -65,6 +69,14 @@ impl EcoRules {
     fn species_of(&self, id: MaterialId) -> Option<u8> {
         let i = self.plant_materials.iter().position(|&m| m == Some(id))?;
         u8::try_from(i).ok()
+    }
+
+    /// Whether a plant of `species` on a cell turning `from` into `to` is
+    /// its seed ripening into its wood.
+    fn ripens(&self, species: u8, from: MaterialId, to: MaterialId) -> bool {
+        let s = usize::from(species);
+        self.plant_materials.get(s) == Some(&Some(from))
+            && self.plant_woods.get(s) == Some(&Some(to))
     }
 }
 
@@ -571,9 +583,15 @@ impl World {
         let (fc, tc) = (self.class(from), self.class(to));
         let pass = cause == Cause::Pass;
 
+        // A seed ripening into its species' wood stays the plant, with its
+        // parts and biomass (docs/VEGETATION.md V5).
+        let ripens = self
+            .plant(cell)
+            .is_some_and(|p| self.rules.ripens(p.species, from, to));
+
         // Plant removal: dig harvests, anything else returns `held` to the
         // anchor below.
-        if let Some(plant) = self.take_plant(cell, fx) {
+        if !ripens && let Some(plant) = self.take_plant(cell, fx) {
             if cause.harvests() {
                 self.harvest(&plant, ledger, fx);
             } else {
@@ -584,9 +602,11 @@ impl World {
 
         // A changed cell is no part of a plant any more, and the parts
         // hanging from it are cut off (docs/VEGETATION.md V4).
-        self.put_layer(cell, LayerId::Part, 0, fx);
-        self.put_layer(cell, LayerId::Biomass, 0, fx);
-        self.sever_children(cell, cause, ledger, fx);
+        if !ripens {
+            self.put_layer(cell, LayerId::Part, 0, fx);
+            self.put_layer(cell, LayerId::Biomass, 0, fx);
+            self.sever_children(cell, cause, ledger, fx);
+        }
 
         // Magma is counted in cells.
         if fc == Class::Magma && tc != Class::Magma {

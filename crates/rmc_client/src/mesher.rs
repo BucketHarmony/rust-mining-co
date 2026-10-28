@@ -276,6 +276,9 @@ pub struct MeshInput {
     /// The chunk's plant cells by [`MeshInput::index`]; a plant cell
     /// missing here draws full size in its material color.
     pub plants: BTreeMap<usize, PlantCell>,
+    /// Materials drawn in another color than their table color: tree
+    /// leaves in their season (docs/VEGETATION.md V5).
+    pub recolor: BTreeMap<MaterialId, [u8; 3]>,
 }
 
 /// A [`MESH_INPUT_VOLUME`] array of zeros.
@@ -303,6 +306,7 @@ impl MeshInput {
             color_source: ColorSource::Material,
             layer_values: None,
             plants: BTreeMap::new(),
+            recolor: BTreeMap::new(),
         }
     }
 
@@ -343,6 +347,7 @@ impl MeshInput {
             }
         }
         self.plants = cells;
+        self.recolor = leaf_colors(&self.materials, looks, season);
         self
     }
 
@@ -694,7 +699,13 @@ impl ChunkMesher for GreedyMesher {
         let is_solid = |p: IVec3| solid[MeshInput::index(p.x, p.y, p.z)];
         let base_colors: Vec<[f32; 4]> = table
             .iter()
-            .map(|def| vertex_base_color(table, def.id))
+            .map(|def| match input.recolor.get(&def.id) {
+                Some(&[r, g, b]) => {
+                    let c = Color::srgba_u8(r, g, b, def.color[3]).to_linear();
+                    [c.red, c.green, c.blue, def.emissive]
+                }
+                None => vertex_base_color(table, def.id),
+            })
             .collect();
         let overlay = input.overlay();
 
@@ -1205,6 +1216,30 @@ fn overlay_base_color(cmap: Colormap, value: i16, alpha: f32) -> [f32; 4] {
     let [r, g, b] = cmap.rgb(value);
     let c = Color::srgb_u8(r, g, b).to_linear();
     [c.red, c.green, c.blue, alpha]
+}
+
+/// The color of every tree's leaf material in `season` (docs/VEGETATION.md
+/// V5): its table color mixed toward the season row's color by
+/// [`PLANT_SEASON_MIX`], as a plant's leaves are. Leaves of a season
+/// without a color keep their table color and are left out.
+fn leaf_colors(
+    materials: &MaterialTable,
+    looks: &[PlantLook],
+    season: u32,
+) -> BTreeMap<MaterialId, [u8; 3]> {
+    looks
+        .iter()
+        .filter_map(|look| {
+            let leaf = look.leaf?;
+            let rows = u32::try_from(look.season_colors.len())
+                .ok()
+                .filter(|&n| n > 0)?;
+            let row = usize::try_from(season % rows).ok()?;
+            let tint = (*look.season_colors.get(row)?)?;
+            let [r, g, b, _] = materials.get(leaf)?.color;
+            Some((leaf, mix([r, g, b], tint, PLANT_SEASON_MIX)))
+        })
+        .collect()
 }
 
 /// Linear RGB of a material's sRGB color, with the emissive strength as alpha.
@@ -2985,6 +3020,65 @@ mod tests {
     }
 
     #[test]
+    fn tree_leaves_take_their_season_color() {
+        // docs/VEGETATION.md V5: leaf cubes turn with the season as a
+        // plant's leaves do; seasons without a color keep the table color.
+        let t = table();
+        let leaves = id(&t, "oak_leaves");
+        let autumn = [176, 96, 40];
+        let looks = vec![PlantLook {
+            material: id(&t, "acorn"),
+            needs: Vec::new(),
+            sway: 0,
+            season_colors: vec![None, None, Some(autumn), None],
+            leaf: Some(leaves),
+        }];
+        assert!(leaf_colors(&t, &looks, 0).is_empty(), "spring: table color");
+        let [r, g, b, _] = t.get(leaves).unwrap().color;
+        let turned = mix([r, g, b], autumn, PLANT_SEASON_MIX);
+        assert_ne!(turned, [r, g, b]);
+        assert_eq!(
+            leaf_colors(&t, &looks, 2),
+            BTreeMap::from([(leaves, turned)])
+        );
+        assert_eq!(
+            leaf_colors(&t, &looks, 6),
+            leaf_colors(&t, &looks, 2),
+            "rows wrap"
+        );
+        let bare = PlantLook {
+            leaf: None,
+            ..looks[0].clone()
+        };
+        assert!(
+            leaf_colors(&t, &[bare], 2).is_empty(),
+            "no parts, no leaf cubes"
+        );
+
+        // The mesher draws the cube in that color.
+        let mut input = origin_input(&t);
+        input.set(4, 4, 4, leaves);
+        let top = |data: &MeshData| {
+            let i = data
+                .normals
+                .iter()
+                .position(|n| n[1] > 0.5)
+                .expect("a top face");
+            data.colors[i]
+        };
+        let spring = top(&mesh(&input));
+        assert_eq!(spring, shaded(vertex_base_color(&t, leaves), IVec3::Y));
+        input.recolor = leaf_colors(&t, &looks, 2);
+        let c = Color::srgba_u8(turned[0], turned[1], turned[2], u8::MAX).to_linear();
+        let emissive = t.get(leaves).unwrap().emissive;
+        assert_eq!(
+            top(&mesh(&input)),
+            shaded([c.red, c.green, c.blue, emissive], IVec3::Y)
+        );
+        assert_ne!(top(&mesh(&input)), spring);
+    }
+
+    #[test]
     fn plants_are_crossed_quads_sized_by_growth_with_the_ground_beneath() {
         let t = table();
         let world = plant_world(&t, true);
@@ -2994,6 +3088,7 @@ mod tests {
             needs: vec![(0, 100), (1, 100)],
             sway: 255,
             season_colors: vec![None, Some([200, 100, 0])],
+            leaf: None,
         }];
         let deficiency = vec![(LayerId::Substance(0), [255, 255, 0])];
         let at = |season: u32| {

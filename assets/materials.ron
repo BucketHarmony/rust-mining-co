@@ -148,8 +148,8 @@
      hardness: 2, diggable: true, yield_count: 1, color: (96, 156, 84, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8),
 
-    // Oak (docs/VEGETATION.md V4): a multi-cell plant. Its wood is the root
-    // (plants.ron's oak row) and the trunk; its leaves are passable and
+    // Oak (docs/VEGETATION.md V4): a multi-cell plant. Its wood is the
+    // ripened root and the trunk and branches; its leaves are passable and
     // shade what is below. Neither is plant-tagged, so they mesh as cubes.
     (id: 31, key: "oak_wood", phase: Solid, tags: ["wood"],
      hardness: 25, diggable: true, yield_count: 1, color: (104, 76, 50, 255), emissive: 0.0,
@@ -157,4 +157,30 @@
     (id: 32, key: "oak_leaves", phase: Solid, tags: ["leaf"],
      hardness: 2, diggable: true, yield_count: 1, color: (62, 112, 48, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(64)),
+
+    // Tree seeds (docs/VEGETATION.md V5): each is its plants.ron row's
+    // material. Placed on soil it plants the tree, which grows as a seedling
+    // until it ripens into its wood; a grown tree's fruit is its seed too.
+    // Birch and pine wood and leaves are like the oak's.
+    (id: 33, key: "acorn", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (112, 128, 58, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 34, key: "birch_seed", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (128, 150, 74, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 35, key: "birch_wood", phase: Solid, tags: ["wood"],
+     hardness: 20, diggable: true, yield_count: 1, color: (214, 208, 190, 255), emissive: 0.0,
+     conductivity: 32, heat_capacity: 16),
+    (id: 36, key: "birch_leaves", phase: Solid, tags: ["leaf"],
+     hardness: 2, diggable: true, yield_count: 1, color: (122, 170, 70, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(48)),
+    (id: 37, key: "pine_cone", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (98, 116, 56, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 38, key: "pine_wood", phase: Solid, tags: ["wood"],
+     hardness: 22, diggable: true, yield_count: 1, color: (92, 64, 42, 255), emissive: 0.0,
+     conductivity: 32, heat_capacity: 16),
+    (id: 39, key: "pine_needles", phase: Solid, tags: ["leaf"],
+     hardness: 2, diggable: true, yield_count: 1, color: (40, 86, 54, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(80)),
 ]

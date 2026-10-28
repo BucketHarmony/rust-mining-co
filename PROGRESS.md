@@ -4177,3 +4177,19 @@ Decisions:
 - Wood and leaves mesh as cubes for now. Oak does not appear in worldgen yet (chance 0).
 Next: V5, trees (branches, shedding, fruit and seeds, worldgen trees, harvest items).
 Blockers: none.
+
+## 2026-10-28 — V5 trees (docs/VEGETATION.md) — passed
+Done:
+- A tree's material is its seed; grown, it ripens into its `wood` and stays the root (the §7.0 displacement keeps the plant, `EcoRules::plant_woods`).
+- `plants.ron` `parts` gain `branches`, `shed` and `fruit`. Branches are on the crown's horizontal axes. In the `shed` season the tree drops its leaves and fruit as litter and grows nothing. Fruit grows in the `grow` season, falls in the `fall` season, and takes root (`take` in 256) or rots. All of it is ledgered.
+- Birch and pine (materials 34–39), with oak's seed `acorn` (33). Each tree has `worldgen_chance` 2, so worldgen sows seedlings.
+- Client: `PlantLook::leaf`; `MeshInput::recolor` draws leaf cubes in their season color. Chunks with parts re-mesh when the season changes.
+- Docs: `docs/VEGETATION.md` V5 status and decisions.
+Tests added: `parts::tests::{a_seed_grows_as_a_seedling_then_ripens_into_its_wood, a_bare_tree_sheds_its_leaves_as_litter_and_regrows_them, a_full_crown_fruits_in_its_season_and_fallen_fruit_takes_root_or_rots, wood_leaves_and_fruit_dig_as_items_and_the_seed_plants, tree_rows_name_known_seasons_and_bear_fruit, a_seed_grows_into_a_tree_that_stands_bare_in_winter}`, `tables::tests::tree_looks_name_their_leaves_and_turn_in_autumn`, `mesher::tests::tree_leaves_take_their_season_color`, e2e `trees_render` (screenshots in `docs/screens/`).
+Decisions:
+- test-fix 524d52e: the crown test accepts `Branch` cells exactly on the crown axes; the pinned species list ends with oak, birch and pine; (the mesher's plant-look literal gains `leaf: None`, a new field, in the V5 commit).
+- Branches are fixed axis cells, not space colonization. Trees spread only by fruit. The fruit item is the seed, so harvested fruit plants.
+- The client's season needs the weather plugin; `trees_render` sets `weather: true`. `plants_render`'s "later" shot (V3) never had it and shows spring colors; re-shooting it is left for V7.
+- Willow, old-age thinning and sapling sprites are left out.
+Next: V6, vines.
+Blockers: none.

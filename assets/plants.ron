@@ -56,18 +56,49 @@
      worldgen_chance: 24, sway: 40,
      season_colors: [("spring", (110, 176, 92)), ("autumn", (124, 140, 72)),
                      ("winter", (100, 112, 84))]),
-    // A tree (docs/VEGETATION.md V4): the oak_wood cell on the soil is its
-    // root, whose needs are read like any plant's (light 0: wood is
-    // opaque). Growth past 255 and lit leaves make biomass; every
+    // Trees (docs/VEGETATION.md V4, V5): the row's material is the seed.
+    // Planted, it grows as a seedling; once grown, it ripens into `wood`
+    // and stays the root, whose needs are read like any plant's (light 0:
+    // wood is opaque). Growth past 255 and lit leaves make biomass; every
     // calendar part_hours a part costing `cost` grows: the trunk straight
-    // up to a seeded height in `trunk`, then leaves filling the crown.
-    (key: "oak", material: "oak_wood", anchor_tags: ["soil"],
+    // up to a seeded height in `trunk`, then the crown (branches on its
+    // axes, leaves around them). `shed`: the season the tree stands bare,
+    // its leaves fallen as litter. `fruit`: a full crown grows up to
+    // `count` seeds in the `grow` season; they fall in the `fall` season
+    // and take root with a chance of `take` in 256, else rot as litter.
+    // Trees spread only by their fruit.
+    (key: "oak", material: "acorn", anchor_tags: ["soil"],
      needs: (light: 0, moisture: 16, temp: (-100, 350),
              substance_min: [("n", 4)],
              substance_max: [("cu", 24), ("acid", 32)]),
-     growth_per_substep: 32, spread_chance: 4, spread_radius: 3, litter: 48,
-     lifespan_seasons: 200, uptake: [("n", 1)],
+     growth_per_substep: 32, spread_chance: 0, spread_radius: 3, litter: 48,
+     lifespan_seasons: 200, uptake: [("n", 1)], worldgen_chance: 2, sway: 32,
+     season_colors: [("autumn", (176, 96, 40))],
      parts: Some((cost: 8, leaf_feed: 32, leaf_light: 32,
              wood: "oak_wood", leaf: "oak_leaves",
-             form: Tree(trunk: (4, 6), crown: (2, 3))))),
+             form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true,
+             shed: Some("winter"),
+             fruit: Some((grow: "autumn", fall: "winter", count: 6, take: 48))))),
+    // Birch: a pioneer of poor soil, quick, narrow and deciduous.
+    (key: "birch", material: "birch_seed", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 12, temp: (-150, 320),
+             substance_max: [("cu", 24), ("acid", 48)]),
+     growth_per_substep: 40, spread_chance: 0, spread_radius: 3, litter: 32,
+     lifespan_seasons: 120, uptake: [("n", 1)], worldgen_chance: 2, sway: 48,
+     season_colors: [("autumn", (220, 180, 60))],
+     parts: Some((cost: 6, leaf_feed: 32, leaf_light: 24,
+             wood: "birch_wood", leaf: "birch_leaves",
+             form: Tree(trunk: (5, 7), crown: (1, 3)), branches: true,
+             shed: Some("winter"),
+             fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 64))))),
+    // Pine: evergreen, slow, tolerant of acid soil, with a tall crown.
+    (key: "pine", material: "pine_cone", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 8, temp: (-200, 300),
+             substance_max: [("cu", 32), ("acid", 96)]),
+     growth_per_substep: 24, spread_chance: 0, spread_radius: 3, litter: 40,
+     lifespan_seasons: 240, uptake: [("n", 1)], worldgen_chance: 2, sway: 24,
+     parts: Some((cost: 10, leaf_feed: 28, leaf_light: 24,
+             wood: "pine_wood", leaf: "pine_needles",
+             form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true,
+             fruit: Some((grow: "summer", fall: "autumn", count: 4, take: 40))))),
 ]
