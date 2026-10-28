@@ -183,4 +183,33 @@
     (id: 39, key: "pine_needles", phase: Solid, tags: ["leaf"],
      hardness: 2, diggable: true, yield_count: 1, color: (40, 86, 54, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(80)),
+
+    // Vines (docs/VEGETATION.md V6): a vine's seed ripens into vine_stem, its
+    // root; its vine cells are its leaves, tagged "vine" so the client draws
+    // them flat against the faces they climb. Flowers and seeds are crossed
+    // quads like plants. Vine cells are passable and shade a little.
+    (id: 40, key: "vine_stem", phase: Solid, tags: ["wood"],
+     hardness: 12, diggable: true, yield_count: 1, color: (96, 74, 48, 255), emissive: 0.0,
+     passable: true, conductivity: 32, heat_capacity: 16),
+    (id: 41, key: "ivy_seed", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (44, 46, 58, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 42, key: "ivy_leaves", phase: Solid, tags: ["leaf", "vine"],
+     hardness: 2, diggable: true, yield_count: 1, color: (46, 96, 52, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(24)),
+    (id: 43, key: "clematis_seed", phase: Solid, tags: ["plant"],
+     hardness: 2, diggable: true, yield_count: 1, color: (176, 168, 150, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 44, key: "clematis_leaves", phase: Solid, tags: ["leaf", "vine"],
+     hardness: 2, diggable: true, yield_count: 1, color: (84, 136, 66, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(24)),
+    (id: 45, key: "clematis_flower", phase: Solid, tags: ["plant"],
+     hardness: 1, diggable: true, yield_count: 1, color: (154, 98, 206, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 46, key: "grape", phase: Solid, tags: ["plant"],
+     hardness: 1, diggable: true, yield_count: 1, color: (88, 50, 110, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
+    (id: 47, key: "grape_leaves", phase: Solid, tags: ["leaf", "vine"],
+     hardness: 2, diggable: true, yield_count: 1, color: (100, 146, 62, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(32)),
 ]

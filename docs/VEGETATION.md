@@ -242,6 +242,52 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
 - Flowers open in late spring and summer on cells in light; berries follow in autumn.
 - Rendering: thin quads flat against the support face, so a stone wall gets a living skin.
 - Starting species: ivy (evergreen, shade-tolerant), clematis (flowering), grape (berries, needs K).
+- **Status: done (2026-10-28).**
+  - Rows:
+    - `parts.form` is `Tree(trunk, crown)` or `Vine(climb_tags, reach, hang)`.
+    - `parts.flower: Some((material, seasons, count))` is optional on any form.
+    - The vine's seed ripens into `vine_stem` (shared by all vines), which is the root. Its vine cells are the row's `leaf` material, tagged `leaf` and `vine`, passable, and they shade a little.
+  - Growth (`ExtendPass::next_vine`):
+    - Below `reach` vine cells, the next part is an open face-neighbor of the root or of a vine cell.
+    - The cell must touch a material with one of `climb_tags` outside the plant, along a face or an edge. The edge rule lets a vine crest a wall and turn around corners.
+    - Up is preferred over sideways, and sideways over down. Ties go by a seeded roll of the offset from the root.
+    - With `hang`, a cell straight below a supported or hanging vine cell needs no support, so the vine hangs as a curtain below a ledge.
+    - A vine with nothing to climb stays a stem and spends nothing.
+    - Vine cells feed like leaves when lit.
+  - Flowers and fruit:
+    - In a flower season, below `count`, a flower opens once the form can grow no further (before fruit): on an open cell beside a lit vine cell or leaf, chosen by the least seeded roll.
+    - Out of its seasons the flower wilts: it falls as `part_litter` on the soil below, ledgered like a shed leaf.
+    - Fruit works as for trees (V5), beside any vine cell.
+    - A bare (`shed`) season drops flowers and fruit. Vine cells stay, so a wall stays covered in winter.
+  - Rendering:
+    - `VINE_TAG` materials are not cubes. A vine cell draws as a thin panel `VINE_INSET` (0.05 cell) off each face it shares with a cube, from both sides, in its season color with that face's shade.
+    - A vine cell with no cube beside it (a curtain) draws as a full plant cross.
+    - Vines hide nothing behind them.
+  - Species:
+
+    | Species | Material ids | Reach | Leaves | Flowers | Fruit |
+    |---|---|---|---|---|---|
+    | ivy | 41, 42 | 24 | evergreen, `leaf_light` 8 | — | 4, autumn → winter |
+    | clematis | 43–45 | 16 | shed in winter, yellow in autumn | 5, spring and summer | 3, autumn → winter |
+    | grape | 46, 47 | 20 | shed in winter, orange in autumn | — | 8, summer → autumn (demands k) |
+
+    - `vine_stem` is material 40.
+    - Each species has `worldgen_chance` 2.
+  - Garden: a stone trellis wall along the meadow's south edge (6 high, with a gap at the path), with a vine at its foot every 4 cells. Trees take the corners as before.
+  - Tests:
+    - `parts::tests::{a_vine_climbs_a_wall_up_first_and_stops_at_its_reach, a_vine_without_support_stays_a_stem, a_vine_hangs_over_a_ledge_only_when_its_row_says_so, vines_flower_in_their_season_and_wilt_after, vine_rows_reject_empty_rules_and_unknown_flower_seasons, an_ivy_seed_by_a_wall_grows_up_it_through_the_seasons}`
+    - `mesher::tests::vines_lie_flat_on_the_cubes_they_climb_and_hang_as_crosses`
+    - e2e `vines_render` (screenshots in `docs/screens/`)
+  - Decisions:
+    - test-fix (own commit):
+      - The pinned species list ends with ivy, clematis and grape.
+      - The oak form helper reads the `Tree` variant.
+      - `trees_render` plants only `Tree` forms; vines need a wall.
+    - The plan's `flower` field moved from the form to `parts.flower`, so a flowering tree can use it too.
+    - "No support within one cell" became "touches a climb material along a face or an edge". The edge rule is what lets a vine crest a wall.
+    - Hanging is straight down only. Sideways growth under a ledge still needs support.
+    - Clematis needs n 3 and grape's fruit has take 52. Both keep strings unique that existing tests edit once in `plants.ron`.
+    - Not done: tendrils that grip other plants' leaves, and vines climbing trees' leaves (they climb wood, so they climb trunks).
 
 ### V7. Ecology and balance pass
 

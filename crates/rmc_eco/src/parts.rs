@@ -1,17 +1,19 @@
-//! Multi-cell plants (docs/VEGETATION.md V4, V5): trees grow parts.
+//! Multi-cell plants (docs/VEGETATION.md V4, V5, V6): trees and vines grow
+//! parts.
 //!
 //! A multi-cell plant is a `plants.ron` row with `parts`. Its root is the
 //! plant cell (with a [`PlantState`] and the plant rules of
 //! [`crate::plants`]): first the row's material, the seed, which grows as a
 //! seedling, then the row's `wood` once it ripens. Every other cell of it
-//! is a part: a cell of the row's `wood`, `leaf` or seed (fruit) material
-//! whose [`LayerId::Part`] value names its kind and the face neighbor it
-//! hangs from. Parent chains end at the root, so the plant is the tree of
-//! cells reachable from it.
+//! is a part: a cell of the row's `wood`, `leaf`, flower or seed (fruit)
+//! material whose [`LayerId::Part`] value names its kind and the face
+//! neighbor it hangs from. Parent chains end at the root, so the plant is
+//! the tree of cells reachable from it.
 //!
 //! **Biomass.** The growth pass puts a root's growth past 255 into its
 //! [`LayerId::Biomass`]; each extension step adds `lit · leaf_feed / 256`,
-//! where `lit` counts the leaves whose light is at least `leaf_light`.
+//! where `lit` counts the leaves and vine cells whose light is at least
+//! `leaf_light`.
 //!
 //! **Extension (sweep, after spread)**, per root in the global cell order,
 //! on the sub-steps whose calendar hour `part_hours` divides (every
@@ -25,14 +27,17 @@
 //!    `plants_born`); otherwise the fruit rots on the landing as
 //!    `eco.part_litter` organic when the landing is an anchor material
 //!    (ledger `litter_in`). The fruit cell becomes air.
-//! 2. In its `shed` season the tree is bare: every leaf (and fruit left)
-//!    falls the same way as litter, children before parents, and nothing
-//!    grows that season.
+//! 2. In its `shed` season the plant is bare: every leaf, flower and fruit
+//!    left falls the same way as litter, children before parents, and
+//!    nothing grows that season. Out of the flower's seasons, its flowers
+//!    wilt the same way.
 //! 3. Otherwise the lit leaves feed it, and, when the biomass is at least
 //!    `cost`, it pays `cost` for one step: a seed root ripens into the
 //!    wood (`World::eco_set`; the §7.0 rules keep the plant), else the
-//!    next part of the form grows, else, in the fruit's `grow` season and
-//!    below its `count`, a fruit grows on an open cell beside a leaf (the
+//!    next part of the form grows, else, in a flower season and below the
+//!    flower's `count`, a flower opens on an open cell beside a lit leaf or
+//!    vine cell (the least seeded roll), else, in the fruit's `grow` season
+//!    and below its `count`, a fruit grows on an open cell beside a leaf (the
 //!    least seeded roll of its offset from the root). A new part is placed
 //!    at once (`World::eco_set`, then its part value), so roots later in
 //!    the order see it. A part grows into an open cell: air, or water
@@ -51,6 +56,14 @@
 //! (a cell with no wood neighbor yet is a leaf); every other part is a
 //! leaf hanging from its first neighbor in that order that belongs to the
 //! plant.
+//!
+//! **Vine form.** Below `reach` vine cells, the next part is an open cell
+//! beside the root or a vine cell that touches a material with one of
+//! `climb_tags` outside the plant along a face or an edge (so a vine
+//! crests a wall); up before sideways before down, ties by a seeded roll
+//! of its offset from the root. With `hang`, a cell
+//! straight below a supported or hanging vine cell needs no support, so a
+//! vine hangs over a ledge as a curtain. A vine without support stops.
 //!
 //! **Severing** is a displacement rule (`rmc_world::displace`): a cell
 //! whose material changes stops being a part, and the parts hanging from it
@@ -84,14 +97,37 @@ struct Form {
     cost: i32,
     leaf_feed: i32,
     leaf_light: i32,
-    /// Inclusive trunk height range, root included.
-    trunk: (i32, i32),
-    /// Horizontal and vertical crown radius.
-    crown: (i32, i32),
-    branches: bool,
+    shape: Shape,
     /// The season row in which the tree is bare.
     shed: Option<usize>,
     fruit: Option<Fruit>,
+    flower: Option<Flower>,
+}
+
+/// What a multi-cell plant grows toward.
+#[derive(Clone, Debug)]
+enum Shape {
+    Tree {
+        /// Inclusive trunk height range, root included.
+        trunk: (i32, i32),
+        /// Horizontal and vertical crown radius.
+        crown: (i32, i32),
+        branches: bool,
+    },
+    Vine {
+        /// Per material id: whether a vine climbs its faces.
+        climb: Vec<bool>,
+        reach: usize,
+        hang: bool,
+    },
+}
+
+/// A plant's flower rule, with season rows.
+#[derive(Clone, Debug)]
+struct Flower {
+    material: MaterialId,
+    rows: Vec<usize>,
+    count: usize,
 }
 
 /// A tree's fruit rule, with season rows.
@@ -114,7 +150,33 @@ impl Form {
             .iter()
             .map(|p| {
                 let parts = p.parts.as_ref()?;
-                let FormDef::Tree { trunk, crown } = parts.form;
+                let shape = match &parts.form {
+                    FormDef::Tree { trunk, crown } => Shape::Tree {
+                        trunk: (i32::from(trunk.0), i32::from(trunk.1)),
+                        crown: (i32::from(crown.0), i32::from(crown.1)),
+                        branches: parts.branches,
+                    },
+                    FormDef::Vine {
+                        climb_tags,
+                        reach,
+                        hang,
+                    } => Shape::Vine {
+                        climb: m
+                            .iter()
+                            .map(|d| climb_tags.iter().any(|t| d.has_tag(t)))
+                            .collect(),
+                        reach: usize::from(*reach),
+                        hang: *hang,
+                    },
+                };
+                let flower = match &parts.flower {
+                    Some(f) => Some(Flower {
+                        material: m.id(&f.material)?,
+                        rows: f.seasons.iter().map(|k| row(k)).collect::<Option<_>>()?,
+                        count: usize::from(f.count),
+                    }),
+                    None => None,
+                };
                 let fruit = match &parts.fruit {
                     Some(f) => Some(Fruit {
                         grow: row(&f.grow)?,
@@ -131,11 +193,10 @@ impl Form {
                     cost: i32::from(parts.cost),
                     leaf_feed: i32::from(parts.leaf_feed),
                     leaf_light: i32::from(parts.leaf_light),
-                    trunk: (i32::from(trunk.0), i32::from(trunk.1)),
-                    crown: (i32::from(crown.0), i32::from(crown.1)),
-                    branches: parts.branches,
+                    shape,
                     shed: parts.shed.as_deref().and_then(row),
                     fruit,
+                    flower,
                 })
             })
             .collect()
@@ -143,10 +204,17 @@ impl Form {
 
     fn material(&self, kind: PartKind) -> MaterialId {
         match kind {
-            PartKind::Leaf => self.leaf,
+            PartKind::Leaf | PartKind::Vine => self.leaf,
             PartKind::Fruit => self.seed,
-            _ => self.wood,
+            PartKind::Flower => self.flower.as_ref().map_or(self.leaf, |f| f.material),
+            PartKind::Trunk | PartKind::Branch => self.wood,
         }
+    }
+
+    /// Whether a part of `kind` makes biomass when lit: leaves and vine
+    /// cells.
+    fn feeds(kind: PartKind) -> bool {
+        matches!(kind, PartKind::Leaf | PartKind::Vine)
     }
 
     /// Whether the root cell's material is this species' body.
@@ -231,18 +299,38 @@ impl ExtendPass {
     }
 
     /// The tree's seeded trunk height, root included.
-    fn trunk_height(&self, form: &Form, root: CellPos) -> i32 {
-        let span = form.trunk.1 - form.trunk.0 + 1;
+    fn trunk_height(&self, trunk: (i32, i32), root: CellPos) -> i32 {
+        let span = trunk.1 - trunk.0 + 1;
         let roll = i32::from(roll(self.seed, b"trunk", root.0.to_array()));
-        form.trunk.0 + roll % span
+        trunk.0 + roll % span
     }
 
-    /// The next part of the tree at `root` whose cells are `members` (the
+    /// The next part of the plant at `root` whose cells are `members` (the
     /// root's kind `None`): its cell, its parent and its kind.
     fn next_part(
         &self,
         world: &World,
         form: &Form,
+        root: CellPos,
+        members: &BTreeMap<CellPos, Option<PartKind>>,
+    ) -> Option<(CellPos, CellPos, PartKind)> {
+        match &form.shape {
+            &Shape::Tree {
+                trunk,
+                crown,
+                branches,
+            } => self.next_tree_part(world, (trunk, crown, branches), root, members),
+            Shape::Vine { climb, reach, hang } => {
+                self.next_vine(world, climb, *reach, *hang, root, members)
+            }
+        }
+    }
+
+    /// [`ExtendPass::next_part`] for a tree of `(trunk, crown, branches)`.
+    fn next_tree_part(
+        &self,
+        world: &World,
+        (trunk, crown, branches): ((i32, i32), (i32, i32), bool),
         root: CellPos,
         members: &BTreeMap<CellPos, Option<PartKind>>,
     ) -> Option<(CellPos, CellPos, PartKind)> {
@@ -260,14 +348,14 @@ impl ExtendPass {
             }
         }
         let up = above(top);
-        if height < self.trunk_height(form, root) && self.is_open(world, up) {
+        if height < self.trunk_height(trunk, root) && self.is_open(world, up) {
             return Some((up, top, PartKind::Trunk));
         }
 
         // The crown: the open cell inside it next to the plant nearest its
         // center.
         let center = up;
-        let (r, h) = form.crown;
+        let (r, h) = crown;
         let distance = |c: CellPos| {
             let d = c.0 - center.0;
             (d.x * d.x + d.z * d.z) * h * h + d.y * d.y * r * r
@@ -295,7 +383,7 @@ impl ExtendPass {
         let wood = |k: &Option<PartKind>| {
             k.is_none_or(|k| matches!(k, PartKind::Trunk | PartKind::Branch))
         };
-        if form.branches
+        if branches
             && on_axis
             && let Some(parent) = faces(at)
                 .into_iter()
@@ -307,22 +395,90 @@ impl ExtendPass {
         Some((at, parent, PartKind::Leaf))
     }
 
-    /// Where a fruit grows on the tree at `root`: the open cell beside one
-    /// of its leaves with the least seeded roll of its offset from the
+    /// The next vine cell of the plant at `root` whose cells are
+    /// `members`: below `reach` vine cells, the open cell beside the root
+    /// or a vine cell that touches a `climb` material outside the plant
+    /// along a face or an edge (so a vine crests a wall), growing up before
+    /// sideways before down (ties by a seeded
+    /// roll of its offset from the root). With `hang`, a cell straight
+    /// below a supported or hanging vine cell needs no support.
+    fn next_vine(
+        &self,
+        world: &World,
+        climb: &[bool],
+        reach: usize,
+        hang: bool,
+        root: CellPos,
+        members: &BTreeMap<CellPos, Option<PartKind>>,
+    ) -> Option<(CellPos, CellPos, PartKind)> {
+        let vines = members
+            .values()
+            .filter(|k| **k == Some(PartKind::Vine))
+            .count();
+        if vines >= reach {
+            return None;
+        }
+        let supported = |c: CellPos| {
+            touching(c).any(|n| {
+                !members.contains_key(&n)
+                    && world
+                        .get_cell(n)
+                        .is_some_and(|m| climb.get(usize::from(m.0)).copied().unwrap_or(false))
+            })
+        };
+        let hanging = |c: CellPos| {
+            Part::from_value(world.layer(c, LayerId::Part))
+                .is_some_and(|p| p.kind == PartKind::Vine && p.parent(c) == above(c))
+        };
+        let mut best: Option<((u8, u8, CellPos), CellPos)> = None;
+        let stems = members
+            .iter()
+            .filter(|(_, k)| k.is_none_or(|k| k == PartKind::Vine));
+        for (&m, _) in stems {
+            for n in faces(m) {
+                if members.contains_key(&n) || !self.is_open(world, n) {
+                    continue;
+                }
+                let rank: u8 = match n.0.y - m.0.y {
+                    1 => 0,
+                    0 => 1,
+                    _ => 2,
+                };
+                let hangs = hang && rank == 2 && (supported(m) || hanging(m));
+                if !hangs && !supported(n) {
+                    continue;
+                }
+                let key = (rank, roll(self.seed, b"vine", (n.0 - root.0).to_array()), n);
+                if best.is_none_or(|(k, _)| key < k) {
+                    best = Some((key, m));
+                }
+            }
+        }
+        best.map(|((_, _, at), parent)| (at, parent, PartKind::Vine))
+    }
+
+    /// Where a fruit or flower (`what`) grows on the plant at `root`: the
+    /// open cell beside one of its leaves or vine cells for which `pick`
+    /// holds, with the least seeded roll of `what` and its offset from the
     /// root, and that leaf.
-    fn next_fruit(
+    fn next_beside(
         &self,
         world: &World,
         root: CellPos,
         members: &BTreeMap<CellPos, Option<PartKind>>,
+        what: &[u8],
+        pick: impl Fn(CellPos) -> bool,
     ) -> Option<(CellPos, CellPos)> {
         let mut best: Option<((u8, CellPos), CellPos)> = None;
-        for (&leaf, _) in members.iter().filter(|(_, k)| **k == Some(PartKind::Leaf)) {
+        let leaves = members
+            .iter()
+            .filter(|(c, k)| k.is_some_and(Form::feeds) && pick(**c));
+        for (&leaf, _) in leaves {
             for n in faces(leaf) {
                 if members.contains_key(&n) || !self.is_open(world, n) {
                     continue;
                 }
-                let key = (roll(self.seed, b"fruit", (n.0 - root.0).to_array()), n);
+                let key = (roll(self.seed, what, (n.0 - root.0).to_array()), n);
                 if best.is_none_or(|(k, _)| key < k) {
                     best = Some((key, leaf));
                 }
@@ -423,19 +579,30 @@ impl SweepPass for ExtendPass {
             return;
         };
         let bare = form.shed == Some(self.row);
+        let blooms = form
+            .flower
+            .as_ref()
+            .is_some_and(|f| f.rows.contains(&self.row));
         let mut parts = parts_of(ctx.world, cell);
 
-        // Falling fruit, then a bare tree's leaves, children first.
+        // Falling fruit, wilting flowers, then a bare plant's leaves,
+        // children first.
         let falls = form.fruit.filter(|f| f.fall == self.row);
-        if falls.is_some() || bare {
+        let wilts = !blooms && parts.iter().any(|(_, k)| *k == PartKind::Flower);
+        if falls.is_some() || bare || wilts {
             for &(c, kind) in parts.iter().rev() {
                 let is_part = Part::from_value(ctx.world.layer(c, LayerId::Part))
                     .is_some_and(|p| p.kind == kind);
+                let drops = match kind {
+                    PartKind::Flower => bare || !blooms,
+                    PartKind::Fruit | PartKind::Leaf => bare,
+                    _ => false,
+                };
                 match (kind, falls) {
                     (PartKind::Fruit, Some(f)) if is_part => {
                         self.fall(ctx, &form, species, f.take, c);
                     }
-                    (PartKind::Fruit | PartKind::Leaf, _) if is_part && bare => {
+                    _ if is_part && drops => {
                         let landing = self.landing(ctx.world, c);
                         ctx.world.eco_set(c, self.air, ctx.ledger);
                         self.rot(ctx, landing);
@@ -449,7 +616,7 @@ impl SweepPass for ExtendPass {
         let lit = parts
             .iter()
             .filter(|&&(c, kind)| {
-                kind == PartKind::Leaf && ctx.world.layer(c, LayerId::Light) >= form.leaf_light
+                Form::feeds(kind) && ctx.world.layer(c, LayerId::Light) >= form.leaf_light
             })
             .count();
         let lit = i32::try_from(lit).unwrap_or(i32::MAX);
@@ -463,18 +630,34 @@ impl SweepPass for ExtendPass {
                 let mut members: BTreeMap<CellPos, Option<PartKind>> =
                     parts.iter().map(|&(c, k)| (c, Some(k))).collect();
                 members.insert(cell, None);
-                let fruits = parts.iter().filter(|(_, k)| *k == PartKind::Fruit).count();
+                let count = |kind| parts.iter().filter(|(_, k)| *k == kind).count();
                 let fruiting = form
                     .fruit
-                    .is_some_and(|f| f.grow == self.row && fruits < f.count);
+                    .is_some_and(|f| f.grow == self.row && count(PartKind::Fruit) < f.count);
+                let flowering = blooms
+                    && form
+                        .flower
+                        .as_ref()
+                        .is_some_and(|f| count(PartKind::Flower) < f.count);
+                let world = &*ctx.world;
+                let lit = |c: CellPos| world.layer(c, LayerId::Light) >= form.leaf_light;
+                let flower = || {
+                    flowering
+                        .then(|| self.next_beside(world, cell, &members, b"flower", lit))
+                        .flatten()
+                        .map(|(at, leaf)| (at, leaf, PartKind::Flower))
+                };
+                let fruit = || {
+                    fruiting
+                        .then(|| self.next_beside(world, cell, &members, b"fruit", |_| true))
+                        .flatten()
+                        .map(|(at, leaf)| (at, leaf, PartKind::Fruit))
+                };
+                // Flowers and fruit wait for the full form, flowers first.
                 let grow = self
-                    .next_part(ctx.world, &form, cell, &members)
-                    .or_else(|| {
-                        fruiting
-                            .then(|| self.next_fruit(ctx.world, cell, &members))
-                            .flatten()
-                            .map(|(at, leaf)| (at, leaf, PartKind::Fruit))
-                    });
+                    .next_part(world, &form, cell, &members)
+                    .or_else(flower)
+                    .or_else(fruit);
                 if let Some((at, parent, kind)) = grow {
                     let part = Part::toward(at, parent, kind).expect("a face neighbor");
                     ctx.world.eco_set(at, form.material(kind), ctx.ledger);
@@ -550,6 +733,20 @@ pub fn check_parts(world: &World) -> Result<(), String> {
 /// The six face neighbors in [`PART_DIRS`] order.
 fn faces(c: CellPos) -> [CellPos; 6] {
     PART_DIRS.map(|[x, y, z]| CellPos::new(c.0.x + x, c.0.y + y, c.0.z + z))
+}
+
+/// The 18 cells sharing a face or an edge with `c`, in a fixed order.
+fn touching(c: CellPos) -> impl Iterator<Item = CellPos> {
+    (-1..=1).flat_map(move |y: i32| {
+        (-1..=1).flat_map(move |z: i32| {
+            (-1..=1)
+                .filter(move |x: &i32| {
+                    let d = x.abs() + y.abs() + z.abs();
+                    d == 1 || d == 2
+                })
+                .map(move |x| CellPos::new(c.0.x + x, c.0.y + y, c.0.z + z))
+        })
+    })
 }
 
 fn above(c: CellPos) -> CellPos {
@@ -1335,5 +1532,243 @@ mod tests {
         assert_eq!(w.get_cell(root), Some(id(&t, "oak_wood")), "ripened");
         assert!(!kinds(&w, root, PartKind::Trunk).is_empty());
         assert!(kinds(&w, root, PartKind::Leaf).is_empty(), "bare in winter");
+    }
+
+    /// A vine of `key` rooted at `cell` (y 31): its stem with a grown plant
+    /// state, 20.0 °C, on fed, moist loam.
+    fn vine(w: &mut World, t: &EcoTables, key: &str, cell: CellPos) {
+        let mut scratch = SeasonLedger::default();
+        w.eco_set(cell, id(t, "vine_stem"), &mut scratch);
+        w.eco_put_plant(
+            cell,
+            Some(PlantState {
+                species: species(t, key),
+                ..PlantState::default()
+            }),
+        );
+        w.eco_put_layer(cell, LayerId::Growth, 255);
+        w.eco_put_layer(cell, LayerId::Temperature, 200);
+        feed_soil(w, t, (cell.0.x, cell.0.x), (cell.0.z, cell.0.z));
+    }
+
+    /// Stone at every cell of `x.0..=x.1, y.0..=y.1, z.0..=z.1`.
+    fn stone(w: &mut World, t: &EcoTables, x: (i32, i32), y: (i32, i32), z: (i32, i32)) {
+        let mut scratch = SeasonLedger::default();
+        for cz in z.0..=z.1 {
+            for cy in y.0..=y.1 {
+                for cx in x.0..=x.1 {
+                    w.eco_set(CellPos::new(cx, cy, cz), id(t, "stone"), &mut scratch);
+                }
+            }
+        }
+    }
+
+    /// Extension sweeps in season `season` with the root's biomass topped
+    /// up each time, until the plant stops growing.
+    fn grow_out_in(w: &mut World, t: &EcoTables, root: CellPos, season: u32) {
+        for _ in 0..400 {
+            let before = parts_of(w, root).len();
+            w.eco_put_layer(root, LayerId::Biomass, 255);
+            extend_in(w, t, season);
+            if parts_of(w, root).len() == before {
+                return;
+            }
+        }
+        panic!("the plant stops growing");
+    }
+
+    /// Whether `c` touches stone along a face or an edge.
+    fn on_stone(w: &World, t: &EcoTables, c: CellPos) -> bool {
+        touching(c).any(|n| w.get_cell(n) == Some(id(t, "stone")))
+    }
+
+    #[test]
+    fn a_vine_climbs_a_wall_up_first_and_stops_at_its_reach() {
+        let t = tables();
+        let reach = 24;
+        let mut w = world(&t);
+        stone(&mut w, &t, (12, 12), (31, 40), (8, 12));
+        let root = CellPos::new(11, 31, 10);
+        vine(&mut w, &t, "ivy", root);
+
+        w.eco_put_layer(root, LayerId::Biomass, 255);
+        extend(&mut w, &t);
+        assert_eq!(kinds(&w, root, PartKind::Vine), [above(root)]);
+        // Up the face of the wall, and over its edge, before anything
+        // sideways.
+        for _ in 0..9 {
+            w.eco_put_layer(root, LayerId::Biomass, 255);
+            extend(&mut w, &t);
+        }
+        let mut grown = kinds(&w, root, PartKind::Vine);
+        grown.sort();
+        let column: Vec<CellPos> = (32..=41).map(|y| CellPos::new(11, y, 10)).collect();
+        assert_eq!(grown, column, "it climbs the face and crests the wall");
+
+        grow_out_in(&mut w, &t, root, 0);
+        let vines = kinds(&w, root, PartKind::Vine);
+        assert_eq!(vines.len(), reach);
+        for &c in &vines {
+            assert_eq!(w.get_cell(c), Some(id(&t, "ivy_leaves")));
+            assert!(on_stone(&w, &t, c), "{c:?} clings to the wall");
+        }
+    }
+
+    #[test]
+    fn a_vine_without_support_stays_a_stem() {
+        let t = tables();
+        let mut w = world(&t);
+        let root = CellPos::new(11, 31, 10);
+        vine(&mut w, &t, "ivy", root);
+        for _ in 0..4 {
+            w.eco_put_layer(root, LayerId::Biomass, 255);
+            extend(&mut w, &t);
+        }
+        assert!(parts_of(&w, root).is_empty());
+        assert_eq!(w.layer(root, LayerId::Biomass), 255, "nothing spent");
+    }
+
+    #[test]
+    fn a_vine_hangs_over_a_ledge_only_when_its_row_says_so() {
+        for hang in [false, true] {
+            let t = tables_with(
+                "reach: 24, hang: true",
+                &format!("reach: 255, hang: {hang}"),
+            );
+            let mut w = world(&t);
+            // A pillar with a beam on top, reaching out over open ground.
+            stone(&mut w, &t, (20, 20), (31, 33), (10, 10));
+            stone(&mut w, &t, (21, 23), (33, 33), (10, 10));
+            let root = CellPos::new(19, 31, 10);
+            vine(&mut w, &t, "ivy", root);
+            grow_out_in(&mut w, &t, root, 0);
+            let vines = kinds(&w, root, PartKind::Vine);
+            assert!(vines.len() > 8, "it covers the stone: {}", vines.len());
+            let hanging: Vec<CellPos> = vines
+                .iter()
+                .copied()
+                .filter(|&c| !on_stone(&w, &t, c))
+                .collect();
+            if hang {
+                assert!(!hanging.is_empty(), "a curtain below the beam");
+                for &c in &hanging {
+                    let part = Part::from_value(w.layer(c, LayerId::Part)).unwrap();
+                    assert_eq!(part.parent(c), above(c), "{c:?} hangs straight down");
+                }
+            } else {
+                assert!(hanging.is_empty(), "{hanging:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn vines_flower_in_their_season_and_wilt_after() {
+        let t = tables();
+        let (spring, autumn) = (season(&t, "spring"), season(&t, "autumn"));
+        let count = 5;
+        let mut w = world(&t);
+        stone(&mut w, &t, (12, 12), (31, 40), (8, 12));
+        let root = CellPos::new(11, 31, 10);
+        vine(&mut w, &t, "clematis", root);
+
+        // In the dark no flower opens; the vine grows out.
+        grow_out_in(&mut w, &t, root, spring);
+        assert!(kinds(&w, root, PartKind::Flower).is_empty());
+        let vines = kinds(&w, root, PartKind::Vine);
+        assert!(!vines.is_empty());
+
+        // Lit, it opens a flower a step, up to `count`, beside its vine
+        // cells.
+        for &c in &vines {
+            w.eco_put_layer(c, LayerId::Light, 200);
+        }
+        for step in 1..=count + 2 {
+            w.eco_put_layer(root, LayerId::Biomass, 255);
+            extend_in(&mut w, &t, spring);
+            assert_eq!(kinds(&w, root, PartKind::Flower).len(), step.min(count));
+        }
+        let flowers = kinds(&w, root, PartKind::Flower);
+        for &f in &flowers {
+            assert_eq!(w.get_cell(f), Some(id(&t, "clematis_flower")));
+            let part = Part::from_value(w.layer(f, LayerId::Part)).unwrap();
+            assert!(vines.contains(&part.parent(f)), "{f:?} opens on the vine");
+        }
+
+        // Autumn: the flowers wilt; the vine stays.
+        extend_in(&mut w, &t, autumn);
+        assert!(kinds(&w, root, PartKind::Flower).is_empty());
+        for &f in &flowers {
+            assert_eq!(w.get_cell(f), Some(MaterialId::AIR));
+        }
+        assert_eq!(kinds(&w, root, PartKind::Vine).len(), vines.len());
+    }
+
+    #[test]
+    fn vine_rows_reject_empty_rules_and_unknown_flower_seasons() {
+        let shipped = tables();
+        let try_load = |from: &str, to: &str| {
+            let mut src = EcoSources::read(ASSETS).unwrap();
+            assert_eq!(src.plants.matches(from).count(), 1, "{from}");
+            src.plants = src.plants.replace(from, to);
+            EcoTables::from_sources(Arc::clone(shipped.materials()), &src)
+        };
+        assert!(try_load("reach: 24, hang: true", "reach: 24, hang: false").is_ok());
+        for (from, to) in [
+            ("reach: 24, hang: true", "reach: 0, hang: true"),
+            (
+                "climb_tags: [\"stone\", \"wood\"], reach: 24",
+                "climb_tags: [], reach: 24",
+            ),
+            (
+                "seasons: [\"spring\", \"summer\"]",
+                "seasons: [\"spring\", \"monsoon\"]",
+            ),
+            ("seasons: [\"spring\", \"summer\"]", "seasons: []"),
+            ("count: 5))", "count: 0))"),
+        ] {
+            assert!(try_load(from, to).is_err(), "{to}");
+        }
+        // An unknown flower material is listed like any unknown material.
+        let lily = try_load("material: \"clematis_flower\"", "material: \"lily\"").unwrap();
+        assert!(lily.unresolved_materials().contains("lily"));
+    }
+
+    #[test]
+    fn an_ivy_seed_by_a_wall_grows_up_it_through_the_seasons() {
+        let t = tables();
+        let mut w = world(&t);
+        stone(&mut w, &t, (12, 12), (31, 40), (8, 12));
+        let root = CellPos::new(11, 31, 10);
+        feed_soil(&mut w, &t, (11, 11), (10, 10));
+        brush(&mut w, 1, EditOp::Set(id(&t, "ivy_seed")), root);
+        assert_eq!(w.plant(root).map(|p| p.species), Some(species(&t, "ivy")));
+        w.eco_put_layer(root, LayerId::Temperature, 200);
+        activate_holders(&mut w, &WaterPass::new(&t));
+        let mut activity = Activity::new(t.params().quiet_skip);
+        for season in 0..4 {
+            let checker = InvariantChecker::new(&w);
+            season_tick_observed(
+                &mut w,
+                &t,
+                season,
+                SEED,
+                &mut activity,
+                Exec::Serial,
+                &mut |i, pass, w, ledger| {
+                    let at = format!("season {season}, sub-step {i}, after {pass:?}");
+                    if let Err(v) = checker.check(w, ledger) {
+                        panic!("{at}: {v}");
+                    }
+                    if let Err(e) = check_parts(w) {
+                        panic!("{at}: {e}");
+                    }
+                },
+            );
+        }
+        assert!(w.plant(root).is_some(), "the ivy lives");
+        assert_eq!(w.get_cell(root), Some(id(&t, "vine_stem")), "ripened");
+        let vines = kinds(&w, root, PartKind::Vine);
+        assert!(!vines.is_empty(), "evergreen ivy holds its vine in winter");
+        assert!(vines.contains(&above(root)));
     }
 }

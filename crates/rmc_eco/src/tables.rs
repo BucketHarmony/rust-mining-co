@@ -255,6 +255,22 @@ pub struct PartsDef {
     /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fruit: Option<FruitDef>,
+    /// The plant's flowers (docs/VEGETATION.md V6). Not encoded when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flower: Option<FlowerDef>,
+}
+
+/// A plant's flowers (docs/VEGETATION.md V6): cells of `material` that open
+/// beside lit leaves in the listed seasons and wilt as litter after them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlowerDef {
+    pub material: String,
+    /// The season keys in which flowers open and stay.
+    pub seasons: Vec<String>,
+    /// Most flowers a plant carries.
+    pub count: u8,
 }
 
 /// A tree's fruit (docs/VEGETATION.md V5): cells of the row's material (its
@@ -283,6 +299,16 @@ pub enum FormDef {
     /// `crown.1` centered just above the trunk's top, nearest the center
     /// first.
     Tree { trunk: (u8, u8), crown: (u8, u8) },
+    /// A climber (docs/VEGETATION.md V6): vine cells grow from the root
+    /// into open cells touching (along a face or an edge) a material with one of
+    /// `climb_tags` (up first, then sideways, then down), at most `reach`
+    /// of them. With `hang`, a vine also grows straight down from a
+    /// supported vine cell or a hanging one, over a ledge.
+    Vine {
+        climb_tags: Vec<String>,
+        reach: u8,
+        hang: bool,
+    },
 }
 
 /// Whether `n` is 0, for fields left out of the canonical encoding then.
@@ -718,13 +744,18 @@ impl EcoTables {
             if let Some(parts) = &p.parts {
                 material_ref(&parts.wood);
                 material_ref(&parts.leaf);
-                let FormDef::Tree { trunk, crown } = parts.form;
-                if parts.cost == 0
-                    || trunk.0 == 0
-                    || trunk.0 > trunk.1
-                    || crown.0 == 0
-                    || crown.1 == 0
-                {
+                let empty = match &parts.form {
+                    FormDef::Tree { trunk, crown } => {
+                        trunk.0 == 0 || trunk.0 > trunk.1 || crown.0 == 0 || crown.1 == 0
+                    }
+                    FormDef::Vine {
+                        climb_tags, reach, ..
+                    } => climb_tags.is_empty() || *reach == 0,
+                };
+                if let Some(f) = &parts.flower {
+                    material_ref(&f.material);
+                }
+                if parts.cost == 0 || empty {
                     return Err(invalid(
                         PLANTS_FILE,
                         format!("plant {:?} has an empty part rule", p.key),
@@ -758,6 +789,17 @@ impl EcoTables {
             if let Some(parts) = &p.parts {
                 if let Some(k) = &parts.shed {
                     key_in(PLANTS_FILE, &p.key, "season", k, &season_keys)?;
+                }
+                if let Some(f) = &parts.flower {
+                    for k in &f.seasons {
+                        key_in(PLANTS_FILE, &p.key, "season", k, &season_keys)?;
+                    }
+                    if f.count == 0 || f.seasons.is_empty() {
+                        return Err(invalid(
+                            PLANTS_FILE,
+                            format!("plant {:?} has an empty flower rule", p.key),
+                        ));
+                    }
                 }
                 if let Some(f) = &parts.fruit {
                     key_in(PLANTS_FILE, &p.key, "season", &f.grow, &season_keys)?;

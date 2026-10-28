@@ -4193,3 +4193,19 @@ Decisions:
 - Willow, old-age thinning and sapling sprites are left out.
 Next: V6, vines.
 Blockers: none.
+
+## 2026-10-28 — V6 vines (docs/VEGETATION.md) — passed
+Done:
+- `plants.ron` `parts.form` is `Tree` or `Vine(climb_tags, reach, hang)`, and `parts.flower` is optional. The Extend pass grows vine cells into open cells that touch a climb material along a face or an edge. It grows up before sideways before down, and with `hang` straight down below a ledge. A vine without support stays a stem.
+- Flowers open beside lit vine cells or leaves in their seasons. Out of season they wilt as litter (ledgered). Vine cells are never shed.
+- Ivy, clematis and grape (materials 40–47, `vine_stem` shared).
+- Client: `VINE_TAG` cells draw as thin panels on the cube faces they cover, in the season color, or as a cross when they hang free.
+- The garden gains a stone trellis on the meadow's south edge with vines at its foot.
+- Docs: `docs/VEGETATION.md` V6 status and decisions.
+Tests added: `parts::tests::{a_vine_climbs_a_wall_up_first_and_stops_at_its_reach, a_vine_without_support_stays_a_stem, a_vine_hangs_over_a_ledge_only_when_its_row_says_so, vines_flower_in_their_season_and_wilt_after, vine_rows_reject_empty_rules_and_unknown_flower_seasons, an_ivy_seed_by_a_wall_grows_up_it_through_the_seasons}`, `mesher::tests::vines_lie_flat_on_the_cubes_they_climb_and_hang_as_crosses`, e2e `vines_render` (screenshots in `docs/screens/`).
+Decisions:
+- test-fix (own commit): the pinned species list ends with ivy, clematis and grape; the parts test's oak form helper reads the `Tree` variant; e2e `trees_render` plants only `Tree` forms.
+- Flowers are a `parts` field, not a form field. They open only once the form can grow no further, so a young vine climbs before it flowers. Support counts edges as well as faces. Hanging is straight down only.
+- Clematis `substance_min` n is 3 and grape `take` is 52, so that the strings existing tests edit once stay unique.
+Next: V7, the ecology report and balance pass.
+Blockers: none.

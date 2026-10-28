@@ -14,14 +14,17 @@
 //! around the crossing. The beds hold the species in `plants.ron` row
 //! order: north-west moss, north-east grass, south-west fireweed,
 //! south-east shrubs, and the lawn the fifth (clover), each with gaps to
-//! spread into. Species that grow parts (trees, `docs/VEGETATION.md` V4)
-//! take no bed: one stands near each corner of the meadow, at [`GROVE`]
-//! from the centre, far enough apart for their crowns.
+//! spread into. Species that grow parts take no bed: trees
+//! (`docs/VEGETATION.md` V4, V5) stand near the corners of the meadow, at
+//! [`GROVE`] from the centre, far enough apart for their crowns; vines (V6)
+//! stand at the foot of a stone trellis wall along the meadow's south edge,
+//! every [`VINE_SPACING`] cells, with a gap where the path crosses it.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
 use rmc_eco::EcoTables;
+use rmc_eco::tables::FormDef;
 use rmc_world::coords::{CellPos, LocalPos};
 use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, PlayerId, RejectReason};
 use rmc_world::layers::LayerId;
@@ -46,6 +49,13 @@ const LAWN_BED: usize = 4;
 /// Offset (along x and along z) from the centre of the trees near the
 /// meadow's corners.
 const GROVE: i32 = 17;
+/// The trellis wall: its z, its half-length along x, and its height above
+/// the ground, in cells. The vines stand on its north side.
+const TRELLIS_Z: i32 = CENTRE.1 + MEADOW - 1;
+const TRELLIS_HALF: i32 = 14;
+const TRELLIS_HEIGHT: i32 = 6;
+/// Cells between the vines along the trellis.
+const VINE_SPACING: i32 = 4;
 /// Loam laid at the top of each meadow column, in cells.
 const LOAM_DEPTH: i32 = 4;
 /// The loam's moisture: its field capacity, the most it holds.
@@ -188,14 +198,23 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
     let id = |k: &str| m.id(k).with_context(|| format!("materials.ron has no {k}"));
     let loam = id("loam")?;
     let air = t.role_material("air");
-    let resolve = |trees: bool| {
+    // Bed plants (0), trees (1) and vines (2).
+    let resolve = |form: u8| {
         t.plants()
             .iter()
-            .filter(|p| p.parts.is_some() == trees)
+            .filter(|p| {
+                let f = match p.parts.as_ref().map(|d| &d.form) {
+                    None => 0,
+                    Some(FormDef::Tree { .. }) => 1,
+                    Some(FormDef::Vine { .. }) => 2,
+                };
+                f == form
+            })
             .map(|p| Ok((p.key.clone(), id(&p.material)?)))
             .collect::<anyhow::Result<Vec<(String, MaterialId)>>>()
     };
-    let (plants, trees) = (resolve(false)?, resolve(true)?);
+    let (plants, trees, vines) = (resolve(0)?, resolve(1)?, resolve(2)?);
+    let stone = id("stone")?;
     let nutrients: Vec<(LayerId, i32)> = NUTRIENTS
         .iter()
         .map(|&(k, v)| {
@@ -260,17 +279,38 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
     for (&(sx, sz), (key, material)) in corners.iter().zip(trees.iter().cycle()) {
         let (x, z) = (CENTRE.0 + sx * GROVE, CENTRE.1 + sz * GROVE);
         let cell = CellPos::new(x, i32::from(g.world.surface_y(x, z)) + 1, z);
-        if let Some(p) = g.world.plant(cell) {
-            let key = &t.plants()[usize::from(p.species)].key;
-            if let Some(n) = planted.get_mut(key) {
-                *n -= 1;
-            }
-            g.apply(
-                EditOp::Set(air.unwrap_or(MaterialId::AIR)),
-                Shape::Cell(cell),
-            )?;
-        }
+        g.clear(t, cell, &mut planted)?;
         g.plant(key, *material, cell, &mut planted)?;
+    }
+    // The trellis, then the vines at its foot.
+    let open = air.unwrap_or(MaterialId::AIR);
+    let mut foot = Vec::new();
+    for x in CENTRE.0 - TRELLIS_HALF..=CENTRE.0 + TRELLIS_HALF {
+        if (x - CENTRE.0).abs() <= PATH {
+            continue;
+        }
+        let top = i32::from(g.world.surface_y(x, TRELLIS_Z));
+        for y in top + 1..=top + TRELLIS_HEIGHT {
+            g.clear(t, CellPos::new(x, y, TRELLIS_Z), &mut planted)?;
+        }
+        g.apply(
+            EditOp::Set(stone),
+            Shape::Box {
+                min: CellPos::new(x, top + 1, TRELLIS_Z),
+                max: CellPos::new(x, top + TRELLIS_HEIGHT, TRELLIS_Z),
+            },
+        )?;
+        if (x - CENTRE.0).rem_euclid(VINE_SPACING) == 0 {
+            foot.push(x);
+        }
+    }
+    for (x, (key, material)) in foot.into_iter().zip(vines.iter().cycle()) {
+        let z = TRELLIS_Z - 1;
+        let cell = CellPos::new(x, i32::from(g.world.surface_y(x, z)) + 1, z);
+        g.clear(t, cell, &mut planted)?;
+        if g.world.get_cell(cell) == Some(open) {
+            g.plant(key, *material, cell, &mut planted)?;
+        }
     }
     planted.retain(|_, n| *n > 0);
     Ok(Garden {
@@ -287,6 +327,24 @@ struct Applier {
 }
 
 impl Applier {
+    /// Clears the plant at `cell`, if any, and uncounts it.
+    fn clear(
+        &mut self,
+        t: &EcoTables,
+        cell: CellPos,
+        planted: &mut BTreeMap<String, u32>,
+    ) -> anyhow::Result<()> {
+        let Some(p) = self.world.plant(cell) else {
+            return Ok(());
+        };
+        let key = &t.plants()[usize::from(p.species)].key;
+        if let Some(n) = planted.get_mut(key) {
+            *n -= 1;
+        }
+        let air = t.role_material("air").unwrap_or(MaterialId::AIR);
+        self.apply(EditOp::Set(air), Shape::Cell(cell))
+    }
+
     /// Places `material` at `cell` and counts the plant it starts.
     fn plant(
         &mut self,

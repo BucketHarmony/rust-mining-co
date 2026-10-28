@@ -50,6 +50,12 @@
 //! color by how short the anchor falls; its sway goes in the top
 //! vertices' second UV (meters), which the chunk shader turns into wind.
 //! A plant cell without one draws full size in its material color.
+//!
+//! Vines (docs/VEGETATION.md V6): a cell of a [`VINE_TAG`] material is not
+//! a cube either. It draws as a thin panel against each face it shares
+//! with a cube, [`VINE_INSET`] off that face and drawn from both sides, in
+//! its (season) color with the face's shade; a vine cell that meets no cube
+//! (a hanging curtain) draws as a full-size plant cross.
 
 use std::sync::Arc;
 
@@ -141,15 +147,28 @@ pub const PLANT_FOOT_SHADE: f32 = 0.6;
 /// Sway at the top of a plant of sway 255, in meters.
 pub const PLANT_SWAY_M: f32 = 0.3 * CELL_SIZE_M;
 
+/// The tag of materials drawn as vines, flat against the cubes they climb.
+pub const VINE_TAG: &str = "vine";
+
+/// How far a vine panel stands off the face it covers, as a share of the
+/// cell.
+pub const VINE_INSET: f32 = 0.05;
+
 /// Whether `def` is drawn as a plant: a `Solid` with [`PLANT_TAG`].
 pub fn is_plant(def: &MaterialDef) -> bool {
     def.is_solid() && def.has_tag(PLANT_TAG)
 }
 
+/// Whether `def` is drawn as a vine: a `Solid` with [`VINE_TAG`].
+pub fn is_vine(def: &MaterialDef) -> bool {
+    def.is_solid() && def.has_tag(VINE_TAG)
+}
+
 /// Whether `def` is drawn as a cube in the opaque pass: [`is_opaque`] and
-/// not [`is_plant`]. Only cubes hide the faces behind them.
+/// neither [`is_plant`] nor [`is_vine`]. Only cubes hide the faces behind
+/// them.
 pub fn is_cube(def: &MaterialDef) -> bool {
-    is_opaque(def) && !is_plant(def)
+    is_opaque(def) && !is_plant(def) && !is_vine(def)
 }
 
 /// How one plant cell is drawn ([`MeshInput::with_plants`]).
@@ -773,6 +792,7 @@ impl ChunkMesher for GreedyMesher {
             }
         }
         mesh_plants(input, &mut out);
+        mesh_vines(input, &solid, &base_colors, &mut out);
         out
     }
 
@@ -1169,6 +1189,97 @@ fn mesh_plants(input: &MeshInput, out: &mut MeshData) {
                 push_plant(out, IVec3::new(x, y, z), cell, base);
             }
         }
+    }
+}
+
+/// Appends the panels of every vine cell of the chunk: one against each
+/// face it shares with a cube (`solid`, by input index), or a full plant
+/// cross where it meets none. `base_colors` are by material id, season
+/// colors applied.
+fn mesh_vines(input: &MeshInput, solid: &[bool], base_colors: &[[f32; 4]], out: &mut MeshData) {
+    const N: i32 = CHUNK_SIZE;
+    let table = &input.materials;
+    let vine: Vec<bool> = table.iter().map(is_vine).collect();
+    let overlay = input.overlay();
+    let dirs = [
+        IVec3::X,
+        IVec3::NEG_X,
+        IVec3::Y,
+        IVec3::NEG_Y,
+        IVec3::Z,
+        IVec3::NEG_Z,
+    ];
+    for y in 0..N {
+        for z in 0..N {
+            for x in 0..N {
+                let id = input.get(x, y, z);
+                if !vine.get(usize::from(id.0)).copied().unwrap_or(false) {
+                    continue;
+                }
+                let p = IVec3::new(x, y, z);
+                let i = MeshInput::index(x, y, z);
+                let base = match overlay {
+                    Some((_, cmap, values)) => overlay_base_color(cmap, values[i], 0.0),
+                    None => base_colors
+                        .get(usize::from(id.0))
+                        .copied()
+                        .unwrap_or([0.0; 4]),
+                };
+                let mut covered = false;
+                for dir in dirs {
+                    let n = p + dir;
+                    if solid[MeshInput::index(n.x, n.y, n.z)] {
+                        push_panel(out, p, dir, base);
+                        covered = true;
+                    }
+                }
+                if !covered {
+                    let cell = PlantCell {
+                        stage: u8::MAX,
+                        color: [0; 3],
+                        sway: 0,
+                    };
+                    push_plant(out, p, cell, base);
+                }
+            }
+        }
+    }
+}
+
+/// Appends the panel of the vine cell at `p` against the cube at `p + dir`:
+/// a full square parallel to that face, [`VINE_INSET`] off it, once per
+/// facing. Its normal points away from the cube, with that face's shade;
+/// uv 0 (no tile).
+fn push_panel(out: &mut MeshData, p: IVec3, dir: IVec3, base: [f32; 4]) {
+    let a = (0..3).find(|&k| dir[k] != 0).unwrap_or(0);
+    let (u, v) = (unit((a + 1) % 3).as_vec3(), unit((a + 2) % 3).as_vec3());
+    let depth = if dir[a] > 0 {
+        1.0 - VINE_INSET
+    } else {
+        VINE_INSET
+    };
+    let o = p.as_vec3() + unit(a).as_vec3() * depth;
+    let corners = [o, o + u, o + u + v, o + v].map(|c| c * CELL_SIZE_M);
+    let normal = -dir;
+    let shade = face_shade(normal);
+    for front in [true, false] {
+        let first = out.positions.len() as u32;
+        for c in corners {
+            out.positions.push(c.to_array());
+            out.normals.push(normal.as_vec3().to_array());
+            out.uvs.push([0.0, 0.0]);
+            out.colors
+                .push([base[0] * shade, base[1] * shade, base[2] * shade, base[3]]);
+        }
+        let tris: [[u32; 3]; 2] = if front {
+            [[0, 1, 2], [0, 2, 3]]
+        } else {
+            [[0, 2, 1], [0, 3, 2]]
+        };
+        for t in tris {
+            out.indices.extend(t.map(|k| first + k));
+        }
+        out.quad_count += 1;
     }
 }
 
@@ -3163,6 +3274,56 @@ mod tests {
             "{turned:?} vs {fed:?}"
         );
         assert_eq!(at(3).colors, autumn.colors);
+    }
+
+    #[test]
+    fn vines_lie_flat_on_the_cubes_they_climb_and_hang_as_crosses() {
+        // docs/VEGETATION.md V6: a vine cell is no cube. Against a wall it
+        // is a thin panel on the wall's face (both facings), in its season
+        // color; with no cube beside it, a full plant cross.
+        let t = table();
+        let (stone, ivy) = (id(&t, "stone"), id(&t, "ivy_leaves"));
+        assert!(is_vine(t.get(ivy).unwrap()) && !is_cube(t.get(ivy).unwrap()));
+        let mut input = origin_input(&t);
+        input.set(5, 5, 5, stone);
+        let wall = mesh(&input);
+        input.set(4, 5, 5, ivy);
+        let data = mesh(&input);
+
+        // The wall still shows its -X face (the vine hides nothing), and
+        // the vine adds two quads, 0.05 off that face, facing -X.
+        assert_eq!(data.quad_count, wall.quad_count + 2);
+        assert_eq!(&data.positions[..wall.positions.len()], &wall.positions[..]);
+        let panel = wall.positions.len()..data.positions.len();
+        assert_eq!(panel.len(), 8);
+        for i in panel.clone() {
+            let p = Vec3::from(data.positions[i]) / CELL_SIZE_M;
+            assert!((p.x - (5.0 - VINE_INSET)).abs() < 1e-5, "{p:?}");
+            assert!((5.0..=6.0).contains(&p.y) && (5.0..=6.0).contains(&p.z));
+            assert_eq!(data.normals[i], [-1.0, 0.0, 0.0]);
+            assert_eq!(data.uvs[i], [0.0, 0.0]);
+        }
+        let own = shaded(vertex_base_color(&t, ivy), IVec3::NEG_X);
+        assert_eq!(data.colors[panel.start], own);
+
+        // A season color reaches the panel.
+        input.recolor = BTreeMap::from([(ivy, [200, 60, 20])]);
+        let autumn = mesh(&input);
+        assert_ne!(autumn.colors[panel.start], own);
+
+        // Against two cubes, two panels; against none, a cross (16
+        // vertices, normals up).
+        input.recolor.clear();
+        input.set(4, 4, 5, stone);
+        let base = mesh(&input).quad_count;
+        input.set(4, 5, 5, MaterialId::AIR);
+        assert_eq!(base, mesh(&input).quad_count + 4, "a panel on each");
+        input.set(5, 5, 5, MaterialId::AIR);
+        input.set(4, 4, 5, MaterialId::AIR);
+        input.set(10, 10, 10, ivy);
+        let hanging = mesh(&input);
+        assert_eq!(hanging.positions.len(), 16);
+        assert!(hanging.normals.iter().all(|n| *n == [0.0, 1.0, 0.0]));
     }
 
     #[test]

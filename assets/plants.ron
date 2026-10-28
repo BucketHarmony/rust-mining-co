@@ -101,4 +101,49 @@
              wood: "pine_wood", leaf: "pine_needles",
              form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true,
              fruit: Some((grow: "summer", fall: "autumn", count: 4, take: 40))))),
+    // Vines (docs/VEGETATION.md V6). The seed ripens into vine_stem, the root.
+    // Form Vine: vine cells (the `leaf` material) grow into open cells that
+    // touch a face of a material with one of `climb_tags`, up before sideways
+    // before down, at most `reach` of them; with `hang` they also hang
+    // straight down over a ledge. `flower`: up to `count` flowers open beside
+    // lit vine cells in the listed seasons and wilt after. Vine cells are not
+    // shed; a bare season drops flowers and fruit only.
+    // Ivy: evergreen and shade-tolerant; its berries ripen in winter.
+    (key: "ivy", material: "ivy_seed", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 12, temp: (-150, 350),
+             substance_max: [("cu", 24), ("acid", 48)]),
+     growth_per_substep: 32, spread_chance: 0, spread_radius: 2, litter: 16,
+     lifespan_seasons: 120, uptake: [("n", 1)], worldgen_chance: 2, sway: 16,
+     parts: Some((cost: 4, leaf_feed: 32, leaf_light: 8,
+             wood: "vine_stem", leaf: "ivy_leaves",
+             form: Vine(climb_tags: ["stone", "wood"], reach: 24, hang: true),
+             fruit: Some((grow: "winter", fall: "spring", count: 4, take: 32))))),
+    // Clematis: flowers in spring and summer, bare in winter.
+    (key: "clematis", material: "clematis_seed", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 16, temp: (-100, 350),
+             substance_min: [("n", 3)],
+             substance_max: [("cu", 24), ("acid", 32)]),
+     growth_per_substep: 32, spread_chance: 0, spread_radius: 2, litter: 16,
+     lifespan_seasons: 60, uptake: [("n", 1)], worldgen_chance: 2, sway: 24,
+     season_colors: [("autumn", (150, 130, 60))],
+     parts: Some((cost: 4, leaf_feed: 32, leaf_light: 24,
+             wood: "vine_stem", leaf: "clematis_leaves",
+             form: Vine(climb_tags: ["stone", "wood"], reach: 16, hang: true),
+             shed: Some("winter"),
+             fruit: Some((grow: "summer", fall: "autumn", count: 3, take: 24)),
+             flower: Some((material: "clematis_flower", seasons: ["spring", "summer"],
+                     count: 5))))),
+    // Grape: berries in summer that fall in autumn; demands potassium.
+    (key: "grape", material: "grape", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 16, temp: (-80, 380),
+             substance_max: [("cu", 24), ("acid", 32)]),
+     growth_per_substep: 32, spread_chance: 0, spread_radius: 2, litter: 24,
+     lifespan_seasons: 80, uptake: [("n", 1)], demand: [("k", 2)],
+     worldgen_chance: 2, sway: 24,
+     season_colors: [("autumn", (196, 120, 48))],
+     parts: Some((cost: 5, leaf_feed: 32, leaf_light: 32,
+             wood: "vine_stem", leaf: "grape_leaves",
+             form: Vine(climb_tags: ["stone", "wood"], reach: 20, hang: true),
+             shed: Some("winter"),
+             fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 52))))),
 ]
