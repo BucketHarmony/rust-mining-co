@@ -28,10 +28,12 @@ use bevy::input_focus::InputFocus;
 use bevy::input_focus::tab_navigation::TabNavigationPlugin;
 use bevy::prelude::*;
 
+use crate::hud::TemperatureUnit;
+
 pub use layers::{HudAnchor, HudSlot, UiLayer};
 pub use scale::{UiSettings, effective_scale};
 pub use screens::{
-    MENU_TITLE, ScaleReadout, Screen, ScreenBody, ScreenRoot, UiScreens, scale_label,
+    MENU_TITLE, ScaleReadout, Screen, ScreenBody, ScreenRoot, UiScreens, UnitReadout, scale_label,
 };
 pub use theme::{ColorToken, TextRole, UiFonts, UiTheme, UiThemeError, contrast_ratio};
 pub use toast::{Toast, ToastEntry, ToastStack, toast_alpha};
@@ -61,6 +63,7 @@ impl Plugin for UiKitPlugin {
         }
         app.insert_resource(self.theme.clone())
             .insert_resource(UiSettings::new(&self.theme))
+            .init_resource::<TemperatureUnit>()
             .insert_resource(FontDir(self.assets_dir.clone()))
             .init_resource::<UiScreens>()
             .init_resource::<UiFonts>()
@@ -78,6 +81,7 @@ impl Plugin for UiKitPlugin {
                     screens::sync_screens,
                     screens::arrow_navigation,
                     screens::update_scale_readout,
+                    screens::update_unit_readout,
                     toast::spawn_toast_stack,
                     toast::run_toasts,
                     toast::apply_transparency,
@@ -194,6 +198,26 @@ mod tests {
             app.world().get::<HudAnchor>(parent),
             Some(&HudAnchor::Bottom)
         );
+    }
+
+    #[test]
+    fn settings_switch_the_temperature_unit_from_fahrenheit() {
+        let mut app = app();
+        let unit = |app: &App| *app.world().resource::<TemperatureUnit>();
+        assert_eq!(unit(&app), TemperatureUnit::Fahrenheit, "the default");
+        tap(&mut app, KeyCode::Escape);
+        activate(&mut app, UiAction::OpenSettings);
+        let readout = |app: &mut App| {
+            let mut q = app.world_mut().query_filtered::<&Text, With<UnitReadout>>();
+            q.single(app.world()).unwrap().0.clone()
+        };
+        assert_eq!(readout(&mut app), "Fahrenheit");
+        activate(&mut app, UiAction::ToggleTemperatureUnit);
+        assert_eq!(unit(&app), TemperatureUnit::Celsius);
+        app.update();
+        assert_eq!(readout(&mut app), "Celsius");
+        activate(&mut app, UiAction::ToggleTemperatureUnit);
+        assert_eq!(unit(&app), TemperatureUnit::Fahrenheit);
     }
 
     #[test]

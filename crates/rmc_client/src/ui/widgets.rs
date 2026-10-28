@@ -32,6 +32,8 @@ pub enum UiAction {
     ScaleDown,
     ScaleUp,
     ScaleReset,
+    /// Switch the temperature unit (Fahrenheit, Celsius).
+    ToggleTemperatureUnit,
 }
 
 /// A button's emphasis.

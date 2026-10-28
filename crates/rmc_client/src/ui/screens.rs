@@ -34,6 +34,7 @@ use super::theme::{ColorToken, TextRole, UiFonts, UiTheme};
 use super::widgets::{ButtonStyle, UiAction, button, panel, text};
 use crate::cursor::{CursorGrab, RELEASE_KEY};
 use crate::editor::EditorState;
+use crate::hud::TemperatureUnit;
 
 /// The game's title on the menu.
 pub const MENU_TITLE: &str = "Rust Mining Co";
@@ -90,6 +91,10 @@ pub struct ScreenBody(pub Screen);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct ScaleReadout;
 
+/// The settings screen's temperature unit readout.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct UnitReadout;
+
 /// Opens and closes screens from Escape and the cursor grab.
 pub(crate) fn screen_keys(
     keys: Option<Res<ButtonInput<KeyCode>>>,
@@ -138,12 +143,14 @@ pub(crate) fn arrow_navigation(
 }
 
 /// Draws the top screen when the stack changes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_screens(
     mut commands: Commands,
     screens: Res<UiScreens>,
     theme: Res<UiTheme>,
     fonts: Res<UiFonts>,
     settings: Res<UiSettings>,
+    unit: Res<TemperatureUnit>,
     drawn: Query<(Entity, &ScreenRoot)>,
     layers: Query<(Entity, &UiLayer)>,
 ) {
@@ -223,6 +230,19 @@ pub(crate) fn sync_screens(
                 secondary(UiAction::ScaleReset, "Default size"),
                 ChildOf(body),
             ));
+            commands.spawn((
+                text(t, f, TextRole::Caption, ColorToken::TextDim, "Temperature"),
+                ChildOf(body),
+            ));
+            commands.spawn((
+                text(t, f, TextRole::Label, ColorToken::Text, unit.name()),
+                UnitReadout,
+                ChildOf(body),
+            ));
+            commands.spawn((
+                secondary(UiAction::ToggleTemperatureUnit, "Fahrenheit / Celsius"),
+                ChildOf(body),
+            ));
             commands.spawn((primary(UiAction::Back, "Back"), ChildOf(body)));
         }
         // Filled by its own module.
@@ -247,6 +267,18 @@ pub(crate) fn update_scale_readout(
     }
 }
 
+pub(crate) fn update_unit_readout(
+    unit: Res<TemperatureUnit>,
+    mut readouts: Query<&mut Text, With<UnitReadout>>,
+) {
+    if !unit.is_changed() {
+        return;
+    }
+    for mut t in &mut readouts {
+        t.0 = unit.name().into();
+    }
+}
+
 /// Does what an activated button's [`UiAction`] says.
 pub(crate) fn on_activate(
     ev: On<Activate>,
@@ -254,6 +286,7 @@ pub(crate) fn on_activate(
     theme: Res<UiTheme>,
     mut screens: ResMut<UiScreens>,
     mut settings: ResMut<UiSettings>,
+    mut unit: ResMut<TemperatureUnit>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Ok(action) = actions.get(ev.entity) else {
@@ -272,5 +305,6 @@ pub(crate) fn on_activate(
         UiAction::ScaleUp => settings.step_scale(&theme, 1),
         UiAction::ScaleDown => settings.step_scale(&theme, -1),
         UiAction::ScaleReset => *settings = UiSettings::new(&theme),
+        UiAction::ToggleTemperatureUnit => *unit = unit.toggled(),
     }
 }

@@ -34,7 +34,7 @@ use rmc_world::items::{Bag, EquipSlot, ItemTable, MAX_HOTBAR, SlotRef};
 
 use crate::editor::EditorState;
 use crate::hotbar::{ClientItems, thing_name};
-use crate::hud::{ClientBag, format_temperature};
+use crate::hud::{ClientBag, TemperatureUnit, shown_unit};
 use crate::net::ToHost;
 use crate::replica::Replica;
 use crate::ui::{
@@ -468,16 +468,20 @@ fn show_bag_slots(
     }
 }
 
-/// What the worn things do, as [`GearText`] shows it.
+/// What the worn things do, in Celsius (see [`gear_line_in`]).
 pub fn gear_line(bag: &Bag, items: &ItemTable) -> String {
+    gear_line_in(bag, items, TemperatureUnit::Celsius)
+}
+
+/// What the worn things do, as [`GearText`] shows it, warmth in `unit`.
+pub fn gear_line_in(bag: &Bag, items: &ItemTable, unit: TemperatureUnit) -> String {
     let warmth = bag
         .warmth(items)
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    let sign = if warmth >= 0 { "+" } else { "" };
     format!(
-        "Warmth {sign}{}
+        "Warmth {}
 Protection {}",
-        format_temperature(warmth),
+        unit.format_delta(warmth),
         bag.protection(items)
     )
 }
@@ -486,9 +490,11 @@ fn show_gear(
     bag: Res<ClientBag>,
     tables: Option<Res<ClientItems>>,
     mut lines: Query<&mut Text, With<GearText>>,
+    unit: Option<Res<TemperatureUnit>>,
 ) {
+    let unit = shown_unit(unit.as_deref());
     let value = match (&bag.0, tables) {
-        (Some(bag), Some(t)) => gear_line(bag, &t.items),
+        (Some(bag), Some(t)) => gear_line_in(bag, &t.items, unit),
         _ => String::new(),
     };
     for mut t in &mut lines {
@@ -578,6 +584,7 @@ fn on_click(
 mod tests {
     use super::*;
     use crate::cursor::{CursorGrab, CursorPlugin};
+    use crate::hud::format_temperature;
     use crate::ui::UiKitPlugin;
     use crate::ui::theme::tests::THEME_PATH;
     use bevy::camera::NormalizedRenderTarget;
@@ -634,6 +641,8 @@ mod tests {
             })
             .add_plugins(CharacterPlugin)
             .add_systems(PostUpdate, record);
+        // The gear test reads Celsius; the kit's default is Fahrenheit.
+        app.insert_resource(TemperatureUnit::Celsius);
         if with_bag {
             app.insert_resource(ClientBag(Some(bag(&t))));
         }

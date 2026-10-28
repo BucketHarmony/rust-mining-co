@@ -17,8 +17,9 @@
 //!   changes it (it broke or was replaced) and on `Welcome`. Damage dealt by
 //!   other players, or before a load, is not seen.
 //! - Temperature (SAD-P2 §10): the replica's temperature layer at the cell
-//!   the player's feet stand in, top right, in degrees C with one decimal
-//!   ([`format_temperature`]). The
+//!   the player's feet stand in, top right, with one decimal, in the
+//!   player's [`TemperatureUnit`] (Fahrenheit unless Settings says Celsius;
+//!   Celsius without the UI kit, [`format_temperature`]). The
 //!   replica's layers follow `ChunkSnapshot`, `LayerSnapshot` and
 //!   `ChunkDelta::Layers`. Nothing is shown without a player or outside
 //!   the resident chunks. With a bag ([`ClientBag`], `docs/ITEMS.md` I4)
@@ -565,26 +566,101 @@ pub struct GasTintOverlay;
 #[derive(Component, Debug)]
 pub struct LanternIcon;
 
-/// `t` (0.1 °C) as the HUD shows it: whole degrees and one tenth, with
-/// the sign of the whole value (`-0.5 C`). ASCII only: Bevy's default font
-/// has no degree sign.
-pub fn format_temperature(t: i16) -> String {
-    let t = i32::from(t);
-    let sign = if t < 0 { "-" } else { "" };
-    let abs = t.abs();
-    format!("{sign}{}.{} C", abs / 10, abs % 10)
+/// How the player reads temperatures: a setting on the Settings screen.
+/// The UI kit starts it at [`TemperatureUnit::Fahrenheit`]; without the
+/// kit (the headless host, tests) readouts stay in the world's own unit,
+/// Celsius.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TemperatureUnit {
+    #[default]
+    Fahrenheit,
+    Celsius,
 }
 
-/// The temperature line: `t`, and the felt temperature when known.
-pub fn format_felt(t: i16, felt: Option<i16>) -> String {
-    match felt {
-        Some(felt) => format!(
-            "{}, feels {}",
-            format_temperature(t),
-            format_temperature(felt)
-        ),
-        None => format_temperature(t),
+impl TemperatureUnit {
+    /// The other unit.
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Fahrenheit => Self::Celsius,
+            Self::Celsius => Self::Fahrenheit,
+        }
     }
+
+    /// The unit's name, as Settings shows it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Fahrenheit => "Fahrenheit",
+            Self::Celsius => "Celsius",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Fahrenheit => "F",
+            Self::Celsius => "C",
+        }
+    }
+
+    /// A difference of `d` tenths of a degree C in tenths of this unit,
+    /// rounded half away from zero.
+    fn scale(self, d: i32) -> i32 {
+        match self {
+            Self::Celsius => d,
+            Self::Fahrenheit => {
+                let n = d * 9;
+                (n + n.signum() * 2) / 5
+            }
+        }
+    }
+
+    /// `t` (0.1 °C) in this unit: `54.1 F`, `12.3 C`.
+    pub fn format(self, t: i16) -> String {
+        let t = self.scale(i32::from(t))
+            + match self {
+                Self::Celsius => 0,
+                Self::Fahrenheit => 320,
+            };
+        tenths(t, "", self.symbol())
+    }
+
+    /// A difference `d` (0.1 °C) in this unit, always signed: `+16.2 F`.
+    pub fn format_delta(self, d: i16) -> String {
+        tenths(self.scale(i32::from(d)), "+", self.symbol())
+    }
+}
+
+/// `t` tenths as whole units and one tenth, the sign on the whole value
+/// (`plus` before a value that is not negative).
+fn tenths(t: i32, plus: &str, symbol: &str) -> String {
+    let sign = if t < 0 { "-" } else { plus };
+    let abs = t.abs();
+    format!("{sign}{}.{} {symbol}", abs / 10, abs % 10)
+}
+
+/// `t` (0.1 °C) as the HUD shows it in Celsius: whole degrees and one
+/// tenth, with the sign of the whole value (`-0.5 C`). ASCII only: Bevy's
+/// default font has no degree sign.
+pub fn format_temperature(t: i16) -> String {
+    TemperatureUnit::Celsius.format(t)
+}
+
+/// The temperature line in Celsius: `t`, and the felt temperature when
+/// known.
+pub fn format_felt(t: i16, felt: Option<i16>) -> String {
+    format_felt_in(TemperatureUnit::Celsius, t, felt)
+}
+
+/// The temperature line in `unit`.
+pub fn format_felt_in(unit: TemperatureUnit, t: i16, felt: Option<i16>) -> String {
+    match felt {
+        Some(felt) => format!("{}, feels {}", unit.format(t), unit.format(felt)),
+        None => unit.format(t),
+    }
+}
+
+/// The unit the readouts use: the setting, or Celsius without the UI kit.
+pub fn shown_unit(unit: Option<&TemperatureUnit>) -> TemperatureUnit {
+    unit.copied().unwrap_or(TemperatureUnit::Celsius)
 }
 
 /// The HUD. Needs [`NetPlugin`](crate::net::NetPlugin) for host messages
@@ -619,9 +695,10 @@ impl Plugin for HudPlugin {
                     estimate_damage,
                     select_material,
                     update_state,
-                    (show_state, show_gas, show_chips)
-                        .chain()
-                        .run_if(resource_changed::<HudState>),
+                    (show_state, show_gas, show_chips).chain().run_if(
+                        resource_changed::<HudState>
+                            .or_eager(resource_exists_and_changed::<TemperatureUnit>),
+                    ),
                 )
                     .chain()
                     .in_set(HudSystems::Show)
@@ -1346,7 +1423,9 @@ fn show_state(
             Without<InventoryText>,
         ),
     >,
+    unit: Option<Res<TemperatureUnit>>,
 ) {
+    let unit = shown_unit(unit.as_deref());
     let pulse = hud.swing_pulse;
     let len = CROSSHAIR_SIZE.x * (1.0 + SWING_PULSE_GROWTH * pulse);
     let color = pulse_color(Color::WHITE, pulse);
@@ -1402,7 +1481,7 @@ fn show_state(
     }
     let temperature = hud
         .temperature
-        .map(|t| format_felt(t, hud.felt_temperature))
+        .map(|t| format_felt_in(unit, t, hud.felt_temperature))
         .unwrap_or_default();
     for mut text in &mut temperature_text {
         text.0.clone_from(&temperature);
@@ -2800,6 +2879,57 @@ mod tests {
         ] {
             assert_eq!(format_temperature(t), text, "{t}");
         }
+    }
+
+    #[test]
+    fn fahrenheit_is_the_default_and_celsius_the_option() {
+        use TemperatureUnit::{Celsius, Fahrenheit};
+        assert_eq!(TemperatureUnit::default(), Fahrenheit);
+        assert_eq!(Fahrenheit.toggled(), Celsius);
+        assert_eq!(Celsius.toggled(), Fahrenheit);
+        for (t, f) in [
+            (0, "32.0 F"),
+            (100, "50.0 F"),
+            (123, "54.1 F"),
+            (-400, "-40.0 F"),
+            (-180, "-0.4 F"),
+            (370, "98.6 F"),
+            (1000, "212.0 F"),
+            (i16::MIN, "-5866.2 F"),
+            (i16::MAX, "5930.1 F"),
+        ] {
+            assert_eq!(Fahrenheit.format(t), f, "{t}");
+        }
+        assert_eq!(Celsius.format(123), "12.3 C");
+        assert_eq!(Fahrenheit.format_delta(90), "+16.2 F");
+        assert_eq!(Fahrenheit.format_delta(-5), "-0.9 F");
+        assert_eq!(Celsius.format_delta(90), "+9.0 C");
+        assert_eq!(
+            format_felt_in(Fahrenheit, 123, Some(213)),
+            "54.1 F, feels 70.3 F"
+        );
+        assert_eq!(shown_unit(None), Celsius);
+        assert_eq!(shown_unit(Some(&Fahrenheit)), Fahrenheit);
+
+        // The HUD line follows the setting.
+        let mut w = world("granite", "stone");
+        let r = w.apply(&EditCommand {
+            id: CommandId::default(),
+            issuer: PlayerId(0),
+            op: EditOp::SetLayer {
+                layer: LayerId::Temperature,
+                value: 123,
+            },
+            shape: Shape::Cell(CellPos::from_meters(FEET)),
+        });
+        assert_eq!(r.status, EditStatus::Applied);
+        let mut rig = Rig::new(w);
+        rig.app.insert_resource(Fahrenheit);
+        rig.frames(1);
+        assert_eq!(temperature_text(&mut rig), "54.1 F");
+        rig.app.insert_resource(Celsius);
+        rig.frames(1);
+        assert_eq!(temperature_text(&mut rig), "12.3 C");
     }
 
     fn gas_text(rig: &mut Rig) -> String {

@@ -26,8 +26,8 @@ test kit. Keys are named by their position on a US layout.
 The player climbs a one-cell rise by walking into it; two cells need a jump.
 
 The chip in the bottom-left corner shows the season, the year, the air
-temperature and the sky: dry, frost, or light, steady or heavy rain (snow
-below 0 °C). While the season's rain lands, rain falls around you, but not
+temperature (in Fahrenheit unless Settings says Celsius) and the sky: dry,
+frost, or light, steady or heavy rain (snow below freezing). While the season's rain lands, rain falls around you, but not
 under a roof or in a cave. While the seasons are paused (`P`), nothing falls
 and the chip says so.
 
@@ -83,7 +83,7 @@ where it was.
 
 What you wear keeps you warm: under the worn slots the screen sums the
 warmth and protection of your gear, and the temperature readout in the top
-right shows how warm it feels (`10.0 C, feels 19.0 C`). Digging plants also
+right shows how warm it feels (`50.0 F, feels 66.2 F`). Digging plants also
 puts seeds in your bag.
 
 ## Menus
@@ -101,7 +101,10 @@ mouse does not turn the view; the world keeps running.
 | `Left mouse` | Press a button |
 
 Settings has the UI scale: Larger and Smaller step it by 10 % (75 % to
-200 %), Default size resets it. The UI also scales with the window height,
+200 %), Default size resets it. It also has the temperature unit:
+Fahrenheit by default, and the Fahrenheit / Celsius button switches every
+readout (the top-right temperature, the season chip, the character
+screen's warmth) to Celsius and back. The editor panel stays in Celsius. The UI also scales with the window height,
 so it is the same size relative to the screen at any resolution.
 
 ## Fly camera

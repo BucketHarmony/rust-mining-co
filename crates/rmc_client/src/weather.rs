@@ -32,7 +32,7 @@ use rmc_world::coords::CELL_SIZE_M;
 
 use crate::daynight::{ClockPace, GameTime, clock_label, follow_clock};
 use crate::eco::SeasonSummary;
-use crate::hud::format_temperature;
+use crate::hud::{TemperatureUnit, shown_unit};
 use crate::net::FromHost;
 use crate::render::GameCamera;
 use crate::replica::Replica;
@@ -238,9 +238,14 @@ pub fn sky_label(w: &Weather) -> String {
     }
 }
 
-/// The HUD chip's lines: the season and year, the air temperature and sky,
-/// and a note while the clock is paused (empty otherwise).
+/// The HUD chip's lines in Celsius (see [`weather_lines_in`]).
 pub fn weather_lines(w: &Weather) -> [String; 3] {
+    weather_lines_in(w, TemperatureUnit::Celsius)
+}
+
+/// The HUD chip's lines: the season and year, the air temperature (in
+/// `unit`) and sky, and a note while the clock is paused (empty otherwise).
+pub fn weather_lines_in(w: &Weather, unit: TemperatureUnit) -> [String; 3] {
     let season = if w.key.is_empty() {
         format!("Season {}", w.season)
     } else {
@@ -255,11 +260,7 @@ pub fn weather_lines(w: &Weather) -> [String; 3] {
     };
     [
         format!("{season}{day} · Year {}", w.year),
-        format!(
-            "{time}{} · {}",
-            format_temperature(w.air_temp),
-            sky_label(w)
-        ),
+        format!("{time}{} · {}", unit.format(w.air_temp), sky_label(w)),
         if w.paused {
             "Seasons paused (P)".into()
         } else {
@@ -399,11 +400,13 @@ fn update_weather_hud(
     weather: Res<Weather>,
     mut lines: Query<(&WeatherLine, &mut Text, &mut Node)>,
     added: Query<(), Added<WeatherLine>>,
+    unit: Option<Res<TemperatureUnit>>,
 ) {
-    if !weather.is_changed() && added.is_empty() {
+    let unit_changed = unit.as_ref().is_some_and(|u| u.is_changed());
+    if !weather.is_changed() && added.is_empty() && !unit_changed {
         return;
     }
-    let values = weather_lines(&weather);
+    let values = weather_lines_in(&weather, shown_unit(unit.as_deref()));
     for (line, mut text, mut node) in &mut lines {
         let value = values.get(line.0).cloned().unwrap_or_default();
         node.display = if value.is_empty() {
@@ -800,6 +803,8 @@ mod tests {
             })
             .insert_resource(seasons())
             .add_plugins(WeatherPlugin);
+        // The lines below are Celsius; the kit's default is Fahrenheit.
+        app.insert_resource(TemperatureUnit::Celsius);
         set_season(&mut app, 6);
         app.update();
         app.update();

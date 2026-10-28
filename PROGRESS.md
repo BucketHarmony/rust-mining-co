@@ -4078,3 +4078,17 @@ Decisions:
 - Harvest keeps the material yield, so placing grass and moss works as before; items come on top.
 Next: the items plan (I1–I4) is done. Owner: merge feature ids for I1–I4 if wanted; the vegetation plan (V1–V7) is next in line.
 Blockers: none.
+
+## 2026-10-27 — Temperature unit setting (Fahrenheit default) — passed
+Done:
+- `TemperatureUnit` resource (`Fahrenheit` default, `Celsius`), started by the UI kit. Settings shows the unit and a "Fahrenheit / Celsius" button (`UiAction::ToggleTemperatureUnit`).
+- The HUD temperature line, the season chip and the character screen's warmth follow it (`format_felt_in`, `weather_lines_in`, `gear_line_in`); warmth is a difference, so it converts without the 32° offset (`format_delta`). The HUD redraws when the unit changes.
+- `format_temperature`, `format_felt`, `weather_lines` and `gear_line` keep their Celsius output. Without the UI kit (headless, tests) readouts stay in Celsius. The editor's cell panel stays in Celsius.
+- `character_screen_renders` screens re-shot (frame numbers moved). Docs: `docs/CONTROLS.md`.
+Tests added: `hud::tests::fahrenheit_is_the_default_and_celsius_the_option`, `ui::tests::settings_switch_the_temperature_unit_from_fahrenheit`.
+Decisions:
+- Owner request: Fahrenheit by default, Celsius optional. Conversion rounds half away from zero to a tenth.
+- The test apps of `weather::tests::hud_chip_shows_the_season_in_the_bottom_left` and `character::tests` (which add the UI kit and assert Celsius text) now insert `TemperatureUnit::Celsius`; their assertions are unchanged.
+- The setting is not saved between runs, the same as the UI scale.
+Next: the vegetation plan (V1–V7).
+Blockers: none.
