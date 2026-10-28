@@ -47,6 +47,9 @@
         // Graded growth (docs/VEGETATION.md V2): a plant with a demand
         // starves (stress rises) below this sufficiency, in 256ths
         starve_s: Some(64),
+        // Multi-cell plants (docs/VEGETATION.md V4): organic a cut-off part
+        // leaves in the anchor below it
+        part_litter: Some(2),
         // §7.9 activity: quiet Jacobi passes before a chunk is skipped
         quiet_skip: 2,
     ),

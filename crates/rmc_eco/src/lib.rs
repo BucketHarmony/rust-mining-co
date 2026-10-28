@@ -10,6 +10,7 @@ pub mod gases;
 pub mod invariants;
 pub mod ledger;
 pub mod light;
+pub mod parts;
 pub mod plants;
 pub mod reference;
 pub mod runner;

@@ -26,6 +26,9 @@
     // eco.ron stress_death) and a season feeds its plants 7 times, about
     // as often as the 8 sub-steps of a seasons.ron season.
     plant_hour: 12,
+    // Trees and vines grow a part every this many hours (owner, 2026-10-28;
+    // docs/VEGETATION.md V4); their stress still counts days.
+    part_hours: Some(4),
     // mean: the daily mean air temperature at mid-season, 0.1 °C. Day by
     // day the mean moves on a straight line toward the next season's (and
     // from the last one's), so the seasons turn gradually.

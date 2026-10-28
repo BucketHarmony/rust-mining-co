@@ -78,6 +78,10 @@ pub struct Calendar {
     pub diurnal: Vec<i16>,
     /// The hour of each day in which the plants grow and spread.
     pub plant_hour: u8,
+    /// Multi-cell plants grow a part in every hour this divides
+    /// (docs/VEGETATION.md V4). `None`: in the plant hour.
+    #[serde(default)]
+    pub part_hours: Option<u8>,
     pub seasons: Vec<CalendarSeason>,
 }
 
@@ -96,6 +100,8 @@ pub struct SubstepWeather {
     pub snow: bool,
     /// Plant growth and spread run in this sub-step (see the module docs).
     pub plants: bool,
+    /// Multi-cell plants grow a part in this sub-step (`part_hours`).
+    pub parts: bool,
 }
 
 impl Calendar {
@@ -149,6 +155,9 @@ impl Calendar {
                 "plant_hour {} of {} hours",
                 self.plant_hour, self.hours
             ));
+        }
+        if self.part_hours.is_some_and(|p| p == 0 || p > self.hours) {
+            return bad(format!("part_hours {:?}", self.part_hours));
         }
         if self.seasons.is_empty() {
             return bad("no seasons".into());
@@ -261,6 +270,9 @@ impl Calendar {
                     pattern: season.wrapping_mul(days).wrapping_add(u32::from(day)),
                     snow: wet && (air_temp <= 0 || next <= 0),
                     plants: hour == self.plant_hour,
+                    parts: self
+                        .part_hours
+                        .map_or(hour == self.plant_hour, |p| hour % p == 0),
                 }
             })
             .collect()
@@ -275,6 +287,29 @@ pub(crate) mod tests {
 
     pub(crate) fn shipped() -> Calendar {
         Calendar::load(ASSETS).expect("the shipped calendar loads")
+    }
+
+    #[test]
+    fn parts_grow_every_part_hours_and_in_the_plant_hour_without_it() {
+        let mut c = shipped();
+        let p = c.part_hours.expect("the shipped calendar sets part_hours");
+        let plan = c.plan(1, 0);
+        for (i, w) in plan.iter().enumerate() {
+            let (_, hour) = c.day_hour(i as u8);
+            assert_eq!(w.parts, hour % p == 0, "sub-step {i}");
+            assert_eq!(w.plants, hour == c.plant_hour, "sub-step {i}");
+        }
+        assert!(plan[usize::from(c.plant_hour)].parts, "the plant hour too");
+        c.part_hours = None;
+        for w in c.plan(1, 0) {
+            assert_eq!(w.parts, w.plants);
+        }
+        let ok = std::fs::read_to_string(format!("{ASSETS}/{CALENDAR_FILE}")).unwrap();
+        for bad in ["part_hours: Some(0)", "part_hours: Some(25)"] {
+            let text = ok.replacen("part_hours: Some(4)", bad, 1);
+            assert_ne!(text, ok);
+            assert!(Calendar::parse(&text).is_err(), "{bad} is refused");
+        }
     }
 
     #[test]

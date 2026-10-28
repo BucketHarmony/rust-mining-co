@@ -4160,3 +4160,20 @@ Decisions:
 - No sprite textures and no grow-in animation yet; shadows don't sway. See `docs/VEGETATION.md` V3.
 Next: V4, multi-cell organisms.
 Blockers: none.
+
+## 2026-10-28 — V4 multi-cell plants (docs/VEGETATION.md) — passed
+Done:
+- `LayerId::Part` (parent direction and part kind per cell) and `LayerId::Biomass` (the root's budget). Species with a `parts` row put growth past maturity into biomass, and lit leaves add to it.
+- `rmc_eco::parts::ExtendPass`, a sweep after Spread (`PassId::Extend`), every `part_hours` (4) calendar hours. It adds one part per root at `cost` biomass: the trunk to a seeded height, then a crown ellipsoid.
+- Severing in `World::apply`'s displacement: removing a part (or the root) removes every part that hangs from it, with `part_litter` organic matter on the anchor below (ledgered).
+- Oak (species 6; `oak_wood`, `oak_leaves`, materials 31 and 32). The garden plants an oak near each meadow corner.
+- Docs: `docs/VEGETATION.md` V4 status and decisions.
+Tests added: `layers::tests::part_values_round_trip_and_point_at_their_parent`, `calendar::tests::parts_grow_every_part_hours_and_in_the_plant_hour_without_it`, `parts::tests::{a_tree_grows_its_trunk_then_fills_its_crown, a_part_costs_biomass_and_lit_leaves_make_it, growth_past_maturity_becomes_biomass, cutting_a_part_cuts_off_exactly_what_hangs_from_it, a_cut_off_part_leaves_litter_and_the_ledger_balances, a_tree_across_a_chunk_border_grows_like_one_inside_a_chunk, a_tree_grows_through_seasons_and_its_parts_reach_its_root}`.
+Decisions:
+- test-fix 1dbeed0: the pinned pass order ends with Extend; the pinned species list ends with oak.
+- Biomass is a layer, not a `PlantState` field, so the save format stays 2.
+- Parts grow into air or water; leaves are passable and shade (`light_attenuation` 64).
+- Oak's `substance_min` n is 4, which keeps `rmc_worldgen` `plants::tests`' one-match edit of `plants.ron` unique.
+- Wood and leaves mesh as cubes for now. Oak does not appear in worldgen yet (chance 0).
+Next: V5, trees (branches, shedding, fruit and seeds, worldgen trees, harvest items).
+Blockers: none.

@@ -529,6 +529,7 @@ mod tests {
             hours: 4,
             diurnal: vec![-100, 0, 100, 0],
             plant_hour: 2,
+            part_hours: None,
             seasons: vec![season("warm", 200), season("cold", -100)],
         }
     }

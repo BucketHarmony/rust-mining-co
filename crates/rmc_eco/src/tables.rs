@@ -219,6 +219,39 @@ pub struct PlantDef {
     /// (docs/VEGETATION.md V3). Not encoded when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub season_colors: Vec<(String, (u8, u8, u8))>,
+    /// A multi-cell plant (docs/VEGETATION.md V4): the row's material is
+    /// its root, and it grows parts from its biomass. Not encoded when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<PartsDef>,
+}
+
+/// How a multi-cell plant grows its parts (docs/VEGETATION.md V4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartsDef {
+    /// Biomass one new part costs; at least 1.
+    pub cost: u8,
+    /// Biomass a lit leaf makes per extension step, in 256ths.
+    pub leaf_feed: u8,
+    /// The light a leaf needs to count as lit.
+    pub leaf_light: u8,
+    /// Material of trunk (and branch) parts.
+    pub wood: String,
+    /// Material of leaf parts.
+    pub leaf: String,
+    pub form: FormDef,
+}
+
+/// The shape a multi-cell plant grows toward.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormDef {
+    /// A trunk straight up from the root, its height (root included) in
+    /// `trunk` (inclusive, seeded per tree), then leaves filling an
+    /// ellipsoid of horizontal radius `crown.0` and vertical radius
+    /// `crown.1` centered just above the trunk's top, nearest the center
+    /// first.
+    Tree { trunk: (u8, u8), crown: (u8, u8) },
 }
 
 /// Whether `n` is 0, for fields left out of the canonical encoding then.
@@ -301,6 +334,11 @@ pub struct EcoParams {
     /// unmet. `None`: sufficiency never stresses. Not encoded when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starve_s: Option<u16>,
+    /// Multi-cell plants (docs/VEGETATION.md V4): organic a cut-off part
+    /// leaves in the anchor below it. `None`: none. Not encoded when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_litter: Option<u8>,
     // §7.9 activity
     pub quiet_skip: u8,
 }
@@ -645,6 +683,22 @@ impl EcoTables {
                     PLANTS_FILE,
                     format!("plant {:?} demands 0 of a substance", p.key),
                 ));
+            }
+            if let Some(parts) = &p.parts {
+                material_ref(&parts.wood);
+                material_ref(&parts.leaf);
+                let FormDef::Tree { trunk, crown } = parts.form;
+                if parts.cost == 0
+                    || trunk.0 == 0
+                    || trunk.0 > trunk.1
+                    || crown.0 == 0
+                    || crown.1 == 0
+                {
+                    return Err(invalid(
+                        PLANTS_FILE,
+                        format!("plant {:?} has an empty part rule", p.key),
+                    ));
+                }
             }
         }
 
@@ -1037,6 +1091,7 @@ impl EcoTables {
             organic: self.role_substance("organic"),
             magma_init_temp: self.params.magma_init_temp,
             plant_litter: self.plants.iter().map(|p| p.litter).collect(),
+            part_litter: self.params.part_litter.unwrap_or(0),
             plant_materials: self
                 .plants
                 .iter()

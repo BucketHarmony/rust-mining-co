@@ -56,4 +56,18 @@
      worldgen_chance: 24, sway: 40,
      season_colors: [("spring", (110, 176, 92)), ("autumn", (124, 140, 72)),
                      ("winter", (100, 112, 84))]),
+    // A tree (docs/VEGETATION.md V4): the oak_wood cell on the soil is its
+    // root, whose needs are read like any plant's (light 0: wood is
+    // opaque). Growth past 255 and lit leaves make biomass; every
+    // calendar part_hours a part costing `cost` grows: the trunk straight
+    // up to a seeded height in `trunk`, then leaves filling the crown.
+    (key: "oak", material: "oak_wood", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 16, temp: (-100, 350),
+             substance_min: [("n", 4)],
+             substance_max: [("cu", 24), ("acid", 32)]),
+     growth_per_substep: 32, spread_chance: 4, spread_radius: 3, litter: 48,
+     lifespan_seasons: 200, uptake: [("n", 1)],
+     parts: Some((cost: 8, leaf_feed: 32, leaf_light: 32,
+             wood: "oak_wood", leaf: "oak_leaves",
+             form: Tree(trunk: (4, 6), crown: (2, 3))))),
 ]

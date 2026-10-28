@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::coords::{CHUNK_VOLUME, CellPos, ChunkPos};
 use crate::edit::EditOp;
-use crate::layers::{LayerId, N_SUBSTANCES, PlantState, SWEEP_GAS, SWEEP_WATER};
+use crate::layers::{LayerId, N_SUBSTANCES, Part, PlantState, SWEEP_GAS, SWEEP_WATER};
 use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialId, Phase};
 use crate::world::World;
@@ -45,6 +45,9 @@ pub struct EcoRules {
     pub magma_init_temp: i16,
     /// `litter` per plant species index.
     pub plant_litter: Vec<u8>,
+    /// `eco.part_litter`: organic a cut-off part of a multi-cell plant
+    /// leaves in the anchor below it (docs/VEGETATION.md V4).
+    pub part_litter: u8,
     /// `material` per plant species index (`None` while the table lacks
     /// it): a brush edit that makes a cell one of them plants that species.
     pub plant_materials: Vec<Option<MaterialId>>,
@@ -579,6 +582,12 @@ impl World {
             self.remove_tall_top(cell, from, cause, ledger, fx);
         }
 
+        // A changed cell is no part of a plant any more, and the parts
+        // hanging from it are cut off (docs/VEGETATION.md V4).
+        self.put_layer(cell, LayerId::Part, 0, fx);
+        self.put_layer(cell, LayerId::Biomass, 0, fx);
+        self.sever_children(cell, cause, ledger, fx);
+
         // Magma is counted in cells.
         if fc == Class::Magma && tc != Class::Magma {
             if pass {
@@ -808,6 +817,39 @@ impl World {
         }
         self.remove_tall_top(top, plant_material, cause, ledger, fx);
         self.change_material(top, MaterialId::AIR, cause, ledger, fx);
+    }
+
+    /// Cuts off the parts whose parent is `cell`, in sorted order: each
+    /// becomes air (which cuts off its own children in turn) and leaves
+    /// `part_litter` in the anchor below it, by room (a `litter_in` source).
+    fn sever_children(
+        &mut self,
+        cell: CellPos,
+        cause: Cause,
+        ledger: &mut SeasonLedger,
+        fx: &mut Effects,
+    ) {
+        for n in neighbors(cell) {
+            let Some(part) = Part::from_value(self.layer(n, LayerId::Part)) else {
+                continue;
+            };
+            if part.parent(n) != cell {
+                continue;
+            }
+            self.change_material(n, MaterialId::AIR, cause, ledger, fx);
+            let anchor = below(n);
+            let is_anchor = self
+                .get_cell(anchor)
+                .and_then(|id| self.materials.get(id))
+                .is_some_and(|d| d.anchor);
+            if let Some(c) = self.rules.organic
+                && is_anchor
+            {
+                let litter = i32::from(self.rules.part_litter);
+                let added = self.deposit(anchor, LayerId::Substance(c), litter, fx);
+                ledger.litter_in[usize::from(c)] += i64::from(added);
+            }
+        }
     }
 
     /// Pushes every gas on `cell` into its air neighbors in sorted order,

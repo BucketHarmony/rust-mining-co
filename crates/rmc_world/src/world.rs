@@ -418,7 +418,12 @@ impl World {
                     ledger.water_edit_out += loss;
                 }
             }
-            LayerId::Temperature | LayerId::Regolith | LayerId::Light | LayerId::Growth => {}
+            LayerId::Temperature
+            | LayerId::Regolith
+            | LayerId::Light
+            | LayerId::Growth
+            | LayerId::Part
+            | LayerId::Biomass => {}
         }
     }
 

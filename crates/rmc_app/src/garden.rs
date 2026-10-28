@@ -14,7 +14,9 @@
 //! around the crossing. The beds hold the species in `plants.ron` row
 //! order: north-west moss, north-east grass, south-west fireweed,
 //! south-east shrubs, and the lawn the fifth (clover), each with gaps to
-//! spread into.
+//! spread into. Species that grow parts (trees, `docs/VEGETATION.md` V4)
+//! take no bed: one stands near each corner of the meadow, at [`GROVE`]
+//! from the centre, far enough apart for their crowns.
 
 use std::collections::BTreeMap;
 
@@ -41,6 +43,9 @@ const PATH: i32 = 1;
 const LAWN: i32 = 6;
 /// The lawn's species: the row after the four quadrants'.
 const LAWN_BED: usize = 4;
+/// Offset (along x and along z) from the centre of the trees near the
+/// meadow's corners.
+const GROVE: i32 = 17;
 /// Loam laid at the top of each meadow column, in cells.
 const LOAM_DEPTH: i32 = 4;
 /// The loam's moisture: its field capacity, the most it holds.
@@ -177,11 +182,14 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
     let id = |k: &str| m.id(k).with_context(|| format!("materials.ron has no {k}"));
     let loam = id("loam")?;
     let air = t.role_material("air");
-    let plants: Vec<(String, MaterialId)> = t
-        .plants()
-        .iter()
-        .map(|p| Ok((p.key.clone(), id(&p.material)?)))
-        .collect::<anyhow::Result<_>>()?;
+    let resolve = |trees: bool| {
+        t.plants()
+            .iter()
+            .filter(|p| p.parts.is_some() == trees)
+            .map(|p| Ok((p.key.clone(), id(&p.material)?)))
+            .collect::<anyhow::Result<Vec<(String, MaterialId)>>>()
+    };
+    let (plants, trees) = (resolve(false)?, resolve(true)?);
     let nutrients: Vec<(LayerId, i32)> = NUTRIENTS
         .iter()
         .map(|&(k, v)| {
@@ -238,13 +246,27 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
                 continue;
             }
             let (key, material) = &plants[i];
-            g.apply(EditOp::Set(*material), Shape::Cell(cell))?;
-            if g.world.plant(cell).is_none() {
-                bail!("{key} at {cell:?} did not start a plant");
-            }
-            *planted.entry(key.clone()).or_default() += 1;
+            g.plant(key, *material, cell, &mut planted)?;
         }
     }
+    // The trees, in place of whatever bed plant stood there.
+    let corners = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+    for (&(sx, sz), (key, material)) in corners.iter().zip(trees.iter().cycle()) {
+        let (x, z) = (CENTRE.0 + sx * GROVE, CENTRE.1 + sz * GROVE);
+        let cell = CellPos::new(x, i32::from(g.world.surface_y(x, z)) + 1, z);
+        if let Some(p) = g.world.plant(cell) {
+            let key = &t.plants()[usize::from(p.species)].key;
+            if let Some(n) = planted.get_mut(key) {
+                *n -= 1;
+            }
+            g.apply(
+                EditOp::Set(air.unwrap_or(MaterialId::AIR)),
+                Shape::Cell(cell),
+            )?;
+        }
+        g.plant(key, *material, cell, &mut planted)?;
+    }
+    planted.retain(|_, n| *n > 0);
     Ok(Garden {
         world: g.world,
         columns,
@@ -259,6 +281,22 @@ struct Applier {
 }
 
 impl Applier {
+    /// Places `material` at `cell` and counts the plant it starts.
+    fn plant(
+        &mut self,
+        key: &str,
+        material: MaterialId,
+        cell: CellPos,
+        planted: &mut BTreeMap<String, u32>,
+    ) -> anyhow::Result<()> {
+        self.apply(EditOp::Set(material), Shape::Cell(cell))?;
+        if self.world.plant(cell).is_none() {
+            bail!("{key} at {cell:?} did not start a plant");
+        }
+        *planted.entry(key.to_owned()).or_default() += 1;
+        Ok(())
+    }
+
     fn apply(&mut self, op: EditOp, shape: Shape) -> anyhow::Result<()> {
         self.seq += 1;
         let issuer = PlayerId(0);

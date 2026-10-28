@@ -205,6 +205,8 @@ impl Colormap {
             LayerId::Regolith => byte([60, 60, 60], [170, 110, 50]),
             LayerId::Light => byte([10, 10, 20], [255, 240, 180]),
             LayerId::Growth => byte([60, 50, 40], [60, 200, 60]),
+            LayerId::Biomass => byte([60, 50, 40], [140, 200, 40]),
+            LayerId::Part => byte([40, 40, 40], [200, 160, 90]),
             LayerId::Substance(_) => byte([40, 40, 40], [80, 230, 120]),
             LayerId::Gas(_) => byte([40, 40, 40], [240, 150, 40]),
         }

@@ -87,6 +87,9 @@ struct Species {
     fix: Vec<(u8, i32)>,
     holds: bool,
     tall: bool,
+    /// A multi-cell species (docs/VEGETATION.md V4): growth past 255 is
+    /// biomass.
+    parts: bool,
     /// Per material id: whether it carries one of `anchor_tags`.
     anchors: Vec<bool>,
     spread_chance: u8,
@@ -126,6 +129,7 @@ impl Species {
                 fix: sub(&p.fix),
                 holds: p.holds,
                 tall: p.tall,
+                parts: p.parts.is_some(),
                 anchors: m
                     .iter()
                     .map(|d| p.anchor_tags.iter().any(|tag| d.has_tag(tag)))
@@ -255,9 +259,13 @@ impl JacobiPass for GrowthPass {
             }
             let mut next = PlantState { stress, ..*plant };
             let growth = view.layer(cell, LayerId::Growth);
-            let add = (sp.growth_per_substep * s / SUFFICIENT).min(cap - growth);
+            let grown = sp.growth_per_substep * s / SUFFICIENT;
+            let add = grown.min(cap - growth);
             if add > 0 {
                 out.layers.push((i, LayerId::Growth, add));
+            }
+            if sp.parts && grown > add {
+                out.layers.push((i, LayerId::Biomass, grown - add));
             }
             let scaled = sp.demand.iter().map(|&(x, d)| (x, d * s / SUFFICIENT));
             let mut taken = [0; N_SUBSTANCES];

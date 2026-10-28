@@ -1198,6 +1198,7 @@ mod tests {
             organic: Some(ORGANIC),
             magma_init_temp: MAGMA_INIT,
             plant_litter: vec![LITTER],
+            part_litter: 0,
             plant_materials: Vec::new(),
             harvest_shift: HARVEST_SHIFT,
             substance_yields,

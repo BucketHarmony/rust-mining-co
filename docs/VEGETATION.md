@@ -148,6 +148,21 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
   - severing kills exactly the disconnected parts;
   - a tree across a chunk border grows the same as in one chunk (rule 20);
   - growth is deterministic.
+- **Status: done (2026-10-28).**
+  - Layers: `LayerId::Part` and `LayerId::Biomass`, appended after the existing layers so saves keep their format (version 2). A part's value is `dir | kind << 3`: `dir` 1 to 6 indexes `PART_DIRS` (the parent's face), `kind` is `PartKind` (trunk, branch, leaf, vine, flower, fruit); 0 is "not a part". `Part::{toward, parent, value, from_value}` in `rmc_world::layers`.
+  - Biomass: the root's `Biomass` layer. With a `parts` row, growth past maturity (what the cap would throw away) goes there instead.
+  - Tables: `plants.ron` rows gain an optional `parts: (cost, leaf_feed, leaf_light, wood, leaf, form: Tree(trunk: (lo, hi), crown: (radius, height)))`; `eco.ron` gains `part_litter`; `calendar.ron` gains `part_hours: Some(4)`.
+  - Extension: `rmc_eco::parts::ExtendPass`, a sweep in global sorted order (`PassId::Extend`, after Spread). Per root: lit leaves (light ≥ `leaf_light`) add `leaf_feed / 256` each to biomass; at `cost` the plant adds one part. The trunk grows straight up to a seeded height in `trunk`; then the crown fills an ellipsoid (radius, height) over the trunk top, nearest first, ties by a seeded hash. A part grows into air or water (water gives way by the §7.0 rules).
+  - Severing: `World::apply`'s displacement clears a removed plant cell's `Part` and `Biomass` and, recursively, every neighbor part whose parent it was. A severed part over an anchor drops `part_litter` organic matter there (ledger `litter_in`, the amount actually deposited).
+  - Oak: species 6 (`oak_wood` trunk, `oak_leaves` crown, trunk 4 to 6, crown 2 × 3), materials 31 and 32. The garden plants an oak near each corner of the meadow.
+  - Tests: `layers::tests::part_values_round_trip_and_point_at_their_parent`, `calendar::tests::parts_grow_every_part_hours_and_in_the_plant_hour_without_it`, `parts::tests::{a_tree_grows_its_trunk_then_fills_its_crown, a_part_costs_biomass_and_lit_leaves_make_it, growth_past_maturity_becomes_biomass, cutting_a_part_cuts_off_exactly_what_hangs_from_it, a_cut_off_part_leaves_litter_and_the_ledger_balances, a_tree_across_a_chunk_border_grows_like_one_inside_a_chunk, a_tree_grows_through_seasons_and_its_parts_reach_its_root}`; the last runs the invariant checker and `parts::check_parts` (every part's chain reaches a root) after every pass.
+  - Decisions:
+    - test-fix: the pinned pass order (`tick::tests::invariants_hold_after_each_pass_20_worlds`) ends with Extend; the pinned species list ends with oak.
+    - Biomass is a layer rather than a `PlantState` field, so the save format stays 2 (a bump would break the pinned save tests and every save).
+    - The Extend pass runs every `part_hours` calendar hours (owner answer: every 4 game hours) and every sub-step of a flat season; stress stays daily.
+    - Leaves are passable solids with `light_attenuation` 64, so a crown shades without walling the player in.
+    - Oak's `substance_min` is n 4 (not 2), which also keeps a worldgen test's one-match text edit of `plants.ron` unique.
+    - Not yet: branches, shedding of shaded leaves, fruit and seeds, worldgen trees (oak's `worldgen_chance` is 0), and render shapes for wood and leaves (they mesh as cubes). These are V5. The editor's overlay list is unchanged (the colormap knows both layers).
 
 ### V5. Trees
 

@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::coords::{CHUNK_VOLUME, LocalPos};
+use crate::coords::{CHUNK_VOLUME, CellPos, LocalPos};
 use crate::materials::MaterialDef;
 
 /// Substance layers per chunk (SAD-P2 §3: ten `u8` layers).
@@ -19,8 +19,9 @@ pub const N_SUBSTANCES: usize = 10;
 /// Gas kinds (SAD-P2 §2: steam, firedamp, chokedamp, smoke).
 pub const N_GASES: usize = 4;
 /// Sweep kinds with a per-chunk active set (SAD-P2 §6): water, one per gas,
-/// chemistry transport, plant spread.
-pub const N_SWEEPS: usize = 1 + N_GASES + 2;
+/// chemistry transport, plant spread, plant extension
+/// (docs/VEGETATION.md V4).
+pub const N_SWEEPS: usize = 1 + N_GASES + 3;
 /// Index of the water (and magma) sweep in [`Chunk::active`](crate::chunk::Chunk::active).
 pub const SWEEP_WATER: usize = 0;
 /// Index of gas 0's sweep; gas `g` uses `SWEEP_GAS + g`.
@@ -29,6 +30,8 @@ pub const SWEEP_GAS: usize = 1;
 pub const SWEEP_TRANSPORT: usize = SWEEP_GAS + N_GASES;
 /// Index of the plant spread sweep.
 pub const SWEEP_SPREAD: usize = SWEEP_TRANSPORT + 1;
+/// Index of the plant extension sweep (docs/VEGETATION.md V4).
+pub const SWEEP_EXTEND: usize = SWEEP_SPREAD + 1;
 
 /// `u64` words in a one-bit-per-cell chunk bitset.
 const BITSET_WORDS: usize = CHUNK_VOLUME / 64;
@@ -49,6 +52,13 @@ pub enum LayerId {
     /// Dense: never dropped by [`ChunkLayers::compact`].
     Light,
     Growth,
+    /// A multi-cell plant's part (docs/VEGETATION.md V4): see [`Part`].
+    /// 0 in every cell that is not a part, the root included.
+    Part,
+    /// A multi-cell plant's growth budget, on its root (docs/VEGETATION.md
+    /// V4): growth past maturity and what its lit leaves make; each new
+    /// part costs the species' `parts.cost`.
+    Biomass,
 }
 
 impl LayerId {
@@ -81,7 +91,96 @@ impl LayerId {
             LayerId::Gas(i) => [4, i],
             LayerId::Light => [5, 0],
             LayerId::Growth => [6, 0],
+            LayerId::Part => [7, 0],
+            LayerId::Biomass => [8, 0],
         }
+    }
+}
+
+/// The six face directions a part's parent may lie in, by
+/// [`Part::dir`]` - 1`: below first, then the sorted (y, z, x) order.
+pub const PART_DIRS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 0, -1],
+    [-1, 0, 0],
+    [1, 0, 0],
+    [0, 0, 1],
+    [0, 1, 0],
+];
+
+/// What a part of a multi-cell plant is (docs/VEGETATION.md V4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PartKind {
+    Trunk = 1,
+    Branch = 2,
+    Leaf = 3,
+    Vine = 4,
+    Flower = 5,
+    Fruit = 6,
+}
+
+impl PartKind {
+    pub const ALL: [PartKind; 6] = [
+        PartKind::Trunk,
+        PartKind::Branch,
+        PartKind::Leaf,
+        PartKind::Vine,
+        PartKind::Flower,
+        PartKind::Fruit,
+    ];
+
+    fn from_bits(bits: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| *k as u8 == bits)
+    }
+}
+
+/// One cell's [`LayerId::Part`] value: the direction of its parent (bits
+/// 0-2, 1 to 6 indexing [`PART_DIRS`]) and its kind (bits 3-5). A plant's
+/// root holds its [`PlantState`] and no part value; every part's parent
+/// chain ends there, so a part whose chain no longer reaches a root is cut
+/// off (the §7.0 displacement rules remove it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Part {
+    /// 1 to 6: [`PART_DIRS`]`[dir - 1]` leads to the parent.
+    pub dir: u8,
+    pub kind: PartKind,
+}
+
+impl Part {
+    /// Bits 0-2 of the value.
+    const DIR_MASK: u8 = 0b111;
+    /// The kind's shift.
+    const KIND_SHIFT: u8 = 3;
+
+    /// The part at `cell` whose parent is `parent`, a face neighbor.
+    pub fn toward(cell: CellPos, parent: CellPos, kind: PartKind) -> Option<Self> {
+        let d = parent.0 - cell.0;
+        let i = PART_DIRS.iter().position(|o| *o == [d.x, d.y, d.z])?;
+        Some(Self {
+            dir: u8::try_from(i + 1).ok()?,
+            kind,
+        })
+    }
+
+    /// The layer value.
+    pub fn value(self) -> u8 {
+        self.dir | (self.kind as u8) << Self::KIND_SHIFT
+    }
+
+    /// The part a layer value holds: `None` for 0 and malformed values.
+    pub fn from_value(v: i32) -> Option<Self> {
+        let v = u8::try_from(v).ok()?;
+        let dir = v & Self::DIR_MASK;
+        let kind = PartKind::from_bits(v >> Self::KIND_SHIFT)?;
+        (1..=PART_DIRS.len() as u8)
+            .contains(&dir)
+            .then_some(Self { dir, kind })
+    }
+
+    /// The cell of the parent of the part at `cell`.
+    pub fn parent(self, cell: CellPos) -> CellPos {
+        let [x, y, z] = PART_DIRS[usize::from(self.dir - 1)];
+        CellPos::new(cell.0.x + x, cell.0.y + y, cell.0.z + z)
     }
 }
 
@@ -872,6 +971,41 @@ mod tests {
                 (*id, v)
             }))
         }
+    }
+
+    #[test]
+    fn part_values_round_trip_and_point_at_their_parent() {
+        let cell = CellPos::new(10, -4, 7);
+        let mut values = std::collections::BTreeSet::new();
+        for (i, [x, y, z]) in PART_DIRS.into_iter().enumerate() {
+            let parent = CellPos::new(10 + x, -4 + y, 7 + z);
+            for kind in PartKind::ALL {
+                let part = Part::toward(cell, parent, kind).expect("a face neighbor");
+                assert_eq!(usize::from(part.dir), i + 1);
+                assert_eq!(part.parent(cell), parent);
+                let v = part.value();
+                assert_ne!(v, 0, "0 is no part");
+                assert_eq!(Part::from_value(i32::from(v)), Some(part));
+                assert!(values.insert(v), "{v} is one part");
+            }
+        }
+        // Not a face neighbor, and malformed values.
+        let far = CellPos::new(12, -4, 7);
+        assert_eq!(Part::toward(cell, far, PartKind::Leaf), None);
+        assert_eq!(Part::toward(cell, cell, PartKind::Leaf), None);
+        for v in [0, 7, 8, 1 << 3 | 7, 7 << 3 | 1, 256, -1] {
+            assert_eq!(Part::from_value(v), None, "{v}");
+        }
+        // The new layers have their own hash tags.
+        let tags: std::collections::BTreeSet<[u8; 2]> = [
+            LayerId::Growth,
+            LayerId::Part,
+            LayerId::Biomass,
+            LayerId::Light,
+        ]
+        .map(LayerId::tag)
+        .into();
+        assert_eq!(tags.len(), 4);
     }
 
     #[test]

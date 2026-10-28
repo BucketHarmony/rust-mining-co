@@ -20,6 +20,7 @@ use crate::calendar::SubstepWeather;
 use crate::chemistry::{ReactionsPass, Transport};
 use crate::gases::{Emission, GasPass};
 use crate::light::LightPass;
+use crate::parts::ExtendPass;
 use crate::plants::{GrowthPass, SpreadPass, age_plants};
 use crate::runner::{Exec, JacobiPass, run_sweep};
 use crate::tables::EcoTables;
@@ -74,6 +75,8 @@ pub enum PassId {
     Growth,
     /// Plant spread (§7.8), after growth.
     Spread,
+    /// Multi-cell plant extension (docs/VEGETATION.md V4), after spread.
+    Extend,
 }
 
 /// What a [`season_tick_observed`] observer sees after each pass: the
@@ -107,6 +110,17 @@ struct Passes {
     growth: GrowthPass,
     /// §7.8 spread, after growth.
     spread: SpreadPass,
+    /// Multi-cell plants' parts (docs/VEGETATION.md V4), after spread.
+    extend: ExtendPass,
+}
+
+/// Which plant passes a sub-step runs.
+#[derive(Clone, Copy, Debug)]
+struct PlantSteps {
+    /// Growth and spread (§7.8).
+    grow: bool,
+    /// Extension (docs/VEGETATION.md V4).
+    parts: bool,
 }
 
 /// Runs season `season` (row `season % len` of `seasons.ron`) on `world`:
@@ -201,6 +215,7 @@ impl SeasonRun {
             light: LightPass::new(tables),
             growth: GrowthPass::new(tables),
             spread: SpreadPass::new(tables, season, seed),
+            extend: ExtendPass::new(tables, seed),
         };
         world.eco_clear_freeze_thaw();
         activity.season_boundary(world);
@@ -282,9 +297,15 @@ impl SeasonRun {
         let i = self.next;
         let start = Instant::now();
         self.passes.spread.set_substep(i);
-        let mut plants = true;
+        let mut plants = PlantSteps {
+            grow: true,
+            parts: true,
+        };
         if let Some(w) = self.weather(i) {
-            plants = w.plants;
+            plants = PlantSteps {
+                grow: w.plants,
+                parts: w.parts,
+            };
             if w.air_temp != self.passes.temperature.air_temp {
                 self.passes.temperature.air_temp = w.air_temp;
                 activity.season_boundary(world);
@@ -336,8 +357,10 @@ impl SeasonRun {
 /// Chemistry (§7.6) then replays the flow sweeps' move log and clears it
 /// (transport), and runs the reactions with the cells evaporation left in
 /// this sub-step. Light (§7.7) runs only when the world is dirty. Plant
-/// growth (§7.8) and then the spread sweep run last, unless `plants` is
-/// false (a calendar hour other than its `plant_hour`). Only the flow and gas
+/// growth (§7.8) and then the spread sweep run next, unless `plants.grow`
+/// is false (a calendar hour other than its `plant_hour`), and the
+/// extension sweep (docs/VEGETATION.md V4) last, unless `plants.parts` is
+/// false (a calendar hour `part_hours` does not divide). Only the flow and gas
 /// sweeps add an `active_cells_per_sweep` entry.
 /// `after` sees the world and ledger after each pass.
 fn substep(
@@ -345,7 +368,7 @@ fn substep(
     passes: &mut Passes,
     activity: &mut Activity,
     exec: Exec,
-    plants: bool,
+    plants: PlantSteps,
     report: &mut TickReport,
     after: &mut dyn FnMut(PassId, &World, &SeasonLedger),
 ) {
@@ -426,20 +449,23 @@ fn substep(
         report.light_recomputes += 1;
     }
     after(PassId::Light, world, &report.ledger);
-    if !plants {
-        return;
+    if plants.grow {
+        jacobi(
+            JacobiKind::PlantGrowth,
+            &passes.growth,
+            world,
+            activity,
+            exec,
+            report,
+        );
+        after(PassId::Growth, world, &report.ledger);
+        passes.spread.run(world, &mut report.ledger);
+        after(PassId::Spread, world, &report.ledger);
     }
-    jacobi(
-        JacobiKind::PlantGrowth,
-        &passes.growth,
-        world,
-        activity,
-        exec,
-        report,
-    );
-    after(PassId::Growth, world, &report.ledger);
-    passes.spread.run(world, &mut report.ledger);
-    after(PassId::Spread, world, &report.ledger);
+    if plants.parts {
+        passes.extend.run(world, &mut report.ledger);
+        after(PassId::Extend, world, &report.ledger);
+    }
 }
 
 /// Runs one Jacobi pass through `activity` and records how many chunks it
@@ -593,6 +619,7 @@ mod tests {
             pattern: season,
             snow: false,
             plants: true,
+            parts: true,
         };
         vec![w; usize::from(t.seasons().substeps)]
     }
@@ -607,6 +634,7 @@ mod tests {
                 pattern: day,
                 snow: false,
                 plants: true,
+                parts: true,
             })
             .collect()
     }
