@@ -8,7 +8,8 @@
 //! Why a fresh world has no plants: worldgen lays topsoil, dirt and clay,
 //! which hold no water, and no nutrients, so no surface anchor meets a
 //! species' moisture need (or grass's and shrubs' nitrogen). Only loam
-//! holds rain. The garden lays loam, damp and fed, and plants it.
+//! holds rain. The garden lays loam, damp and fed, and plants it, clearing
+//! any wild plant of the meadow.
 //!
 //! The layout (x, z in cells): a square meadow of loam around [`CENTRE`],
 //! cut into four beds by two paths crossing at the spawn. The beds hold
@@ -185,6 +186,15 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
     for z in CENTRE.1 - MEADOW..=CENTRE.1 + MEADOW {
         for x in CENTRE.0 - MEADOW..=CENTRE.0 + MEADOW {
             let top = i32::from(g.world.surface_y(x, z));
+            // A wild plant worldgen seeded (over the surface, which skips
+            // plants) gives way to the bed.
+            let above = CellPos::new(x, top + 1, z);
+            if g.world.plant(above).is_some() {
+                g.apply(
+                    EditOp::Set(air.unwrap_or(MaterialId::AIR)),
+                    Shape::Cell(above),
+                )?;
+            }
             let ground = g
                 .world
                 .get_cell(CellPos::new(x, top, z))
@@ -272,11 +282,24 @@ mod tests {
         let g = build(&assets, DEFAULT_SEED).unwrap();
         let t = &assets.eco;
         assert!(g.columns > 0);
-        let s = survey(&g.world, t);
+        // The meadow holds only what the garden planted; worldgen's wild
+        // plants there gave way to the beds.
+        let mut meadow: BTreeMap<String, u32> = BTreeMap::new();
+        let b = g.world.bounds();
+        for z in CENTRE.1 - MEADOW..=CENTRE.1 + MEADOW {
+            for x in CENTRE.0 - MEADOW..=CENTRE.0 + MEADOW {
+                for y in b.min.0.y..=b.max.0.y {
+                    if let Some(p) = g.world.plant(CellPos::new(x, y, z)) {
+                        let key = &t.plants()[usize::from(p.species)].key;
+                        *meadow.entry(key.clone()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(meadow, g.planted);
         for p in t.plants() {
             let n = g.planted.get(&p.key).copied().unwrap_or(0);
             assert!(n > 0, "{} planted", p.key);
-            assert_eq!(s.plants.get(&p.key).copied(), Some(n as usize), "{}", p.key);
         }
         // Each plant's anchor is damp and fed enough for its species.
         let b = g.world.bounds();
