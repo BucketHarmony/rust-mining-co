@@ -6,6 +6,7 @@ pub mod app;
 pub mod castle;
 pub mod cli;
 pub mod eco_clock;
+pub mod garden;
 pub mod headless;
 pub mod report;
 pub mod session;

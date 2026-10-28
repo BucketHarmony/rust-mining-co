@@ -4104,3 +4104,14 @@ Decisions:
 - Nothing is written until a setting changes.
 Next: the vegetation plan (V1–V7).
 Blockers: none.
+
+## 2026-10-28 — Garden demo world (plants) — passed
+Done:
+- `rmc_app::garden` and the `build_garden` binary: the default world (seed 1) with a 45 × 45 meadow around the spawn column (64, 64). Each column's top 4 cells become loam at field capacity (moisture 48) with n 220, p 160, k 160; two paths cross at the spawn and cut it into four beds, one species each in `plants.ron` order (NW moss, NE grass, SW fireweed, SE shrub), about 60 % planted so they have room to spread. Saved to `saves/garden` (`cargo run -p rmc_app --bin build_garden`, then `cargo run -p rmc_app -- --save saves/garden`).
+- `garden::survey` counts a world's plants per species and, for the bare surface, the sites failing each need; `build_garden --survey DIR` prints it for any save.
+Tests added: `garden::tests::the_garden_plants_every_species_where_its_needs_hold`.
+Decisions:
+- Why the default world has no plants: worldgen lays topsoil/dirt/clay, which hold no water, and no nutrients, so every surface anchor fails every species' moisture need (survey of seed 1: 16384 of 16384 sites) and grass's and shrubs' nitrogen. Plants only spread from plants, so none ever appear. The fix in worldgen is `docs/VEGETATION.md`'s loam A-horizon; the garden is a level, not that fix.
+- Checked with a headless run of 8 seasons on a copy: from 1103 plants, moss 270 → 326, fireweed 269 → 323, shrub 284 → 282, grass 280 → 102 (grass lives 6 seasons). The game's calendar grows plants 7 times a season, close to the 8 of a headless season.
+Next: the vegetation plan (V1–V7); its loam A-horizon gives the default world plants.
+Blockers: none.
