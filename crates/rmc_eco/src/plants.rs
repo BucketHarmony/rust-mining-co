@@ -24,7 +24,7 @@
 //!    inside the substance total), any other books `uptake_sink`.
 //!
 //!    Graded growth (docs/VEGETATION.md V2): a species with a `demand`
-//!    has a [`sufficiency`] `s` (256ths) from its anchor. Below
+//!    has a sufficiency `s` (256ths, [`rmc_world::query::sufficiency`]) from its anchor. Below
 //!    `eco.starve_s` its needs count as unmet. Its growth is
 //!    `growth_per_substep · s / 256`, it also takes `d · s / 256` of each
 //!    demanded substance (with the uptake rows, never more than the anchor
@@ -58,6 +58,7 @@ use rmc_world::coords::{CellPos, LocalPos};
 use rmc_world::layers::{LayerId, N_SUBSTANCES, PlantState, SWEEP_SPREAD};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
+use rmc_world::query::{SUFFICIENT, sufficiency};
 use rmc_world::world::World;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -66,25 +67,6 @@ use crate::runner::{
     ChunkView, JacobiOut, JacobiPass, Queued, SweepCtx, SweepPass, SweepReport, run_sweep,
 };
 use crate::tables::EcoTables;
-
-/// Sufficiency is in 256ths: [`SUFFICIENT`] is a fully fed plant.
-pub const SUFFICIENT: i32 = 256;
-
-/// Graded growth (docs/VEGETATION.md V2): how well an anchor feeds a
-/// `demand` of `(substance, amount)` rows, in 256ths: the least of
-/// `min(256, amount_x · 256 / d)`, with the index of the first row giving
-/// it (the limiting factor). `(256, None)` when every row is met, or the
-/// demand is empty.
-pub fn sufficiency(demand: &[(u8, i32)], amount: impl Fn(u8) -> i32) -> (i32, Option<usize>) {
-    let mut best = (SUFFICIENT, None);
-    for (i, &(x, d)) in demand.iter().enumerate() {
-        let s = (amount(x).max(0) * SUFFICIENT / d).min(SUFFICIENT);
-        if s < best.0 {
-            best = (s, Some(i));
-        }
-    }
-    best
-}
 
 /// One `plants.ron` row, resolved to ids and widened.
 #[derive(Clone, Debug)]

@@ -55,10 +55,11 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use rmc_protocol::ServerMsg;
 use rmc_world::coords::{CHUNK_SIZE, CellPos, ChunkPos};
 
-use crate::eco::ClientEco;
+use crate::eco::{ClientEco, SeasonSummary};
 use crate::mesher::{ChunkMesher, ColorSource, GreedyMesher, MeshData, MeshInput};
 use crate::net::FromHost;
 use crate::replica::Replica;
+use crate::weather::Weather;
 
 /// Job and upload budgets. Insert before [`MeshPipelinePlugin`] (or change
 /// the resource at any time) to configure them.
@@ -214,6 +215,9 @@ pub struct MeshQueue {
     color_source: ColorSource,
     /// A color source change is being remeshed.
     recoloring: bool,
+    /// The season and the last finished season the plant chunks were last
+    /// queued for ([`follow_plants`]).
+    plant_seasons: (u32, Option<u32>),
 }
 
 impl MeshQueue {
@@ -335,6 +339,7 @@ impl Plugin for MeshPipelinePlugin {
                 (
                     reset_on_welcome,
                     follow_color_source,
+                    follow_plants,
                     queue_dirty,
                     poll_jobs,
                     start_jobs,
@@ -408,6 +413,37 @@ fn follow_color_source(
         replica.mark_all_dirty();
         info!(source = ?source.0, "mesh color source changed, remeshing");
     }
+}
+
+/// Plants draw their stage, health and season (docs/VEGETATION.md V3),
+/// which change with layers and the calendar rather than cells: when the
+/// season or the last finished season changes, every resident chunk with
+/// a plant state is queued again.
+fn follow_plants(
+    replica: Option<Res<Replica>>,
+    weather: Option<Res<Weather>>,
+    summary: Option<Res<SeasonSummary>>,
+    mut queue: ResMut<MeshQueue>,
+) {
+    let Some(replica) = replica else {
+        return;
+    };
+    let now = (
+        weather.map_or(0, |w| w.season),
+        summary.and_then(|s| s.last.as_ref().map(|d| d.season)),
+    );
+    if queue.plant_seasons == now {
+        return;
+    }
+    queue.plant_seasons = now;
+    let planted: Vec<ChunkPos> = replica
+        .world()
+        .iter_chunks_sorted()
+        .filter(|(_, c)| !c.plants.is_empty())
+        .map(|(pos, _)| pos)
+        .collect();
+    debug!(count = planted.len(), "plant chunks queued for the season");
+    queue.queued.extend(planted);
 }
 
 /// Moves the replica's dirty chunks into the queue.
@@ -508,12 +544,19 @@ fn start_jobs(
         let tint = eco.as_ref().map_or(&[][..], |e| &e.tint[..]);
         // The color source as `follow_color_source` last saw it.
         let source = queue.color_source;
-        let Some(input) = MeshInput::from_world_colored(replica.world(), pos, tint, source) else {
+        let Some(mut input) = MeshInput::from_world_colored(replica.world(), pos, tint, source)
+        else {
             // No longer resident.
             queue.ready.remove(&pos);
             remove_mesh(&mut commands, queue, pos);
             continue;
         };
+        // Plants show their stage, health and season (docs/VEGETATION.md V3).
+        if let Some(eco) = &eco {
+            // The season as `follow_plants` last saw it.
+            let season = queue.plant_seasons.0;
+            input = input.with_plants(replica.world(), &eco.plant_looks, &eco.deficiency, season);
+        }
         let revision = input.revision;
         let mesher = Arc::clone(&mesher.0);
         let task = pool.spawn(async move {
@@ -1659,6 +1702,8 @@ mod tests {
             gas_tint: Vec::new(),
             flammable: Vec::new(),
             plants: Vec::new(),
+            plant_looks: Vec::new(),
+            deficiency: Vec::new(),
         });
         f.join();
         f.drain();

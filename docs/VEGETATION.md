@@ -114,6 +114,20 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
 - Tests (rule 21):
   - semantic: the mesh has the cross-quad vertex count and the stage, health and season attributes;
   - an e2e `plants_render` saves screenshots for spring, autumn and a deficient field.
+- **Status: done (2026-10-28).**
+  - Tables: `plants.ron` rows gain `sway` (0 to 255) and `season_colors` (per `seasons.ron` key); `substances.ron` rows gain `deficiency_color` (n yellow, p purple, k brown). `EcoTables::plant_looks` and `deficiency_colors` hand them to the client (`ClientEco`), with each species' `needs`: its demand, or its `substance_min` without one.
+  - Mesher: a `plant`-tagged solid is no longer a cube (`is_cube`): it hides no faces, takes no AO, and draws as two crossed planes, each from both sides (16 vertices), standing on the cell's floor. `MeshInput::with_plants` gives each plant cell its stage (growth layer; 255 for a tall plant's cells), its color (the material color, moved toward the season's color and toward the limiting substance's deficiency color by how short it is, from `sufficiency` over the anchor), and its sway.
+  - Shader: `emissive.wesl` gains a vertex entry, the PBR mesh vertex shader plus wind: the mesher writes a top vertex's sway (meters) in uv.y, and the vertex moves by `sin(time × sway_rate + phase(x, z))` (`#[uniform(107)] sway_rate`, `SWAY_RATE` 1.6 rad/s).
+  - The mesh pipeline re-meshes the chunks with plants when the season or the last finished season changes (`follow_plants`).
+  - Tests: `mesher::tests::{plants_are_crossed_quads_sized_by_growth_with_the_ground_beneath, plants_neither_occlude_nor_merge_with_cubes}`, `material::tests::plants_sway_in_the_vertex_shader`, `tables::tests::plant_looks_resolve_needs_sway_and_season_colors`, e2e `plants_render` (screenshots `docs/screens/plants_render-{spring,later}-*.png`).
+  - Decisions:
+    - test-fix: `material::tests::emissive_extension_compiles` pinned the default vertex shader; it now pins the embedded one (and the default prepass vertex shader). `mesher::tests::face_shade_differs_by_normal` checks every cube material, since plants are no longer cubes.
+    - Vertex colors, not textures: the crossed planes are solid colored (no alpha-cut sprite yet), so the tile pipeline is untouched. A full-grown cross spans 80 % of the cell (`PLANT_SPREAD`), so neighbors stay apart.
+    - Leaf volumes, trunks and vines come with V4 to V6, which add those cells.
+    - The grow-in animation is not done: the mesh steps with the growth layer, which changes a little each growth pass.
+    - Shadows use the default prepass vertex shader, so they do not sway. The project has no depth prepass, so the main pass alone is consistent.
+    - The deficiency color uses the client's copy of the anchor's layers, so the host's state is unchanged (no `limit` in `PlantState`).
+    - Rule 21: semantic assertions and screenshots; no pixel checks.
 
 ### V4. Multi-cell organisms
 

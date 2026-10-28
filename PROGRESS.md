@@ -4148,3 +4148,15 @@ Decisions:
 - `PlantState` is unchanged (no `limit` or `reserve`), so the save format stays 2. Fixation is booked as `litter_in` (no new ledger field, no codec change).
 Next: V3, plant rendering.
 Blockers: none.
+
+## 2026-10-28 — V3 plant rendering (docs/VEGETATION.md) — passed
+Done:
+- `plants.ron` `sway` and `season_colors`, `substances.ron` `deficiency_color`; `EcoTables::{plant_looks, deficiency_colors}` into `ClientEco`.
+- The mesher draws `plant`-tagged cells as crossed planes (stage-sized, season- and deficiency-colored, sway in uv.y) instead of cubes; the ground under a plant shows. `emissive.wesl` gains a vertex entry with wind sway (`sway_rate`, binding 107). Chunks with plants re-mesh when the season changes.
+- `sufficiency` and `SUFFICIENT` moved to `rmc_world::query` so the client shares them.
+Tests added: `mesher::tests::{plants_are_crossed_quads_sized_by_growth_with_the_ground_beneath, plants_neither_occlude_nor_merge_with_cubes}`, `material::tests::plants_sway_in_the_vertex_shader`, `tables::tests::plant_looks_resolve_needs_sway_and_season_colors`, e2e `plants_render` (screenshots in `docs/screens/`).
+Decisions:
+- test-fix: `material::tests::emissive_extension_compiles` now pins the embedded vertex shader; `mesher::tests::face_shade_differs_by_normal` iterates cube materials (plants are crossed planes now).
+- No sprite textures and no grow-in animation yet; shadows don't sway. See `docs/VEGETATION.md` V3.
+Next: V4, multi-cell organisms.
+Blockers: none.

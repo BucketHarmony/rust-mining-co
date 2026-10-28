@@ -678,6 +678,8 @@ pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
         gas_tint: eco.gas_tints(),
         flammable: eco.flammable_gases(),
         plants: eco.plants().iter().map(|p| p.key.clone()).collect(),
+        plant_looks: eco.plant_looks(),
+        deficiency: eco.deficiency_colors(),
     }
 }
 

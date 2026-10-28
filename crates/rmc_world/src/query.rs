@@ -11,10 +11,14 @@
 //!   [`ToxProfile::is_spoil`] of one cell.
 //! - Tint: a [`SubstanceTint`] row says how far a dissolved substance
 //!   shifts the liquid pass's color (SAD-P2 §10, `eco.tint`).
+//! - Sufficiency (docs/VEGETATION.md V2): how well an anchor feeds a
+//!   plant's demand ([`sufficiency`]). The growth pass scales by it; the
+//!   client tints a plant by its limiting substance ([`PlantLook`]).
 
 use crate::chunk::Chunk;
 use crate::coords::{CellAabb, CellPos, LocalPos};
 use crate::layers::{LayerId, N_SUBSTANCES};
+use crate::materials::MaterialId;
 use crate::world::World;
 
 /// The neutral pH, the `7` of `pH = clamp(7 + (lime − acid) / 2^ph_shift,
@@ -22,6 +26,41 @@ use crate::world::World;
 pub const PH_NEUTRAL: i32 = 7;
 /// Upper end of the derived pH scale (SAD-P2 §7.6 clamps to `0..=14`).
 pub const PH_MAX: u8 = 14;
+
+/// Sufficiency is in 256ths: [`SUFFICIENT`] is a fully fed plant.
+pub const SUFFICIENT: i32 = 256;
+
+/// Graded growth (docs/VEGETATION.md V2): how well an anchor feeds a
+/// `demand` of `(substance, amount)` rows, in 256ths: the least of
+/// `min(256, amount_x · 256 / d)`, with the index of the first row giving
+/// it (the limiting factor). `(256, None)` when every row is met, or the
+/// demand is empty.
+pub fn sufficiency(demand: &[(u8, i32)], amount: impl Fn(u8) -> i32) -> (i32, Option<usize>) {
+    let mut best = (SUFFICIENT, None);
+    for (i, &(x, d)) in demand.iter().enumerate() {
+        let s = (amount(x).max(0) * SUFFICIENT / d).min(SUFFICIENT);
+        if s < best.0 {
+            best = (s, Some(i));
+        }
+    }
+    best
+}
+
+/// How the client draws one plant species (docs/VEGETATION.md V3), from
+/// its `plants.ron` row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlantLook {
+    /// The species' material.
+    pub material: MaterialId,
+    /// What a lack of shows in its leaves, as `(substance index, amount)`
+    /// for [`sufficiency`]: its `demand`, or its `substance_min` without one.
+    pub needs: Vec<(u8, i32)>,
+    /// Wind sway at the top of the plant, 0 (none) to 255.
+    pub sway: u8,
+    /// Per `seasons.ron` row: the color (sRGB) the leaves turn toward that
+    /// season; `None` keeps the material color.
+    pub season_colors: Vec<Option<[u8; 3]>>,
+}
 
 /// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):
 /// `clamp(7 + (lime − acid) / 2^ph_shift, 0, 14)`, dividing with

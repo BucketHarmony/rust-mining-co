@@ -57,6 +57,10 @@ pub const CELL_JITTER_AMPLITUDE: f32 = 0.08;
 /// so a fragment on a face belongs to the solid cell behind it.
 pub const CELL_JITTER_INSET_M: f32 = 0.001;
 
+/// How fast plants sway in the wind (docs/VEGETATION.md V3), in radians
+/// per second: about one sway every four seconds.
+pub const SWAY_RATE: f32 = 1.6;
+
 /// The hash's per-axis multipliers (odd, so each axis is a bijection).
 pub const CELL_HASH_MULTIPLIERS: [u32; 3] = [0x8da6_b343, 0xd816_3841, 0xcb1a_b31f];
 
@@ -121,6 +125,9 @@ pub struct EmissiveFromAlpha {
     /// Which tile layer each material's faces use, and its linear color.
     #[uniform(106)]
     pub tile_lookup: TileLookup,
+    /// [`SWAY_RATE`]: the vertex shader's wind (docs/VEGETATION.md V3).
+    #[uniform(107)]
+    pub sway_rate: f32,
 }
 
 impl Default for EmissiveFromAlpha {
@@ -132,11 +139,16 @@ impl Default for EmissiveFromAlpha {
             jitter_inset_m: CELL_JITTER_INSET_M,
             tiles: None,
             tile_lookup: TileLookup::default(),
+            sway_rate: SWAY_RATE,
         }
     }
 }
 
 impl MaterialExtension for EmissiveFromAlpha {
+    fn vertex_shader() -> ShaderRef {
+        EMISSIVE_SHADER_PATH.into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         EMISSIVE_SHADER_PATH.into()
     }
@@ -337,6 +349,47 @@ mod tests {
             "a hair inside: {}",
             ext.jitter_inset_m
         );
+    }
+
+    #[test]
+    fn plants_sway_in_the_vertex_shader() {
+        // One @vertex entry point named `vertex`, the sway rate at the
+        // binding the derive declares, and the amplitude read from uv.y
+        // (docs/VEGETATION.md V3).
+        let unit: TranslationUnit = EMISSIVE_SHADER
+            .parse()
+            .unwrap_or_else(|e| panic!("emissive.wesl parses: {e}"));
+        let mut vertices = Vec::new();
+        let mut rate = Vec::new();
+        for decl in &unit.global_declarations {
+            match &**decl {
+                GlobalDeclaration::Function(f)
+                    if f.attributes
+                        .iter()
+                        .any(|a| matches!(**a, Attribute::Vertex)) =>
+                {
+                    vertices.push(f.ident.name().clone());
+                }
+                GlobalDeclaration::Declaration(d) if *d.ident.name() == "sway_rate" => {
+                    let binding = d.attributes.iter().find_map(|a| match &**a {
+                        Attribute::Binding(e) => Some(e.to_string()),
+                        _ => None,
+                    });
+                    rate.push((binding, d.ty.as_ref().map(|t| t.to_string())));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(vertices, ["vertex"], "one vertex entry point");
+        assert_eq!(
+            rate,
+            [(Some("107".to_string()), Some("f32".to_string()))],
+            "sway_rate matches #[uniform(107)] sway_rate: f32"
+        );
+        assert!(EMISSIVE_SHADER.contains("let amplitude = vertex.uv.y;"));
+        assert!(EMISSIVE_SHADER.contains("globals.time * sway_rate"));
+        assert_eq!(EmissiveFromAlpha::default().sway_rate, SWAY_RATE);
+        const { assert!(SWAY_RATE > 0.0) };
     }
 
     #[test]

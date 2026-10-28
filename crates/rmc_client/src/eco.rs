@@ -18,7 +18,7 @@ use rmc_world::coords::CellPos;
 use rmc_world::layers::{LayerId, N_GASES, N_SUBSTANCES, SubstanceLayers};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, MaterialTable};
-use rmc_world::query::{PhRule, SubstanceTint, ToxProfile};
+use rmc_world::query::{PhRule, PlantLook, SubstanceTint, ToxProfile};
 use rmc_world::world::World;
 
 use crate::hud::format_temperature;
@@ -48,6 +48,11 @@ pub struct ClientEco {
     /// Plant species keys by row (`plants.ron` order): what
     /// [`PlantState::species`] indexes.
     pub plants: Vec<String>,
+    /// How each species is drawn (docs/VEGETATION.md V3), in the same
+    /// order.
+    pub plant_looks: Vec<PlantLook>,
+    /// The leaf color of each substance that can limit a plant.
+    pub deficiency: Vec<(LayerId, [u8; 3])>,
 }
 
 impl ClientEco {
@@ -379,6 +384,8 @@ mod tests {
             gas_tint: Vec::new(),
             flammable: Vec::new(),
             plants: vec!["moss".into(), "fireweed".into()],
+            plant_looks: Vec::new(),
+            deficiency: Vec::new(),
         }
     }
 

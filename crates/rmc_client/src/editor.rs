@@ -2189,6 +2189,8 @@ mod tests {
             gas_tint: Vec::new(),
             flammable: Vec::new(),
             plants: vec!["moss".into(), "fireweed".into()],
+            plant_looks: Vec::new(),
+            deficiency: Vec::new(),
         }
     }
 

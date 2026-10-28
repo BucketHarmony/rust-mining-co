@@ -28,9 +28,20 @@
 // greedy-merged faces repeat it (the sampler repeats); side tiles keep their
 // top edge up. The sample is taken in uniform control flow (mip selection
 // uses derivatives) and used only where the face has a tile.
+//
+// Plant sway (docs/VEGETATION.md V3): the vertex shader is the PBR mesh
+// vertex shader (no morph targets or skinning: chunk meshes have neither)
+// plus wind. The mesher writes a plant quad's top vertices' sway amplitude
+// in meters in uv.y (0 everywhere else), and the vertex moves that far
+// along x and, less, z: sin(time × sway_rate + phase), where the phase
+// follows the world position so neighbors move out of step. Shadows use the
+// default prepass vertex shader, so they stay still.
 
 import bevy_pbr::render::{
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::{Vertex, VertexOutput, FragmentOutput, decompress_vertex},
+    mesh_functions,
+    mesh_view_bindings::globals,
+    view_transformations::position_world_to_clip,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
@@ -53,6 +64,68 @@ struct TileLookup {
 };
 // EmissiveFromAlpha::tile_lookup, #[uniform(106)].
 @group(constants::MATERIAL_BIND_GROUP) @binding(106) var<uniform> tile_lookup: TileLookup;
+// EmissiveFromAlpha::sway_rate, #[uniform(107)]: radians of sway per second.
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var<uniform> sway_rate: f32;
+
+// How the sway phase follows world position (radians per meter, x and z),
+// and the z sway's share and speed relative to x.
+const SWAY_PHASE: vec2<f32> = vec2<f32>(0.7, 0.9);
+const SWAY_Z_SHARE: f32 = 0.6;
+const SWAY_Z_SPEED: f32 = 1.3;
+
+@vertex
+fn vertex(vertex_in: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let vertex = decompress_vertex(vertex_in, vertex_in.instance_index);
+    let world_from_local = mesh_functions::get_world_from_local(vertex_in.instance_index);
+
+    @if(VERTEX_NORMALS)
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(
+        vertex.normal,
+        vertex_in.instance_index
+    );
+
+    @if(VERTEX_POSITIONS) {
+        out.world_position = mesh_functions::mesh_position_local_to_world(
+            world_from_local,
+            vec4<f32>(vertex.position, 1.0)
+        );
+        @if(VERTEX_UVS_A) {
+            let amplitude = vertex.uv.y;
+            let phase = dot(out.world_position.xz, SWAY_PHASE);
+            let t = globals.time * sway_rate;
+            out.world_position.x += amplitude * sin(t + phase);
+            out.world_position.z += amplitude * SWAY_Z_SHARE * sin(t * SWAY_Z_SPEED + phase);
+        }
+        out.position = position_world_to_clip(out.world_position.xyz);
+    }
+
+    @if(VERTEX_UVS_A)
+    out.uv = vertex.uv;
+    @if(VERTEX_UVS_B)
+    out.uv_b = vertex.uv_b;
+
+    @if(VERTEX_TANGENTS)
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(
+        world_from_local,
+        vertex.tangent,
+        vertex_in.instance_index
+    );
+
+    @if(VERTEX_COLORS)
+    out.color = vertex.color;
+
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
+    out.instance_index = vertex_in.instance_index;
+
+    @if(VISIBILITY_RANGE_DITHER)
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
+        vertex_in.instance_index,
+        world_from_local[3]
+    );
+
+    return out;
+}
 
 // The tile layer + 1 for a face of material `id` with normal `n`; 0 for none.
 fn tile_slot(id: u32, n: vec3<f32>) -> u32 {

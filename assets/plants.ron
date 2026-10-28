@@ -12,35 +12,48 @@
 // demand / fix (docs/VEGETATION.md V2, graded growth): demand is what a fed
 // plant takes per sub-step; the anchor's amount over it, the least across
 // substances, scales growth, that uptake and fix (what the plant adds to its
-// anchor). Below eco.starve_s of it the plant is stressed. Moss's acid cap of 4 is what water
+// anchor). Below eco.starve_s of it the plant is stressed.
+// sway / season_colors (docs/VEGETATION.md V3, client look): how far the top
+// of the plant sways in the wind (0 none, 255 most), and per season the color
+// its leaves turn toward. Moss's acid cap of 4 is what water
 // near pH 2 leaves there, so moss dies beside acid drainage (F171).
 [
     (key: "moss", material: "moss", anchor_tags: ["stone", "soil"],
      needs: (light: 16, moisture: 8, temp: (0, 300),
              substance_max: [("cu", 24), ("acid", 4)]),
      growth_per_substep: 8, spread_chance: 32, spread_radius: 2, litter: 8,
-     lifespan_seasons: 12, uptake: [("n", 1)], worldgen_chance: 64),
+     lifespan_seasons: 12, uptake: [("n", 1)], worldgen_chance: 64,
+     season_colors: [("autumn", (112, 116, 52)), ("winter", (92, 104, 76))]),
     (key: "grass", material: "grass", anchor_tags: ["soil"],
      needs: (light: 64, moisture: 16, temp: (20, 350),
              substance_min: [("n", 2)],
              substance_max: [("cu", 16), ("acid", 24), ("salt", 48)]),
      growth_per_substep: 16, spread_chance: 48, spread_radius: 2, litter: 16,
-     lifespan_seasons: 6, uptake: [("n", 1), ("p", 1)], worldgen_chance: 48),
+     lifespan_seasons: 6, uptake: [("n", 1), ("p", 1)], worldgen_chance: 48,
+     sway: 96,
+     season_colors: [("spring", (124, 196, 70)), ("summer", (84, 146, 48)),
+                     ("autumn", (176, 156, 72)), ("winter", (146, 136, 98))]),
     (key: "fireweed", material: "fireweed", anchor_tags: ["soil"],
      needs: (light: 96, moisture: 8, temp: (30, 350),
              substance_max: [("acid", 96)]),
      growth_per_substep: 12, spread_chance: 24, spread_radius: 3, litter: 12,
-     lifespan_seasons: 8, uptake: [("cu", 2), ("n", 1)], holds: true),
+     lifespan_seasons: 8, uptake: [("cu", 2), ("n", 1)], holds: true,
+     sway: 64,
+     season_colors: [("autumn", (204, 64, 44)), ("winter", (122, 84, 72))]),
     (key: "shrub", material: "shrub", anchor_tags: ["soil"],
      needs: (light: 96, moisture: 24, temp: (10, 320),
              substance_min: [("n", 4), ("p", 2)],
              substance_max: [("cu", 32), ("acid", 48)]),
      growth_per_substep: 4, spread_chance: 8, spread_radius: 3, litter: 32,
-     lifespan_seasons: 40, uptake: [("n", 1), ("p", 1), ("k", 1)], tall: true),
+     lifespan_seasons: 40, uptake: [("n", 1), ("p", 1), ("k", 1)], tall: true,
+     sway: 24,
+     season_colors: [("autumn", (190, 112, 40)), ("winter", (104, 84, 62))]),
     (key: "clover", material: "clover", anchor_tags: ["soil"],
      needs: (light: 64, moisture: 16, temp: (20, 320),
              substance_max: [("cu", 16), ("acid", 24), ("salt", 48)]),
      growth_per_substep: 12, spread_chance: 40, spread_radius: 2, litter: 12,
      lifespan_seasons: 8, demand: [("p", 2), ("k", 2)], fix: [("n", 2)],
-     worldgen_chance: 24),
+     worldgen_chance: 24, sway: 40,
+     season_colors: [("spring", (110, 176, 92)), ("autumn", (124, 140, 72)),
+                     ("winter", (100, 112, 84))]),
 ]

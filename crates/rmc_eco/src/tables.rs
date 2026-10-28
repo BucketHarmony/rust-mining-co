@@ -13,7 +13,7 @@ use std::sync::Arc;
 use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
-use rmc_world::query::{PhRule, SubstanceTint, ToxProfile};
+use rmc_world::query::{PhRule, PlantLook, SubstanceTint, ToxProfile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -65,6 +65,11 @@ pub struct SubstanceDef {
     /// Material key a harvest of held amounts yields.
     #[serde(default)]
     pub yield_material: Option<String>,
+    /// The color (sRGB) a plant's leaves turn toward when this substance
+    /// limits it (docs/VEGETATION.md V3). Not encoded when absent, so older
+    /// tables keep their hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deficiency_color: Option<(u8, u8, u8)>,
 }
 
 /// One row of `gases.ron` (SAD-P2 §7.4). Row order is the layer index.
@@ -206,6 +211,14 @@ pub struct PlantDef {
     /// (a nitrogen fixer), scaled like the demand; ledger `litter_in`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fix: Vec<(String, u8)>,
+    /// How far the top of the plant sways in the wind, 0 (none) to 255
+    /// (docs/VEGETATION.md V3). Not encoded when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sway: u8,
+    /// Per season key: the color (sRGB) the leaves turn toward that season
+    /// (docs/VEGETATION.md V3). Not encoded when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub season_colors: Vec<(String, (u8, u8, u8))>,
 }
 
 /// Whether `n` is 0, for fields left out of the canonical encoding then.
@@ -646,6 +659,18 @@ impl EcoTables {
             "season",
             seasons.seasons.iter().map(|s| &s.key),
         )?;
+        let season_keys: BTreeSet<&str> = seasons.seasons.iter().map(|s| s.key.as_str()).collect();
+        for p in &plants {
+            for (i, (k, _)) in p.season_colors.iter().enumerate() {
+                key_in(PLANTS_FILE, &p.key, "season", k, &season_keys)?;
+                if p.season_colors[..i].iter().any(|(q, _)| q == k) {
+                    return Err(invalid(
+                        PLANTS_FILE,
+                        format!("{:?} season_colors repeats {k:?}", p.key),
+                    ));
+                }
+            }
+        }
 
         validate_params(&params)?;
 
@@ -885,6 +910,55 @@ impl EcoTables {
             .enumerate()
             .filter(|(_, g)| g.flammable)
             .filter_map(|(i, g)| Some((LayerId::Gas(u8::try_from(i).ok()?), g.ignite_min)))
+            .collect()
+    }
+
+    /// How the client draws each species (docs/VEGETATION.md V3), in
+    /// `plants.ron` row order. A species whose material the table lacks
+    /// draws as air's id and never matches a cell.
+    pub fn plant_looks(&self) -> Vec<PlantLook> {
+        let sub = |pairs: &[(String, u8)]| -> Vec<(u8, i32)> {
+            pairs
+                .iter()
+                .filter(|(_, n)| *n > 0)
+                .filter_map(|(k, n)| Some((self.substance_index(k)?, i32::from(*n))))
+                .collect()
+        };
+        self.plants
+            .iter()
+            .map(|p| PlantLook {
+                material: self.materials.id(&p.material).unwrap_or(MaterialId::AIR),
+                needs: if p.demand.is_empty() {
+                    sub(&p.needs.substance_min)
+                } else {
+                    sub(&p.demand)
+                },
+                sway: p.sway,
+                season_colors: self
+                    .seasons
+                    .seasons
+                    .iter()
+                    .map(|s| {
+                        p.season_colors
+                            .iter()
+                            .find(|(k, _)| *k == s.key)
+                            .map(|&(_, (r, g, b))| [r, g, b])
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Per substance with a `deficiency_color`: its layer and that color
+    /// (docs/VEGETATION.md V3), in row order.
+    pub fn deficiency_colors(&self) -> Vec<(LayerId, [u8; 3])> {
+        self.substances
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let (r, g, b) = s.deficiency_color?;
+                Some((LayerId::Substance(u8::try_from(i).ok()?), [r, g, b]))
+            })
             .collect()
     }
 
@@ -1324,6 +1398,40 @@ mod tests {
         "iron_dust",
         "salt_dust",
     ];
+
+    #[test]
+    fn plant_looks_resolve_needs_sway_and_season_colors() {
+        // docs/VEGETATION.md V3: what the client draws a plant with.
+        let t = shipped();
+        let looks = t.plant_looks();
+        assert_eq!(looks.len(), t.plants().len());
+        let sub = |k: &str| t.substance_index(k).unwrap();
+        let row = |k: &str| t.plants().iter().position(|p| p.key == k).unwrap();
+        let clover = &looks[row("clover")];
+        assert_eq!(clover.material, t.materials().id("clover").unwrap());
+        assert_eq!(clover.needs, [(sub("p"), 2), (sub("k"), 2)], "its demand");
+        assert_eq!(clover.sway, 40);
+        assert_eq!(clover.season_colors.len(), 4, "one per season row");
+        assert_eq!(clover.season_colors[0], Some([110, 176, 92]), "spring");
+        assert_eq!(
+            clover.season_colors[1], None,
+            "summer keeps the material color"
+        );
+        let grass = &looks[row("grass")];
+        assert_eq!(grass.needs, [(sub("n"), 2)], "no demand: its substance_min");
+        assert_eq!(grass.sway, 96);
+        assert!(grass.season_colors.iter().all(Option::is_some));
+        assert_eq!(looks[row("moss")].sway, 0, "moss is still");
+
+        assert_eq!(
+            t.deficiency_colors(),
+            [
+                (LayerId::Substance(sub("n")), [214, 196, 72]),
+                (LayerId::Substance(sub("p")), [122, 74, 140]),
+                (LayerId::Substance(sub("k")), [148, 100, 52]),
+            ]
+        );
+    }
 
     #[test]
     fn loads_all_phase2_tables() {

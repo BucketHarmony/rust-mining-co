@@ -7,6 +7,8 @@
 // tox_plant / tox_player: amount at or above which the cell is spoil for that
 // profile (absent = never toxic). yield_material: what a harvest of held
 // amounts yields. `c` doubles as organic carbon (role `organic` in eco.ron).
+// deficiency_color: what a plant's leaves turn toward when this substance
+// limits it (docs/VEGETATION.md V3): n yellow, p purple, k a brown edge.
 [
     (key: "cu", mobility: 8, mobility_acid: 96, plant_nutrient: false,
      tox_plant: 40, tox_player: 80, yield_material: "copper_dust"),
@@ -18,8 +20,11 @@
     (key: "lime", mobility: 32, mobility_acid: 64, plant_nutrient: false),
     (key: "salt", mobility: 160, mobility_acid: 160, plant_nutrient: false,
      tox_plant: 96, tox_player: 192, yield_material: "salt_dust"),
-    (key: "n", mobility: 96, mobility_acid: 96, plant_nutrient: true),
-    (key: "p", mobility: 8, mobility_acid: 16, plant_nutrient: true),
-    (key: "k", mobility: 48, mobility_acid: 64, plant_nutrient: true),
+    (key: "n", mobility: 96, mobility_acid: 96, plant_nutrient: true,
+     deficiency_color: (214, 196, 72)),
+    (key: "p", mobility: 8, mobility_acid: 16, plant_nutrient: true,
+     deficiency_color: (122, 74, 140)),
+    (key: "k", mobility: 48, mobility_acid: 64, plant_nutrient: true,
+     deficiency_color: (148, 100, 52)),
     (key: "c", mobility: 2, mobility_acid: 2, plant_nutrient: false),
 ]

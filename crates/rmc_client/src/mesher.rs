@@ -39,6 +39,17 @@
 //! the cell in front of the face. Overlay faces have no emissive, and
 //! liquid faces keep their opacity but drop the dissolved tint. Geometry
 //! and AO are the same for both sources; faces merge only at equal values.
+//!
+//! Plants (docs/VEGETATION.md V3): a cell of a [`PLANT_TAG`] material is
+//! not a cube ([`is_cube`]) but two crossed vertical quads, each drawn
+//! from both sides, on the cell's diagonals. [`MeshInput::with_plants`]
+//! gives each plant cell a [`PlantCell`]: its stage (the `growth` layer)
+//! scales the cross from [`PLANT_STAGE_MIN`] to the full cell about the
+//! cell's floor centre; its color is the material's, moved toward the
+//! species' season color and toward the limiting substance's deficiency
+//! color by how short the anchor falls; its sway goes in the top
+//! vertices' second UV (meters), which the chunk shader turns into wind.
+//! A plant cell without one draws full size in its material color.
 
 use std::sync::Arc;
 
@@ -46,8 +57,10 @@ use bevy::color::Color;
 use bevy::prelude::{IVec3, Vec3};
 use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
 use rmc_world::layers::LayerId;
+use std::collections::BTreeMap;
+
 use rmc_world::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
-use rmc_world::query::SubstanceTint;
+use rmc_world::query::{PlantLook, SUFFICIENT, SubstanceTint, sufficiency};
 use rmc_world::world::World;
 
 use crate::liquid::{MIN_DRAWN_FILL, poured, run_beyond};
@@ -106,6 +119,57 @@ pub fn is_liquid_pass(def: &MaterialDef) -> bool {
 /// both passes.
 pub fn is_opaque(def: &MaterialDef) -> bool {
     def.is_solid_or_liquid() && !is_liquid_pass(def)
+}
+
+/// The tag of materials drawn as plants rather than cubes.
+pub const PLANT_TAG: &str = "plant";
+
+/// The cross's size at stage 0, as a share of the cell; stage 255 is the
+/// full cell.
+pub const PLANT_STAGE_MIN: f32 = 0.3;
+/// The share of the cell's width a full-grown cross spans along each axis,
+/// so neighboring plants stay apart instead of joining into a hedge.
+pub const PLANT_SPREAD: f32 = 0.8;
+/// How far a season color moves the leaves (0 none, 1 all the way).
+pub const PLANT_SEASON_MIX: f32 = 0.6;
+/// How far the deficiency color moves the leaves of a plant with nothing
+/// of its limiting substance; a partly fed plant moves less.
+pub const PLANT_HEALTH_MIX: f32 = 0.7;
+/// Color factor at the foot of a plant's quads (1 at the top), so the
+/// cross reads as standing in its own shade.
+pub const PLANT_FOOT_SHADE: f32 = 0.6;
+/// Sway at the top of a plant of sway 255, in meters.
+pub const PLANT_SWAY_M: f32 = 0.3 * CELL_SIZE_M;
+
+/// Whether `def` is drawn as a plant: a `Solid` with [`PLANT_TAG`].
+pub fn is_plant(def: &MaterialDef) -> bool {
+    def.is_solid() && def.has_tag(PLANT_TAG)
+}
+
+/// Whether `def` is drawn as a cube in the opaque pass: [`is_opaque`] and
+/// not [`is_plant`]. Only cubes hide the faces behind them.
+pub fn is_cube(def: &MaterialDef) -> bool {
+    is_opaque(def) && !is_plant(def)
+}
+
+/// How one plant cell is drawn ([`MeshInput::with_plants`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlantCell {
+    /// The `growth` layer (255 for a tall plant's cells and unknown plants).
+    pub stage: u8,
+    /// sRGB leaf color.
+    pub color: [u8; 3],
+    /// Wind sway, 0 to 255 ([`PLANT_SWAY_M`] at 255).
+    pub sway: u8,
+}
+
+/// `a` moved toward `b` by `t` (0 to 1), per channel, rounded.
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    std::array::from_fn(|k| {
+        let (x, y) = (f32::from(a[k]), f32::from(b[k]));
+        (x + (y - x) * t).round() as u8
+    })
 }
 
 /// A linear ramp from [`Colormap::low`] at [`Colormap::min`] to
@@ -207,6 +271,9 @@ pub struct MeshInput {
     /// For [`ColorSource::Layer`], the layer's value at every cell (`u8`
     /// layers widened); `None` for the material source.
     layer_values: Option<Box<[i16; MESH_INPUT_VOLUME]>>,
+    /// The chunk's plant cells by [`MeshInput::index`]; a plant cell
+    /// missing here draws full size in its material color.
+    pub plants: BTreeMap<usize, PlantCell>,
 }
 
 /// A [`MESH_INPUT_VOLUME`] array of zeros.
@@ -233,7 +300,48 @@ impl MeshInput {
             dissolved: Vec::new(),
             color_source: ColorSource::Material,
             layer_values: None,
+            plants: BTreeMap::new(),
         }
+    }
+
+    /// This input with a [`PlantCell`] for every plant cell of the chunk,
+    /// read from `world` (docs/VEGETATION.md V3). `looks` are the species
+    /// in `plants.ron` order, `deficiency` the substances' leaf colors and
+    /// `season` the season number (its row is `season % rows`).
+    ///
+    /// A cell with a plant state is that species; a cell without one is
+    /// the upper cell of the tall plant below it, or else the first species
+    /// of its material. The stage is the cell's `growth`, or 255 for a
+    /// tall plant's two cells and for a cell of no known plant. The leaves
+    /// take the season row's color, then the limiting substance's color by
+    /// `(256 - s) / 256` of [`PLANT_HEALTH_MIX`], where `s` is the anchor's
+    /// [`sufficiency`] for the species' needs.
+    pub fn with_plants(
+        mut self,
+        world: &World,
+        looks: &[PlantLook],
+        deficiency: &[(LayerId, [u8; 3])],
+        season: u32,
+    ) -> Self {
+        let plant: Vec<bool> = self.materials.iter().map(is_plant).collect();
+        let origin = self.pos.origin_cell().0;
+        let mut cells = BTreeMap::new();
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let id = self.get(x, y, z);
+                    if !plant.get(usize::from(id.0)).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let cell = CellPos(origin + IVec3::new(x, y, z));
+                    let look =
+                        plant_cell(world, &self.materials, looks, deficiency, season, cell, id);
+                    cells.insert(Self::index(x, y, z), look);
+                }
+            }
+        }
+        self.plants = cells;
+        self
     }
 
     /// This input colored by `source`, with every layer value 0.
@@ -579,7 +687,7 @@ impl ChunkMesher for GreedyMesher {
         let solid: Vec<bool> = input
             .cells
             .iter()
-            .map(|&id| table.get(id).is_some_and(is_opaque))
+            .map(|&id| table.get(id).is_some_and(is_cube))
             .collect();
         let is_solid = |p: IVec3| solid[MeshInput::index(p.x, p.y, p.z)];
         let base_colors: Vec<[f32; 4]> = table
@@ -651,6 +759,7 @@ impl ChunkMesher for GreedyMesher {
                 }
             }
         }
+        mesh_plants(input, &mut out);
         out
     }
 
@@ -672,7 +781,7 @@ impl ChunkMesher for GreedyMesher {
         const N: i32 = CHUNK_SIZE;
         let table = &input.materials;
         let flags = |f: fn(&MaterialDef) -> bool| -> Vec<bool> { table.iter().map(f).collect() };
-        let (liquid, opaque) = (flags(is_liquid_pass), flags(is_opaque));
+        let (liquid, opaque) = (flags(is_liquid_pass), flags(is_cube));
         let has = |v: &[bool], id: MaterialId| v.get(usize::from(id.0)).copied().unwrap_or(false);
         let base_colors: Vec<[f32; 4]> = table
             .iter()
@@ -947,6 +1056,147 @@ fn push_quad(
     out.quad_count += 1;
 }
 
+/// How the plant at `cell` (material `id`) is drawn: see
+/// [`MeshInput::with_plants`].
+fn plant_cell(
+    world: &World,
+    materials: &MaterialTable,
+    looks: &[PlantLook],
+    deficiency: &[(LayerId, [u8; 3])],
+    season: u32,
+    cell: CellPos,
+    id: MaterialId,
+) -> PlantCell {
+    let step = |c: CellPos, dy: i32| CellPos(c.0 + IVec3::new(0, dy, 0));
+    let base = materials
+        .get(id)
+        .map_or([0; 3], |d| [d.color[0], d.color[1], d.color[2]]);
+    let below = step(cell, -1);
+    // The cell holding the plant's state: this one, or the tall plant's
+    // lower cell.
+    let state = match world.plant(cell) {
+        Some(p) => Some((cell, p)),
+        None => world
+            .plant(below)
+            .filter(|_| world.get_cell(below) == Some(id))
+            .map(|p| (below, p)),
+    };
+    let species = match state {
+        Some((_, p)) => Some(usize::from(p.species)),
+        None => looks.iter().position(|l| l.material == id),
+    };
+    let look = species
+        .and_then(|s| looks.get(s))
+        .filter(|l| l.material == id);
+    let above = step(cell, 1);
+    let tall = state.is_some_and(|(c, _)| c != cell)
+        || (world.get_cell(above) == Some(id) && world.plant(above).is_none());
+    let stage = match state {
+        Some((c, _)) if c == cell && !tall => {
+            u8::try_from(world.layer(cell, LayerId::Growth).clamp(0, u8::MAX.into()))
+                .unwrap_or(u8::MAX)
+        }
+        _ => u8::MAX,
+    };
+    let mut color = base;
+    if let Some(look) = look {
+        let rows = look.season_colors.len().max(1);
+        let row = usize::try_from(season).unwrap_or(0) % rows;
+        if let Some(Some(c)) = look.season_colors.get(row) {
+            color = mix(color, *c, PLANT_SEASON_MIX);
+        }
+        if let Some((c, _)) = state {
+            let anchor = step(c, -1);
+            let (s, limit) =
+                sufficiency(&look.needs, |x| world.layer(anchor, LayerId::Substance(x)));
+            let short = limit
+                .and_then(|i| look.needs.get(i))
+                .and_then(|&(x, _)| deficiency.iter().find(|(l, _)| *l == LayerId::Substance(x)));
+            if let Some(&(_, c)) = short {
+                let lack = (SUFFICIENT - s) as f32 / SUFFICIENT as f32;
+                color = mix(color, c, PLANT_HEALTH_MIX * lack);
+            }
+        }
+    }
+    PlantCell {
+        stage,
+        color,
+        sway: look.map_or(0, |l| l.sway),
+    }
+}
+
+/// Appends the crossed quads of every plant cell of the chunk.
+fn mesh_plants(input: &MeshInput, out: &mut MeshData) {
+    const N: i32 = CHUNK_SIZE;
+    let table = &input.materials;
+    let plant: Vec<bool> = table.iter().map(is_plant).collect();
+    let overlay = input.overlay();
+    for y in 0..N {
+        for z in 0..N {
+            for x in 0..N {
+                let id = input.get(x, y, z);
+                if !plant.get(usize::from(id.0)).copied().unwrap_or(false) {
+                    continue;
+                }
+                let i = MeshInput::index(x, y, z);
+                let def = table.get(id);
+                let cell = input.plants.get(&i).copied().unwrap_or(PlantCell {
+                    stage: u8::MAX,
+                    color: def.map_or([0; 3], |d| [d.color[0], d.color[1], d.color[2]]),
+                    sway: 0,
+                });
+                let base = match overlay {
+                    Some((_, cmap, values)) => overlay_base_color(cmap, values[i], 0.0),
+                    None => {
+                        let [r, g, b] = cell.color;
+                        let c = Color::srgb_u8(r, g, b).to_linear();
+                        [c.red, c.green, c.blue, def.map_or(0.0, |d| d.emissive)]
+                    }
+                };
+                push_plant(out, IVec3::new(x, y, z), cell, base);
+            }
+        }
+    }
+}
+
+/// Appends the two crossed quads of the plant cell at `p`, each once per
+/// facing (four quads, 16 vertices). Normals point up, so the leaves are
+/// lit like the ground they stand on; the top vertices carry the sway in
+/// their second UV, and their first UV is 0 (no tile).
+fn push_plant(out: &mut MeshData, p: IVec3, cell: PlantCell, base: [f32; 4]) {
+    let k = PLANT_STAGE_MIN + (1.0 - PLANT_STAGE_MIN) * f32::from(cell.stage) / f32::from(u8::MAX);
+    let foot = (p.as_vec3() + Vec3::new(0.5, 0.0, 0.5)) * CELL_SIZE_M;
+    let (r, h) = (0.5 * PLANT_SPREAD * k * CELL_SIZE_M, k * CELL_SIZE_M);
+    let sway = f32::from(cell.sway) / f32::from(u8::MAX) * PLANT_SWAY_M;
+    let up = Vec3::new(0.0, h, 0.0);
+    for dz in [1.0, -1.0] {
+        let a = foot - Vec3::new(r, 0.0, dz * r);
+        let b = foot + Vec3::new(r, 0.0, dz * r);
+        let corners = [a, b, b + up, a + up];
+        for front in [true, false] {
+            let first = out.positions.len() as u32;
+            for (j, c) in corners.iter().enumerate() {
+                let top = j >= 2;
+                let f = if top { 1.0 } else { PLANT_FOOT_SHADE };
+                out.positions.push(c.to_array());
+                out.normals.push([0.0, 1.0, 0.0]);
+                out.uvs.push([0.0, if top { sway } else { 0.0 }]);
+                out.colors
+                    .push([base[0] * f, base[1] * f, base[2] * f, base[3]]);
+            }
+            let tris: [[u32; 3]; 2] = if front {
+                [[0, 1, 2], [0, 2, 3]]
+            } else {
+                [[0, 2, 1], [0, 3, 2]]
+            };
+            for t in tris {
+                out.indices.extend(t.map(|v| first + v));
+            }
+            out.quad_count += 1;
+        }
+    }
+}
+
 /// Linear RGB of `cmap`'s color at `value`, with alpha `alpha`: an overlay
 /// face's base color.
 fn overlay_base_color(cmap: Colormap, value: i16, alpha: f32) -> [f32; 4] {
@@ -970,6 +1220,7 @@ mod tests {
     use bevy::math::Vec3;
     use rmc_world::chunk::Chunk;
     use rmc_world::coords::{CellAabb, LocalPos};
+    use rmc_world::layers::PlantState;
 
     const MATERIALS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");
 
@@ -1542,7 +1793,7 @@ mod tests {
         // Every cube material's unoccluded faces carry exactly that shade,
         // scaled equally on all channels (the hue is kept), with the
         // emissive strength in alpha untouched. (Plants are crossed quads.)
-        for def in t.iter().filter(|d| d.is_solid() && !d.has_tag("plant")) {
+        for def in t.iter().filter(|d| is_cube(d)) {
             let mut input = origin_input(&t);
             input.set(12, 12, 12, def.id);
             let qs = quads(&mesh(&input));
@@ -2674,6 +2925,181 @@ mod tests {
             read.layer_value(3, 4, 5),
             0,
             "the material source reads no layer"
+        );
+    }
+
+    /// A world of one chunk: loam up to y 4, air above, and (if `plants`)
+    /// clover at `(5, 5, 5)` (growth 64, starved of substance 0) and
+    /// `(10, 5, 10)` (growth 255, fed).
+    fn plant_world(t: &Arc<MaterialTable>, plants: bool) -> World {
+        let (loam, air, clover) = (id(t, "loam"), id(t, "air"), id(t, "clover"));
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 31, 31));
+        let mut world = World::new(t.clone(), bounds);
+        let mut chunk = Chunk::uniform(air);
+        let n = CHUNK_SIZE as u32;
+        for x in 0..n {
+            for z in 0..n {
+                for y in 0..5 {
+                    chunk.storage.set(LocalPos::new(x, y, z), loam);
+                }
+            }
+        }
+        for (x, z, growth, s0) in [(5, 5, 64, 10), (10, 10, 255, 200)] {
+            let anchor = LocalPos::new(x, 4, z);
+            chunk.layers.set_u8(LayerId::Substance(0), anchor, s0);
+            chunk.layers.set_u8(LayerId::Substance(1), anchor, 200);
+            if plants {
+                let cell = LocalPos::new(x, 5, z);
+                chunk.storage.set(cell, clover);
+                chunk.layers.set_u8(LayerId::Growth, cell, growth);
+                chunk.plants.insert(cell.index(), PlantState::default());
+            }
+        }
+        world.insert_chunk(ChunkPos::new(0, 0, 0), chunk).unwrap();
+        world
+    }
+
+    /// The vertices of the plant drawn in column `(x, z)` of
+    /// [`plant_world`]: plants are meshed after the cubes, so they are
+    /// among the last 32 vertices, those inside the column.
+    fn plant_vertices(data: &MeshData, x: i32, z: i32) -> Vec<usize> {
+        let (x, z) = (x as f32, z as f32);
+        let n = data.positions.len();
+        (n.saturating_sub(32)..n)
+            .filter(|&i| {
+                let p = Vec3::from(data.positions[i]) / CELL_SIZE_M;
+                p.x >= x && p.x <= x + 1.0 && p.z >= z && p.z <= z + 1.0
+            })
+            .collect()
+    }
+
+    /// The color of the first top vertex (above `y` 5.2) of `vs`.
+    fn plant_top_color(data: &MeshData, vs: &[usize]) -> [f32; 4] {
+        let i = *vs
+            .iter()
+            .find(|&&i| data.positions[i][1] / CELL_SIZE_M > 5.2)
+            .expect("a top vertex");
+        data.colors[i]
+    }
+
+    #[test]
+    fn plants_are_crossed_quads_sized_by_growth_with_the_ground_beneath() {
+        let t = table();
+        let world = plant_world(&t, true);
+        let clover = id(&t, "clover");
+        let looks = vec![PlantLook {
+            material: clover,
+            needs: vec![(0, 100), (1, 100)],
+            sway: 255,
+            season_colors: vec![None, Some([200, 100, 0])],
+        }];
+        let deficiency = vec![(LayerId::Substance(0), [255, 255, 0])];
+        let at = |season: u32| {
+            mesh(
+                &MeshInput::from_world(&world, ChunkPos::new(0, 0, 0))
+                    .unwrap()
+                    .with_plants(&world, &looks, &deficiency, season),
+            )
+        };
+        let data = at(0);
+
+        // Two crossed planes, each drawn from both sides: 16 vertices,
+        // spanning PLANT_SPREAD of the cell at full growth.
+        let (small, big) = (plant_vertices(&data, 5, 5), plant_vertices(&data, 10, 10));
+        assert_eq!((small.len(), big.len()), (16, 16));
+        let xs: Vec<f32> = big
+            .iter()
+            .map(|&i| data.positions[i][0] / CELL_SIZE_M)
+            .collect();
+        let span = xs.iter().copied().fold(f32::MIN, f32::max)
+            - xs.iter().copied().fold(f32::MAX, f32::min);
+        assert!((span - PLANT_SPREAD).abs() < 1e-5, "{span}");
+        for &i in small.iter().chain(&big) {
+            assert_eq!(data.normals[i], [0.0, 1.0, 0.0], "lit like the ground");
+        }
+        // Standing on the cell's floor; growth sets the height.
+        let height = |vs: &[usize]| {
+            let ys: Vec<f32> = vs
+                .iter()
+                .map(|&i| data.positions[i][1] / CELL_SIZE_M)
+                .collect();
+            let lo = ys.iter().copied().fold(f32::MAX, f32::min);
+            let hi = ys.iter().copied().fold(f32::MIN, f32::max);
+            assert_eq!(lo, 5.0, "on the floor");
+            hi - lo
+        };
+        let k = PLANT_STAGE_MIN + (1.0 - PLANT_STAGE_MIN) * 64.0 / 255.0;
+        assert!(
+            (height(&small) - k).abs() < 1e-5,
+            "growth 64 is {k} of a cell"
+        );
+        assert!((height(&big) - 1.0).abs() < 1e-5, "full growth is one cell");
+
+        // The top vertices sway (uv.y, meters); the feet and uv.x (no
+        // tile) stay 0.
+        for &i in &big {
+            let top = data.positions[i][1] / CELL_SIZE_M > 5.5;
+            let want = if top { PLANT_SWAY_M } else { 0.0 };
+            assert_eq!(data.uvs[i], [0.0, want]);
+        }
+
+        // Fed, in a season with no color: the material's color at the top.
+        // Starved of substance 0: toward its deficiency color, yellow.
+        let base = vertex_base_color(&t, clover);
+        let fed = plant_top_color(&data, &big);
+        for k in 0..3 {
+            assert!((fed[k] - base[k]).abs() < 1e-4, "fed: {fed:?} vs {base:?}");
+        }
+        let starved = plant_top_color(&data, &small);
+        assert!(
+            starved[0] > fed[0] && starved[1] > fed[1],
+            "{starved:?} vs {fed:?}"
+        );
+        // The feet are darker than the top.
+        assert!(data.colors[big[0]][1] < fed[1]);
+
+        // Season 1 turns the leaves toward (200, 100, 0); the rows wrap.
+        let autumn = at(1);
+        let turned = plant_top_color(&autumn, &plant_vertices(&autumn, 10, 10));
+        assert!(
+            turned[0] > fed[0] && turned[2] < fed[2],
+            "{turned:?} vs {fed:?}"
+        );
+        assert_eq!(at(3).colors, autumn.colors);
+    }
+
+    #[test]
+    fn plants_neither_occlude_nor_merge_with_cubes() {
+        // Without plant data, a plant cell still draws (full size, its
+        // material color, no sway), and the cubes around it mesh as if the
+        // cell were air: the plants only add their own quads.
+        let t = table();
+        let world = plant_world(&t, true);
+        let with = mesh(&MeshInput::from_world(&world, ChunkPos::new(0, 0, 0)).unwrap());
+        let vs = plant_vertices(&with, 10, 10);
+        assert_eq!(vs.len(), 16);
+        for &i in &vs {
+            assert_eq!(with.uvs[i][1], 0.0);
+        }
+        let bare = plant_world(&t, false);
+        let without = mesh(&MeshInput::from_world(&bare, ChunkPos::new(0, 0, 0)).unwrap());
+        assert_eq!(with.quad_count, without.quad_count + 8);
+        assert_eq!(
+            &with.positions[..without.positions.len()],
+            &without.positions[..]
+        );
+        assert_eq!(&with.colors[..without.colors.len()], &without.colors[..]);
+        // So the ground under a plant shows: the loam's top face covers it.
+        assert!(
+            quads(&without).iter().any(|q| {
+                q.normal == IVec3::Y
+                    && q.plane() == 5.0
+                    && q.min().x <= 5.0
+                    && q.max().x >= 6.0
+                    && q.min().z <= 5.0
+                    && q.max().z >= 6.0
+            }),
+            "loam top face under the plant"
         );
     }
 }

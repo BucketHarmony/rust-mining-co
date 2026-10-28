@@ -2045,6 +2045,8 @@ mod tests {
             gas_tint: Vec::new(),
             flammable: Vec::new(),
             plants: Vec::new(),
+            plant_looks: Vec::new(),
+            deficiency: Vec::new(),
         }
     }
 
