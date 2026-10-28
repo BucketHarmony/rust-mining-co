@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
 use rmc_eco::EcoTables;
-use rmc_world::coords::CellPos;
+use rmc_world::coords::{CellPos, LocalPos};
 use rmc_world::edit::{CommandId, EditCommand, EditOp, EditStatus, PlayerId, RejectReason};
 use rmc_world::layers::LayerId;
 use rmc_world::materials::MaterialId;
@@ -65,6 +65,8 @@ pub struct Survey {
     pub sites: usize,
     /// Plants per species key.
     pub plants: BTreeMap<String, usize>,
+    /// Part cells of multi-cell plants (`docs/VEGETATION.md` V4) per kind.
+    pub parts: BTreeMap<String, usize>,
     /// Per species key, per need: surface sites where that need fails.
     pub fails: BTreeMap<String, BTreeMap<String, usize>>,
 }
@@ -73,10 +75,14 @@ pub struct Survey {
 /// each of its needs.
 pub fn survey(w: &CellWorld, t: &EcoTables) -> Survey {
     let mut s = Survey::default();
-    for (_, chunk) in w.iter_chunks_sorted() {
-        for p in chunk.plants.values() {
+    for (pos, chunk) in w.iter_chunks_sorted() {
+        for (&i, p) in &chunk.plants {
             if let Some(def) = t.plants().get(usize::from(p.species)) {
                 *s.plants.entry(def.key.clone()).or_default() += 1;
+            }
+            let root = CellPos(pos.origin_cell().0 + LocalPos::from_index(i).0.as_ivec3());
+            for (_, kind) in rmc_eco::parts::parts_of(w, root) {
+                *s.parts.entry(format!("{kind:?}")).or_default() += 1;
             }
         }
     }

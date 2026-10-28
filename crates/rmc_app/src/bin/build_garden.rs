@@ -25,6 +25,9 @@ struct Args {
 
 fn print(label: &str, s: &Survey) {
     println!("{label}: {} surface sites, plants {:?}", s.sites, s.plants);
+    if !s.parts.is_empty() {
+        println!("  plant parts: {:?}", s.parts);
+    }
     for (k, fails) in &s.fails {
         println!("  bare sites failing {k}'s needs: {fails:?}");
     }
