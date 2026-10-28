@@ -7,6 +7,7 @@ pub mod magma;
 pub mod noise;
 pub mod params;
 pub mod plants;
+pub mod soil;
 pub mod strata;
 pub mod temperature;
 pub mod water;
@@ -16,6 +17,7 @@ pub use light::LightInit;
 pub use magma::MagmaInit;
 pub use params::{GenError, GenParams};
 pub use plants::PlantInit;
+pub use soil::SoilInit;
 pub use temperature::TemperatureInit;
 pub use water::WaterTableInit;
 

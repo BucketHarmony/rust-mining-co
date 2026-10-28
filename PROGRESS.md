@@ -4115,3 +4115,22 @@ Decisions:
 - Checked with a headless run of 8 seasons on a copy: from 1103 plants, moss 270 → 326, fireweed 269 → 323, shrub 284 → 282, grass 280 → 102 (grass lives 6 seasons). The game's calendar grows plants 7 times a season, close to the 8 of a headless season.
 Next: the vegetation plan (V1–V7); its loam A-horizon gives the default world plants.
 Blockers: none.
+
+## 2026-10-28 — V1 soil that can feed plants (docs/VEGETATION.md) — passed
+Done:
+- `worldgen.ron` `soil_horizon`: loam 1–3 cells over the topsoil of gentle ground (no face neighbor's surface more than 1 cell off) where a mask noise passes, starting at moisture 32. `fertility`: `(substance, lo, hi)` per soil material (loam, topsoil, dirt), scaled by a column fertility that mixes a noise with how low the column lies.
+- `rmc_worldgen::SoilInit` (`soil.rs`) lays both per chunk before the water table; `Generator::with_soil`; the game's `session::generate_world` uses it. New noise layers `LAYER_HORIZON`, `LAYER_HORIZON_MASK`, `LAYER_FERTILITY`.
+- Basalt weathers (rate 16), so its phosphorus comes out. `decompose` gives 1 n, 1 p and 1 k per 4 c (commit 28f3c4a).
+- The default world (seed 1) now starts with about 2800 moss and 1600 grass plants outside the garden meadow (16384 columns; moisture fails on the 3153 bare columns without loam).
+- `saves/garden` rebuilt (the old one has the previous worldgen params hash). The owner's `save/` moved to `saves/save-pre-v1-2026-10-28/` for the same reason; the next `cargo run -p rmc_app` starts a fresh world.
+- Docs: `docs/VEGETATION.md` (V1 status and decisions).
+Tests added: `soil::tests::{loam_lies_damp_on_gentle_ground_only, surface_soil_holds_nutrients_in_range, unknown_names_are_refused}`, `weathering::tests::basalt_weathers_phosphorus_out`, `chemistry::tests::decompose_returns_n_p_and_k_and_the_ledger_conserves`, `garden::tests::a_fresh_world_seeds_moss_and_grass`.
+Decisions:
+- test-fix 28f3c4a: the shipped-row pins of `decompose` (`tables::tests::loads_all_phase2_tables`, `chemistry::tests::decompose_c_to_n_emits_chokedamp`) now include its p and k products.
+- test-fix 3a49664: `garden::tests::the_garden_plants_every_species_where_its_needs_hold` counts the meadow's plants rather than the world's, since worldgen now seeds wild plants; the garden clears wild plants in the meadow.
+- Basalt's rate is 16, not the plan's 1: §7.5's per-pass truncating release gives nothing below rate 13 for p 20. Granite stays inert (the weathering fixtures use it as ground and assert rate 0), so K comes from fertility and decompose.
+- The horizon starts damp because the water table only wets cells below level 64.
+- The test kit and eco benches do not call `with_soil`, so E2E and bench worlds are unchanged. `rain_n` is not done (optional).
+- Owner chore, not an F2xx feature (features.json is protected), as the plan's process answer allows.
+Next: V2, graded growth (Liebig) and clover.
+Blockers: none.

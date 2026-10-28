@@ -19,6 +19,7 @@ use crate::noise::{
 };
 use crate::params::{GenError, GenParams, ONE_MILLION};
 use crate::plants::PlantInit;
+use crate::soil::SoilInit;
 use crate::strata::Strata;
 use crate::temperature::TemperatureInit;
 use crate::water::WaterTableInit;
@@ -182,6 +183,8 @@ pub struct Generator {
     light: Option<LightInit>,
     /// The surface plants (SAD-P2 §8), when set.
     plants: Option<PlantInit>,
+    /// The soil horizon and nutrients (`docs/VEGETATION.md` V1), when set.
+    soil_init: Option<SoilInit>,
     /// The world seed.
     seed: u64,
 }
@@ -310,6 +313,7 @@ impl Generator {
             magma: None,
             light: None,
             plants: None,
+            soil_init: None,
             seed,
         })
     }
@@ -358,6 +362,14 @@ impl Generator {
         self
     }
 
+    /// Also lays the soil horizon and seeds the soil nutrients
+    /// (`docs/VEGETATION.md` V1) of each chunk, before the water table.
+    /// Without it the surface keeps the soil layers, without nutrients.
+    pub fn with_soil(mut self, init: SoilInit) -> Self {
+        self.soil_init = Some(init);
+        self
+    }
+
     /// The planned chambers, whether or not [`Generator::with_magma`] fills
     /// them; empty without chamber params or room for one.
     pub fn chambers(&self) -> &[Chamber] {
@@ -380,6 +392,9 @@ impl Generator {
     /// The chunk at `pos`, with revision 0 and not modified.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
         let mut chunk = Chunk::new(self.volume(pos).to_storage());
+        if let Some(s) = &self.soil_init {
+            s.fill(&mut chunk, pos, |x, z| self.surface_height(x, z));
+        }
         if let Some(w) = &self.water
             && self.water_table.is_some()
         {

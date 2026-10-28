@@ -5,11 +5,9 @@
 //! loads it, and [`survey`] says how many plants a world holds and, for the
 //! open surface, which of each species' needs fail.
 //!
-//! Why a fresh world has no plants: worldgen lays topsoil, dirt and clay,
-//! which hold no water, and no nutrients, so no surface anchor meets a
-//! species' moisture need (or grass's and shrubs' nitrogen). Only loam
-//! holds rain. The garden lays loam, damp and fed, and plants it, clearing
-//! any wild plant of the meadow.
+//! A fresh world grows only worldgen's pioneers (moss and grass) on its
+//! loam horizon (`docs/VEGETATION.md` V1). The garden lays loam, damp and
+//! fed, and plants every species, clearing the wild plants of the meadow.
 //!
 //! The layout (x, z in cells): a square meadow of loam around [`CENTRE`],
 //! cut into four beds by two paths crossing at the spawn. The beds hold
@@ -272,6 +270,22 @@ mod tests {
     use super::*;
     use crate::cli::DEFAULT_WORLD_SIZE;
     use crate::session::{DEFAULT_SEED, assets_dir};
+
+    /// `docs/VEGETATION.md` V1: the default world's loam horizon is damp
+    /// and fed, so worldgen seeds its pioneers there.
+    #[test]
+    fn a_fresh_world_seeds_moss_and_grass() {
+        let assets = GameAssets::load(&assets_dir())
+            .unwrap()
+            .with_world_bounds(DEFAULT_WORLD_SIZE.bounds())
+            .unwrap();
+        let world = generate_world(&assets, DEFAULT_SEED).unwrap();
+        let s = survey(&world, &assets.eco);
+        for key in ["moss", "grass"] {
+            let n = s.plants.get(key).copied().unwrap_or(0);
+            assert!(n > 0, "{key}: {s:?}");
+        }
+    }
 
     #[test]
     fn the_garden_plants_every_species_where_its_needs_hold() {

@@ -108,4 +108,29 @@
         core_radius: 1,
         shell_clearance: 8,
     )),
+    // docs/VEGETATION.md V1: a damp loam A-horizon over the topsoil of
+    // gentle ground (no face neighbor's surface more than max_slope cells
+    // off) where the mask noise passes; steep ground and the gaps of the
+    // mask keep their topsoil. Loam holds rain, so plants can root there.
+    soil_horizon: Some((
+        material: "loam",
+        min_cells: 1,
+        max_cells: 3,
+        noise: (frequency: 0.1, octaves: 1),
+        max_slope: 1,
+        mask_threshold: -0.3,
+        mask: (frequency: 0.03, octaves: 2),
+        moisture: 32,
+    )),
+    // docs/VEGETATION.md V1: starting soil nutrients, (substance, lo, hi)
+    // per soil material. A column's fertility mixes its noise with how low
+    // it lies, so valleys are richer and ridges poorer.
+    fertility: Some((
+        noise: (frequency: 0.04, octaves: 2),
+        soils: [
+            (material: "loam", substances: [("n", 16, 96), ("p", 8, 48), ("k", 16, 96)]),
+            (material: "topsoil", substances: [("n", 4, 24), ("p", 2, 12), ("k", 8, 32)]),
+            (material: "dirt", substances: [("n", 0, 8), ("p", 0, 6), ("k", 4, 16)]),
+        ],
+    )),
 )

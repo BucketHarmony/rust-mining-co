@@ -826,6 +826,49 @@ mod tests {
         v
     }
 
+    /// `docs/VEGETATION.md` V1: shipped basalt weathers, so the
+    /// phosphorus of its composition comes out (release proportional to Δ,
+    /// as above), until its regolith is full; it has no `weathers_to`, so
+    /// it then stays basalt and releases no more.
+    #[test]
+    fn basalt_weathers_phosphorus_out() {
+        let f = fix();
+        let m = f.t.materials();
+        let basalt = m.id("basalt").unwrap();
+        let def = m.get(basalt).unwrap();
+        let rate = i32::from(def.weathering_rate);
+        assert!(rate > 0, "basalt weathers");
+        assert!(def.weathers_to.is_none());
+        let p = f.t.substance_index("p").unwrap();
+        let total = def
+            .composition
+            .iter()
+            .find(|(k, _)| k == "p")
+            .map(|&(_, t)| i32::from(t))
+            .expect("basalt holds phosphorus");
+        assert!(total * rate >= 256, "each pass releases some");
+        let c = CellPos::new(-6, 7, 1);
+        let mut w = ground(&f, &under_water(&f, &[(c, basalt)]));
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let mut want = 0;
+        let mut passes = 0;
+        while regolith(&w, c) < i32::from(u8::MAX) {
+            let d = rate.min(i32::from(u8::MAX) - regolith(&w, c));
+            merge(&mut ledger, &weather_ledger(&f.t, &mut w));
+            want += total * d / 256;
+            passes += 1;
+            assert_eq!(sub(&w, c, p), want, "pass {passes}");
+            assert!(sub(&w, c, p) > 0);
+        }
+        assert!(want <= total && 256 * want >= 255 * total - 255 * passes);
+        // Full: no more release.
+        merge(&mut ledger, &weather_ledger(&f.t, &mut w));
+        assert_eq!(sub(&w, c, p), want);
+        assert_eq!(w.get_cell(c), Some(basalt));
+        checker.check(&w, &ledger).unwrap();
+    }
+
     #[test]
     fn release_proportional_to_actual_delta() {
         let r = rfix();

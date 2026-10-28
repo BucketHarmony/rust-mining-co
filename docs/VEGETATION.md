@@ -67,6 +67,17 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
   - basalt weathers P out over N seasons (release proportional, as F11x);
   - the decompose ledger conserves amounts;
   - worldgen seeds moss and grass on a fresh world (a count above zero).
+- **Status: done (2026-10-28).**
+  - `worldgen.ron` gains `soil_horizon` (loam 1–3 cells, `max_slope: 1`, a mask noise, starting `moisture: 32`) and `fertility` (`(substance, lo, hi)` per soil material: loam, topsoil, dirt). `rmc_worldgen::SoilInit` lays both per chunk, before the water table; the game's `generate_world` uses it (`Generator::with_soil`).
+  - Basalt weathers at 16; `decompose` gives 1 n, 1 p and 1 k per 4 c.
+  - Tests: `soil::tests::{loam_lies_damp_on_gentle_ground_only, surface_soil_holds_nutrients_in_range, unknown_names_are_refused}`, `weathering::tests::basalt_weathers_phosphorus_out`, `chemistry::tests::decompose_returns_n_p_and_k_and_the_ledger_conserves`, `garden::tests::a_fresh_world_seeds_moss_and_grass`.
+  - Decisions:
+    - Basalt's rate is 16, not 1. §7.5 releases `total · Δ / 256` per pass, truncating, so with p 20 any rate under 13 releases nothing. 16 releases 1 p a pass for 16 passes, then the regolith is full and basalt stays basalt.
+    - Granite keeps rate 0 and no `k`: every weathering test fixture uses granite as inert ground (one asserts its rate is 0). K comes from fertility and from decompose.
+    - The horizon starts damp (moisture 32 of loam's 48) because the water table wets only cells below level 64, far under the surface.
+    - Fertility is the mean of a noise and the column's depth under the highest possible surface; amounts are `lo + (hi − lo) · f / 256`.
+    - `rain_n` (optional) is not done.
+    - The test kit and the eco benches keep generating without `with_soil`, so the E2E and bench worlds are unchanged.
 
 ### V2. Graded growth (Liebig)
 

@@ -21,11 +21,14 @@
      hardness: 30, diggable: true, yield_count: 1, color: (128, 128, 128, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32, anchor: true),
     (id: 5, key: "granite", phase: Solid, tags: ["stone"],
      hardness: 45, diggable: true, yield_count: 1, color: (156, 134, 126, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32, anchor: true),
-    // Basalt (SAD-P2 §5) holds calcium (as lime), iron and phosphorus. It
-    // does not weather, so the composition stays locked in.
+    // Basalt (SAD-P2 §5) holds calcium (as lime), iron and phosphorus.
+    // It weathers where water touches it (docs/VEGETATION.md V1), so its
+    // phosphorus comes out: rate 16 releases total · 16 / 256 a pass (1 p),
+    // the slowest rate that releases any of it, until the regolith is full
+    // (16 passes). It has no weathers_to, so it stays basalt.
     (id: 6, key: "basalt", phase: Solid, tags: ["stone"],
      hardness: 60, diggable: true, yield_count: 1, color: (62, 62, 70, 255), emissive: 0.0, conductivity: 16, heat_capacity: 32,
-     composition: [("lime", 40), ("fe", 40), ("p", 20)], anchor: true),
+     weathering_rate: 16, composition: [("lime", 40), ("fe", 40), ("p", 20)], anchor: true),
 
     (id: 7, key: "coal_seam", phase: Solid, tags: ["ore"],
      hardness: 30, diggable: true, yield_count: 1, color: (34, 32, 32, 255), emissive: 0.0,
@@ -132,8 +135,9 @@
      passable: true, conductivity: 64, heat_capacity: 8),
 
     // Loam (F170): a porous soil that holds rain, so a plant's anchor can
-    // meet its moisture need (SAD-P2 §7.3 D, §7.8). Worldgen does not lay
-    // it yet; topsoil, dirt and clay stay impermeable.
+    // meet its moisture need (SAD-P2 §7.3 D, §7.8). Worldgen lays it as the
+    // soil horizon on gentle ground (worldgen.ron soil_horizon); topsoil,
+    // dirt and clay stay impermeable.
     (id: 29, key: "loam", phase: Solid, tags: ["soil", "porous"],
      hardness: 10, diggable: true, yield_count: 1, color: (92, 68, 44, 255), emissive: 0.0,
      conductivity: 64, heat_capacity: 8, permeability: 64, field_capacity: 48, anchor: true),

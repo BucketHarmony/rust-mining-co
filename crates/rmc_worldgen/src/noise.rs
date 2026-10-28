@@ -30,6 +30,12 @@ pub const LAYER_MAGMA_BLOB: u32 = 0x0701;
 /// Layer id of species `i`'s surface plant roll is `LAYER_PLANTS + i`
 /// (SAD-P2 §8).
 pub const LAYER_PLANTS: u32 = 0x0800;
+/// Layer id of the soil horizon's thickness (`docs/VEGETATION.md` V1).
+pub const LAYER_HORIZON: u32 = 0x0900;
+/// Layer id of the soil horizon's mask.
+pub const LAYER_HORIZON_MASK: u32 = 0x0901;
+/// Layer id of the soil fertility noise.
+pub const LAYER_FERTILITY: u32 = 0x0902;
 
 /// The `fastnoise-lite` seed of a layer: xxh3 over the whole 64-bit world
 /// seed and the layer id, truncated to 32 bits. Seeds that differ only in

@@ -168,6 +168,50 @@ pub struct MagmaChamberParams {
     pub shell_clearance: i32,
 }
 
+/// The soil horizon (`docs/VEGETATION.md` V1): a porous soil laid over
+/// the top soil cells of columns on gentle ground, so the surface holds
+/// rain and plants can root. A column gets it when no face neighbor's
+/// surface differs from its own by more than `max_slope` cells and its
+/// mask noise exceeds `mask_threshold`; its thickness is drawn in
+/// `min_cells..=max_cells` from `noise`. Only soil cells are replaced.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SoilHorizonParams {
+    /// Material key; it must carry the `soil` tag.
+    pub material: String,
+    pub min_cells: i32,
+    pub max_cells: i32,
+    pub noise: NoiseParams,
+    /// Largest surface step to a face neighbor, in cells.
+    pub max_slope: i32,
+    /// Noise values are in about [-1, 1]; below -1 every gentle column.
+    pub mask_threshold: f32,
+    pub mask: NoiseParams,
+    /// Starting moisture of the horizon's cells, at most the material's
+    /// field capacity.
+    pub moisture: u8,
+}
+
+/// The starting nutrients of one soil material: each substance's amount
+/// lies in `lo..=hi`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SoilNutrients {
+    /// Material key; it must carry the `soil` tag.
+    pub material: String,
+    /// `(substance key, lo, hi)`.
+    pub substances: Vec<(String, u8, u8)>,
+}
+
+/// Soil fertility (`docs/VEGETATION.md` V1). Each column's fertility, in
+/// 0..=256, is the mean of its noise (mapped from [-1, 1]) and its depth
+/// under the highest possible surface (0 on the peaks, 256 in the deepest
+/// valleys). Every soil cell of a listed material at or under the surface
+/// starts with `lo + (hi - lo) · fertility / 256` of each substance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FertilityParams {
+    pub noise: NoiseParams,
+    pub soils: Vec<SoilNutrients>,
+}
+
 /// The world's extent in cells, both corners included (SAD §5). Step 6
 /// builds its shell inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +260,14 @@ pub struct GenParams {
     /// SAD-P2 §8; `None` (the default) places no magma.
     #[serde(default)]
     pub magma_chambers: Option<MagmaChamberParams>,
+    /// `docs/VEGETATION.md` V1; `None` (the default) keeps the soil layers
+    /// at the surface. Laid by [`crate::SoilInit`].
+    #[serde(default)]
+    pub soil_horizon: Option<SoilHorizonParams>,
+    /// `docs/VEGETATION.md` V1; `None` (the default) starts the soil
+    /// without nutrients. Seeded by [`crate::SoilInit`].
+    #[serde(default)]
+    pub fertility: Option<FertilityParams>,
 }
 
 #[derive(Debug, Error)]
@@ -479,6 +531,43 @@ impl GenParams {
                 ));
             }
             m.noise.validate("magma_chambers.noise")?;
+        }
+
+        if let Some(h) = &self.soil_horizon {
+            check_cells("soil_horizon.min_cells", h.min_cells)?;
+            check_cells("soil_horizon.max_cells", h.max_cells)?;
+            if h.min_cells > h.max_cells {
+                return Err(invalid(
+                    "soil_horizon",
+                    format!(
+                        "min_cells {} exceeds max_cells {}",
+                        h.min_cells, h.max_cells
+                    ),
+                ));
+            }
+            check_cells("soil_horizon.max_slope", h.max_slope)?;
+            if !h.mask_threshold.is_finite() {
+                return Err(invalid(
+                    "soil_horizon.mask_threshold",
+                    format!("{} must be finite", h.mask_threshold),
+                ));
+            }
+            h.noise.validate("soil_horizon.noise")?;
+            h.mask.validate("soil_horizon.mask")?;
+        }
+
+        if let Some(f) = &self.fertility {
+            f.noise.validate("fertility.noise")?;
+            for (i, s) in f.soils.iter().enumerate() {
+                for (key, lo, hi) in &s.substances {
+                    if lo > hi {
+                        return Err(invalid(
+                            format!("fertility.soils[{i}].{key}"),
+                            format!("lo {lo} exceeds hi {hi}"),
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -853,6 +942,11 @@ mod tests {
             Box::new(|p| p.bedrock.wall_cells += 1),
             Box::new(|p| p.magma_chambers.as_mut().unwrap().chamber_max_y += 1),
             Box::new(|p| p.magma_chambers = None),
+            Box::new(|p| p.soil_horizon.as_mut().unwrap().max_slope += 1),
+            Box::new(|p| p.soil_horizon.as_mut().unwrap().moisture += 1),
+            Box::new(|p| p.soil_horizon = None),
+            Box::new(|p| p.fertility.as_mut().unwrap().soils[0].substances[0].2 -= 1),
+            Box::new(|p| p.fertility = None),
         ];
         let mut seen = vec![a.hash()];
         for (i, edit) in edits.iter().enumerate() {

@@ -38,8 +38,8 @@ use rmc_world::save::{self, HEADER_FILE, SaveHeader};
 use rmc_world::world::World as CellWorld;
 use rmc_worldgen::params::WorldBounds;
 use rmc_worldgen::{
-    GenParams, Generator, LightInit, MagmaInit, NOISE_CRATE_VERSION, PlantInit, TemperatureInit,
-    WaterTableInit,
+    GenParams, Generator, LightInit, MagmaInit, NOISE_CRATE_VERSION, PlantInit, SoilInit,
+    TemperatureInit, WaterTableInit,
 };
 use tracing::{error, info, warn};
 
@@ -139,8 +139,9 @@ pub fn assets_dir() -> PathBuf {
 }
 
 /// Every chunk in the bounds of `assets.worldgen`, generated from `seed`,
-/// with its temperature layer, water table, magma chambers, light layer
-/// and surface plants (SAD-P2 §8).
+/// with its soil horizon and nutrients (`docs/VEGETATION.md` V1),
+/// temperature layer, water table, magma chambers, light layer and surface
+/// plants (SAD-P2 §8).
 pub fn generate_world(assets: &GameAssets, seed: u64) -> anyhow::Result<CellWorld> {
     let generator = Generator::new(seed, &assets.worldgen, &assets.materials)
         .context("worldgen params do not fit the material table")?
@@ -148,7 +149,11 @@ pub fn generate_world(assets: &GameAssets, seed: u64) -> anyhow::Result<CellWorl
         .with_water_table(WaterTableInit::new(&assets.eco))
         .with_magma(MagmaInit::new(&assets.eco))
         .with_light(LightInit::new(&assets.eco))
-        .with_plants(PlantInit::new(&assets.eco));
+        .with_plants(PlantInit::new(&assets.eco))
+        .with_soil(
+            SoilInit::new(seed, &assets.worldgen, &assets.eco)
+                .context("soil params do not fit the tables")?,
+        );
     let mut world = CellWorld::new(assets.materials.clone(), generator.bounds());
     for (pos, chunk) in generator.generate_world() {
         world
