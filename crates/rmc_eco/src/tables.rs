@@ -1433,7 +1433,7 @@ mod tests {
                     "decompose",
                     &[("c", 4)],
                     vec![Condition::Tag("soil".into())],
-                    &[("n", 1)],
+                    &[("n", 1), ("p", 1), ("k", 1)],
                     Some(SideEffect::EmitGas("chokedamp".into(), 2))
                 ),
             ]

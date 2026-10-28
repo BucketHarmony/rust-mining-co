@@ -2322,8 +2322,43 @@ mod tests {
 
     // ---- Chokedamp from decomposition (F155) ----
 
+    /// `docs/VEGETATION.md` V1: litter's carbon decomposes into n, p and
+    /// k, one each per 4 c, until less than 4 c is left; a full p layer
+    /// takes no more. Every firing is ledgered, so the substance invariant
+    /// holds.
+    #[test]
+    fn decompose_returns_n_p_and_k_and_the_ledger_conserves() {
+        use crate::ledger::merge;
+        let t = shipped();
+        let c = t.role_substance("organic").unwrap();
+        let [n, p, k] = ["n", "p", "k"].map(|key| t.substance_index(key).unwrap());
+        let soil = tagged(t, "soil");
+        let pass = ReactionsPass::new(t);
+        let s = at();
+        let full = offset(s, [2, 0, 0]);
+        let mut w = filled_world(t);
+        let mut ledger = SeasonLedger::default();
+        for cell in [s, full] {
+            w.eco_set(cell, soil, &mut ledger);
+            w.eco_put_layer(cell, layer(c), 10);
+        }
+        w.eco_put_layer(full, layer(p), i32::from(u8::MAX));
+        let checker = InvariantChecker::new(&w);
+        let mut ledger = SeasonLedger::default();
+        let amounts = |w: &World, cell| [c, n, p, k].map(|x| w.layer(cell, layer(x)));
+        for want in [[6, 1, 1, 1], [2, 2, 2, 2], [2, 2, 2, 2]] {
+            merge(&mut ledger, &react(&mut w, &pass));
+            assert_eq!(amounts(&w, s), want);
+            checker.check(&w, &ledger).unwrap();
+        }
+        let [cc, nn, pp, kk] = amounts(&w, full);
+        assert_eq!((cc, nn, kk), (2, 2, 2), "it fires beside a full layer");
+        assert_eq!(pp, i32::from(u8::MAX));
+    }
+
     /// `decompose` (SAD-P2 §7.6): a soil cell holding organic carbon turns
-    /// 4 `c` into 1 `n` and its `EmitGas("chokedamp", 2)` side adds
+    /// 4 `c` into 1 `n`, 1 `p` and 1 `k` (`docs/VEGETATION.md` V1: litter
+    /// returns what plants took) and its `EmitGas("chokedamp", 2)` side adds
     /// `min(2, room)` to its first air face neighbor in sorted (y, z, x)
     /// order, booked as `react_in`. The receiver joins the chokedamp
     /// sweep. No air neighbor or no room: the row still fires, nothing is
@@ -2348,8 +2383,15 @@ mod tests {
             t.role_substance("organic").unwrap(),
             t.substance_index("n").unwrap(),
         );
+        let (p, k) = (
+            t.substance_index("p").unwrap(),
+            t.substance_index("k").unwrap(),
+        );
         assert_eq!(needs(t, row), BTreeMap::from([(c, 4)]));
-        assert_eq!(nets(t, row), BTreeMap::from([(c, -4), (n, 1)]));
+        assert_eq!(
+            nets(t, row),
+            BTreeMap::from([(c, -4), (n, 1), (p, 1), (k, 1)])
+        );
         let emit = i32::from(*emit);
         assert_eq!(emit, 2);
         let soil = tagged(t, "soil");
@@ -2367,6 +2409,8 @@ mod tests {
             let mut l = SeasonLedger::default();
             l.react_delta[usize::from(c)] = -4;
             l.react_delta[usize::from(n)] = 1;
+            l.react_delta[usize::from(p)] = 1;
+            l.react_delta[usize::from(k)] = 1;
             l.react_in[usize::from(choke)] = react_in;
             l.gas_saturation_loss[usize::from(choke)] = gas_lost;
             l
@@ -2492,6 +2536,8 @@ mod tests {
         let mut want = fired(4, 1);
         want.react_delta[usize::from(c)] = -8;
         want.react_delta[usize::from(n)] = 2;
+        want.react_delta[usize::from(p)] = 2;
+        want.react_delta[usize::from(k)] = 2;
         assert_eq!(ledger, want);
         let mut parallel = build();
         let mut l2 = SeasonLedger::default();
