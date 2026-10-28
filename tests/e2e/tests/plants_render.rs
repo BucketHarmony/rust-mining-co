@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 use rmc_client::material::{ChunkEmissiveMaterial, EmissiveChunkMaterial, SWAY_RATE};
 use rmc_client::mesher::MeshInput;
-use rmc_client::{ClientEco, GameCamera, MeshQueue, MeshStats, Replica};
+use rmc_client::{ClientEco, GameCamera, MeshQueue, MeshStats, Replica, Weather};
 use rmc_testkit::{TestApp, TestConfig, e2e};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::EditOp;
@@ -31,7 +31,11 @@ const FED: i32 = 200;
 #[test]
 #[ignore]
 fn plants_render() {
-    let mut t = TestApp::new(TestConfig::default());
+    // The weather plugin follows the season, which the plants' colors read.
+    let mut t = TestApp::new(TestConfig {
+        weather: true,
+        ..TestConfig::default()
+    });
     e2e::run_scenario(&mut t, "plants_render", run);
 }
 
@@ -211,5 +215,11 @@ fn run(t: &mut TestApp) {
     // Two seasons on: autumn's colors.
     t.advance_season();
     t.advance_season();
+    t.steps(2);
+    assert_eq!(
+        t.app().world().resource::<Weather>().season,
+        2,
+        "the client's autumn"
+    );
     shoot(t, eye, centre, "later");
 }
