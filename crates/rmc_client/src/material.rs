@@ -392,8 +392,9 @@ mod tests {
         // The extended material is a Material Bevy can draw.
         is_material::<ChunkEmissiveMaterial>();
 
-        // Only the fragment stage is replaced; the base material's vertex,
-        // prepass and shadow shaders and its (opaque) alpha mode are used.
+        // The fragment and (for plant sway, docs/VEGETATION.md V3) the
+        // vertex stages are replaced; the base material's prepass and shadow
+        // shaders and its (opaque) alpha mode are used.
         match EmissiveFromAlpha::fragment_shader() {
             ShaderRef::Path(path) => assert_eq!(path, AssetPath::from(EMISSIVE_SHADER_PATH)),
             ShaderRef::Default => {
@@ -403,8 +404,12 @@ mod tests {
                 panic!("fragment shader is the embedded emissive.wesl, got a handle")
             }
         }
+        match EmissiveFromAlpha::vertex_shader() {
+            ShaderRef::Path(path) => assert_eq!(path, AssetPath::from(EMISSIVE_SHADER_PATH)),
+            _ => panic!("vertex shader is the embedded emissive.wesl"),
+        }
         assert!(matches!(
-            EmissiveFromAlpha::vertex_shader(),
+            EmissiveFromAlpha::prepass_vertex_shader(),
             ShaderRef::Default
         ));
         assert!(matches!(

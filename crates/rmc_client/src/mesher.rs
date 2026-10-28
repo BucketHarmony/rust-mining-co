@@ -1539,10 +1539,10 @@ mod tests {
             encode(shade(IVec3::Y))
         );
 
-        // Every material's unoccluded faces carry exactly that shade, scaled
-        // equally on all channels (the hue is kept), with the emissive
-        // strength in alpha untouched.
-        for def in t.iter().filter(|d| d.is_solid()) {
+        // Every cube material's unoccluded faces carry exactly that shade,
+        // scaled equally on all channels (the hue is kept), with the
+        // emissive strength in alpha untouched. (Plants are crossed quads.)
+        for def in t.iter().filter(|d| d.is_solid() && !d.has_tag("plant")) {
             let mut input = origin_input(&t);
             input.set(12, 12, 12, def.id);
             let qs = quads(&mesh(&input));
