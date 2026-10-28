@@ -22,6 +22,14 @@
 //!    at 255) and, per `(x, amt)` of `uptake`, `take = min(amt, anchor_x)` leaves the anchor:
 //!    a `holds` species keeps it in `held` (capped by `held`'s room; still
 //!    inside the substance total), any other books `uptake_sink`.
+//!
+//!    Graded growth (docs/VEGETATION.md V2): a species with a `demand`
+//!    has a [`sufficiency`] `s` (256ths) from its anchor. Below
+//!    `eco.starve_s` its needs count as unmet. Its growth is
+//!    `growth_per_substep · s / 256`, it also takes `d · s / 256` of each
+//!    demanded substance (with the uptake rows, never more than the anchor
+//!    holds), and adds `f · s / 256` of each `fix` substance to the
+//!    anchor (ledger `litter_in`). A species without a demand has `s = 256`.
 //! 4. A `tall` species whose growth after this pass is above
 //!    `eco.tall_growth` makes an air cell above it its own material (no
 //!    second plant state).
@@ -47,7 +55,7 @@
 //! next season's first growth pass.
 
 use rmc_world::coords::{CellPos, LocalPos};
-use rmc_world::layers::{LayerId, PlantState, SWEEP_SPREAD};
+use rmc_world::layers::{LayerId, N_SUBSTANCES, PlantState, SWEEP_SPREAD};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
 use rmc_world::world::World;
@@ -58,6 +66,25 @@ use crate::runner::{
     ChunkView, JacobiOut, JacobiPass, Queued, SweepCtx, SweepPass, SweepReport, run_sweep,
 };
 use crate::tables::EcoTables;
+
+/// Sufficiency is in 256ths: [`SUFFICIENT`] is a fully fed plant.
+pub const SUFFICIENT: i32 = 256;
+
+/// Graded growth (docs/VEGETATION.md V2): how well an anchor feeds a
+/// `demand` of `(substance, amount)` rows, in 256ths: the least of
+/// `min(256, amount_x · 256 / d)`, with the index of the first row giving
+/// it (the limiting factor). `(256, None)` when every row is met, or the
+/// demand is empty.
+pub fn sufficiency(demand: &[(u8, i32)], amount: impl Fn(u8) -> i32) -> (i32, Option<usize>) {
+    let mut best = (SUFFICIENT, None);
+    for (i, &(x, d)) in demand.iter().enumerate() {
+        let s = (amount(x).max(0) * SUFFICIENT / d).min(SUFFICIENT);
+        if s < best.0 {
+            best = (s, Some(i));
+        }
+    }
+    best
+}
 
 /// One `plants.ron` row, resolved to ids and widened.
 #[derive(Clone, Debug)]
@@ -74,6 +101,8 @@ struct Species {
     litter: i32,
     lifespan_seasons: u8,
     uptake: Vec<(u8, i32)>,
+    demand: Vec<(u8, i32)>,
+    fix: Vec<(u8, i32)>,
     holds: bool,
     tall: bool,
     /// Per material id: whether it carries one of `anchor_tags`.
@@ -111,6 +140,8 @@ impl Species {
                 litter: i32::from(p.litter),
                 lifespan_seasons: p.lifespan_seasons,
                 uptake: sub(&p.uptake),
+                demand: sub(&p.demand),
+                fix: sub(&p.fix),
                 holds: p.holds,
                 tall: p.tall,
                 anchors: m
@@ -160,6 +191,7 @@ pub struct GrowthPass {
     species: Vec<Species>,
     stress_death: u8,
     tall_growth: Option<i32>,
+    starve_s: Option<i32>,
     /// Substance index of role `organic`: what litter adds.
     organic: Option<u8>,
     air: MaterialId,
@@ -173,6 +205,7 @@ impl GrowthPass {
             species,
             stress_death: params.stress_death,
             tall_growth: params.tall_growth.map(i32::from),
+            starve_s: params.starve_s.map(i32::from),
             organic: tables.role_substance("organic"),
             air: tables.role_material("air").unwrap_or(MaterialId::AIR),
         }
@@ -226,7 +259,9 @@ impl JacobiPass for GrowthPass {
             if view.plant(anchor).is_some() {
                 continue;
             }
-            let met = sp.needs_met(|c, id| view.layer(c, id), cell, anchor);
+            let (s, _) = sufficiency(&sp.demand, |x| view.layer(anchor, LayerId::Substance(x)));
+            let fed = sp.demand.is_empty() || self.starve_s.is_none_or(|t| s >= t);
+            let met = fed && sp.needs_met(|c, id| view.layer(c, id), cell, anchor);
             let stress = if met {
                 0
             } else {
@@ -238,14 +273,16 @@ impl JacobiPass for GrowthPass {
             }
             let mut next = PlantState { stress, ..*plant };
             let growth = view.layer(cell, LayerId::Growth);
-            let add = sp.growth_per_substep.min(cap - growth);
+            let add = (sp.growth_per_substep * s / SUFFICIENT).min(cap - growth);
             if add > 0 {
                 out.layers.push((i, LayerId::Growth, add));
             }
-            for &(x, amt) in &sp.uptake {
+            let scaled = sp.demand.iter().map(|&(x, d)| (x, d * s / SUFFICIENT));
+            let mut taken = [0; N_SUBSTANCES];
+            for (x, amt) in sp.uptake.iter().copied().chain(scaled) {
                 let layer = LayerId::Substance(x);
                 let held = &mut next.held[usize::from(x)];
-                let mut take = amt.min(view.layer(anchor, layer));
+                let mut take = amt.min(view.layer(anchor, layer) - taken[usize::from(x)]);
                 if sp.holds {
                     take = take.min(cap - i32::from(*held));
                 }
@@ -258,10 +295,25 @@ impl JacobiPass for GrowthPass {
                     amount: -take,
                     then_set: None,
                 });
+                taken[usize::from(x)] += take;
                 if sp.holds {
                     *held += u8::try_from(take).expect("take is capped by held's room");
                 } else {
                     out.ledger.uptake_sink[usize::from(x)] += i64::from(take);
+                }
+            }
+            if view.material(anchor).is_some() {
+                for &(x, f) in &sp.fix {
+                    let fixed = f * s / SUFFICIENT;
+                    if fixed > 0 {
+                        out.ledger.litter_in[usize::from(x)] += i64::from(fixed);
+                        out.queued.push(Queued {
+                            target: anchor,
+                            layer: LayerId::Substance(x),
+                            amount: fixed,
+                            then_set: None,
+                        });
+                    }
                 }
             }
             if next != *plant {
@@ -502,7 +554,6 @@ mod tests {
     use rmc_world::coords::{CellAabb, ChunkPos};
     use rmc_world::edit::{CommandId, EditCommand, EditOp, EditResult, EditStatus, PlayerId};
     use rmc_world::inventory::Inventory;
-    use rmc_world::layers::N_SUBSTANCES;
     use rmc_world::ledger::SeasonLedger;
     use rmc_world::shape::Shape;
 
@@ -1417,5 +1468,211 @@ mod tests {
             assert_eq!(w.plant(x).map(|p| p.species), Some(species(&t, first)));
             assert_eq!(plant_cells(&w), vec![west, x, east], "no second plant");
         }
+    }
+
+    // ---- Graded growth (docs/VEGETATION.md V2) ----
+
+    /// The shipped graded species: clover, a nitrogen fixer that demands
+    /// the other nutrients.
+    fn clover(t: &EcoTables) -> &crate::tables::PlantDef {
+        let row = t
+            .plants()
+            .iter()
+            .find(|p| p.key == "clover")
+            .expect("plants.ron has clover");
+        assert!(!row.demand.is_empty() && !row.fix.is_empty());
+        row
+    }
+
+    #[test]
+    fn sufficiency_is_the_most_limiting_factor() {
+        let demand = [(0u8, 4), (1, 2), (2, 2)];
+        let at = |amounts: [i32; 3]| sufficiency(&demand, |x| amounts[usize::from(x)]);
+        assert_eq!(
+            sufficiency(&[], |_| 0),
+            (SUFFICIENT, None),
+            "no demand, no limit"
+        );
+        assert_eq!(at([8, 2, 100]), (SUFFICIENT, None), "every demand met");
+        // p meets half its demand; n and k are ample.
+        assert_eq!(at([8, 1, 100]), (SUFFICIENT / 2, Some(1)));
+        // n a quarter, p a half: n limits.
+        assert_eq!(at([1, 1, 100]), (SUFFICIENT / 4, Some(0)));
+        assert_eq!(at([0, 0, 0]), (0, Some(0)), "the first of equal minima");
+        // Monotone in each nutrient, and never above SUFFICIENT.
+        for x in 0..3 {
+            let mut prev = -1;
+            for amount in 0..=12 {
+                let mut a = [2, 1, 1];
+                a[x] = amount;
+                let (s, limit) = at(a);
+                assert!(s >= prev && (0..=SUFFICIENT).contains(&s));
+                assert_eq!(
+                    s,
+                    demand
+                        .iter()
+                        .map(|&(i, d)| (a[usize::from(i)] * SUFFICIENT / d).min(SUFFICIENT))
+                        .min()
+                        .unwrap()
+                );
+                if let Some(l) = limit {
+                    let (i, d) = demand[l];
+                    assert_eq!(
+                        s,
+                        a[usize::from(i)] * SUFFICIENT / d,
+                        "the limit is the minimum"
+                    );
+                }
+                prev = s;
+            }
+        }
+    }
+
+    #[test]
+    fn graded_growth_is_monotone_in_each_nutrient() {
+        let t = tables();
+        let row = clover(&t).clone();
+        let healthy = PlantState::default();
+        for (key, d) in &row.demand {
+            let mut prev = -1;
+            for amount in 0..=i32::from(*d) + 2 {
+                let mut w = world(&t);
+                let c = CellPos::new(5, 31, 5);
+                let mut subs: Vec<(&str, i32)> = row
+                    .demand
+                    .iter()
+                    .map(|(k, d)| (k.as_str(), 4 * i32::from(*d)))
+                    .collect();
+                for s in &mut subs {
+                    if s.0 == key {
+                        s.1 = amount;
+                    }
+                }
+                plant(&mut w, &t, c, "clover", healthy, 255, 100, &subs);
+                grow(&mut w, &t, Exec::Serial);
+                let g = w.layer(c, LayerId::Growth);
+                assert!(g >= prev, "{key} {amount}: {g} < {prev}");
+                let want = i32::from(row.growth_per_substep)
+                    * (amount * SUFFICIENT / i32::from(*d)).min(SUFFICIENT)
+                    / SUFFICIENT;
+                assert_eq!(g, want, "{key} {amount}");
+                prev = g;
+            }
+            assert_eq!(prev, i32::from(row.growth_per_substep), "fed: full growth");
+        }
+    }
+
+    #[test]
+    fn graded_uptake_and_fixation_are_scaled_and_ledgered() {
+        let t = tables();
+        let row = clover(&t).clone();
+        let healthy = PlantState::default();
+        let x = |k: &str| t.substance_index(k).unwrap();
+        // Half of the first demand, ample of the rest: s = SUFFICIENT / 2.
+        let (first, d0) = (&row.demand[0].0, i32::from(row.demand[0].1));
+        let mut subs: Vec<(&str, i32)> = row
+            .demand
+            .iter()
+            .map(|(k, d)| (k.as_str(), 4 * i32::from(*d)))
+            .collect();
+        subs[0].1 = d0 / 2;
+        let half = (d0 / 2) * SUFFICIENT / d0;
+        let mut w = world(&t);
+        let c = CellPos::new(5, 31, 5);
+        plant(&mut w, &t, c, "clover", healthy, 255, 100, &subs);
+        let ledger = grow(&mut w, &t, Exec::Serial);
+        let mut want = SeasonLedger::default();
+        for (k, d) in &row.demand {
+            let before = subs.iter().find(|s| s.0 == k).unwrap().1;
+            let take = (i32::from(*d) * half / SUFFICIENT).min(before);
+            assert_eq!(w.layer(below(c), sub(&t, k)), before - take, "{k}");
+            want.uptake_sink[usize::from(x(k))] += i64::from(take);
+        }
+        for (k, f) in &row.fix {
+            let fixed = i32::from(*f) * half / SUFFICIENT;
+            assert!(fixed > 0);
+            let before = subs.iter().find(|s| s.0 == k).map_or(0, |s| s.1);
+            assert_eq!(w.layer(below(c), sub(&t, k)), before + fixed, "{k} fixed");
+            want.litter_in[usize::from(x(k))] += i64::from(fixed);
+        }
+        assert_eq!(ledger, want, "uptake sunk, fixation a source");
+        assert_eq!(first, &row.demand[0].0);
+    }
+
+    #[test]
+    fn starving_plants_stress_and_fed_ones_do_not() {
+        let t = tables();
+        let starve = i32::from(t.params().starve_s.expect("eco.ron sets starve_s"));
+        let row = clover(&t).clone();
+        let d0 = i32::from(row.demand[0].1);
+        let stressed = PlantState {
+            stress: 3,
+            ..PlantState::default()
+        };
+        // Sufficiency just below and at the threshold.
+        let enough = (d0 * starve + SUFFICIENT - 1) / SUFFICIENT;
+        assert!(enough * SUFFICIENT / d0 >= starve && (enough - 1) * SUFFICIENT / d0 < starve);
+        for (amount, starving) in [(0, true), (enough - 1, true), (enough, false)] {
+            let mut w = world(&t);
+            let c = CellPos::new(5, 31, 5);
+            let mut subs: Vec<(&str, i32)> = row
+                .demand
+                .iter()
+                .map(|(k, d)| (k.as_str(), 4 * i32::from(*d)))
+                .collect();
+            subs[0].1 = amount;
+            plant(&mut w, &t, c, "clover", stressed, 255, 100, &subs);
+            grow(&mut w, &t, Exec::Serial);
+            let stress = w.plant(c).unwrap().stress;
+            assert_eq!(stress, if starving { 4 } else { 0 }, "{amount}");
+        }
+    }
+
+    #[test]
+    fn a_clover_field_on_poor_soil_grows_slower_than_on_rich_soil() {
+        let t = tables();
+        let row = clover(&t).clone();
+        let run = || {
+            let mut w = world(&t);
+            for z in 2..8 {
+                for x in 2..14 {
+                    let rich = x < 8;
+                    let subs: Vec<(&str, i32)> = row
+                        .demand
+                        .iter()
+                        .map(|(k, d)| {
+                            let d = i32::from(*d);
+                            (k.as_str(), if rich { 8 * d } else { d / 2 })
+                        })
+                        .collect();
+                    let c = CellPos::new(x, 31, z);
+                    plant(
+                        &mut w,
+                        &t,
+                        c,
+                        "clover",
+                        PlantState::default(),
+                        255,
+                        100,
+                        &subs,
+                    );
+                }
+            }
+            for _ in 0..4 {
+                grow(&mut w, &t, Exec::Parallel);
+            }
+            w
+        };
+        let w = run();
+        let total = |rich: bool| -> i32 {
+            (2..8)
+                .flat_map(|z| (2..14).map(move |x| (x, z)))
+                .filter(|&(x, _)| (x < 8) == rich)
+                .map(|(x, z)| w.layer(CellPos::new(x, 31, z), LayerId::Growth))
+                .sum()
+        };
+        let (rich, poor) = (total(true), total(false));
+        assert!(rich > poor && poor > 0, "rich {rich}, poor {poor}");
+        assert_eq!(w.hash(), run().hash(), "deterministic");
     }
 }

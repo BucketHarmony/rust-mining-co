@@ -91,6 +91,16 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
   - the limiting factor is the minimum;
   - uptake is conserved (ledger `uptake_sink`, or `held`);
   - a grass field on poor soil grows slower than on rich soil, with a deterministic hash.
+- **Status: done (2026-10-28).**
+  - `plants.ron` rows gain `demand` and `fix` (both optional); `eco.ron` gains `starve_s: Some(64)`. `rmc_eco::plants::sufficiency` gives `s` and the limiting row. The growth pass scales growth, the demand's uptake and `fix` by `s / 256`; below `starve_s` a demanding plant's stress rises.
+  - Clover (material 30, the fifth `plants.ron` row): needs light 64 and moisture 16, demands 2 p and 2 k, fixes 2 n into its anchor, worldgen chance 24. The garden's lawn around the spawn is clover.
+  - Tests: `plants::tests::{sufficiency_is_the_most_limiting_factor, graded_growth_is_monotone_in_each_nutrient, graded_uptake_and_fixation_are_scaled_and_ledgered, starving_plants_stress_and_fed_ones_do_not, a_clover_field_on_poor_soil_grows_slower_than_on_rich_soil}`.
+  - Decisions:
+    - Additive, not a replacement: `substance_min` stays a gate, and the four pioneers keep their rows (no demand, so `s = 256` and they behave as before). V7 may move them to `demand`.
+    - Sufficiency covers the demanded substances only. Moisture, light and temperature stay gates, as in §7.8.
+    - `PlantState` is unchanged (no `limit`, no `reserve`), so saves keep format 2. The client can compute the limiting factor from the anchor's layers with `sufficiency`. Demand uptake books `uptake_sink` (or `held` for a `holds` species).
+    - Fixation is booked as `litter_in` (a per-substance source) rather than a new ledger field, which would change the protocol codec.
+    - The test field is clover, not grass, because clover is the species with a demand.
 
 ### V3. Plant rendering
 

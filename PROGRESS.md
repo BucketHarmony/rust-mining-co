@@ -4134,3 +4134,17 @@ Decisions:
 - Owner chore, not an F2xx feature (features.json is protected), as the plan's process answer allows.
 Next: V2, graded growth (Liebig) and clover.
 Blockers: none.
+
+## 2026-10-28 — V2 graded growth and clover (docs/VEGETATION.md) — passed
+Done:
+- `plants.ron` rows gain optional `demand` and `fix`; `eco.ron` gains `starve_s: Some(64)`. `rmc_eco::plants::sufficiency` is the least of `min(256, amount · 256 / d)` over the demand, with the limiting row.
+- The growth pass scales growth, demand uptake and fixation by `s / 256`; a demanding plant below `starve_s` gains stress. Uptake and demand of one substance never take more than the anchor holds. Fixation adds to the anchor (ledger `litter_in`).
+- Clover: material 30 and the fifth species (demand 2 p and 2 k, fix 2 n, worldgen chance 24). The garden gains a clover lawn around the spawn crossing (radius 6).
+- Docs: `docs/VEGETATION.md` (V2 status and decisions).
+Tests added: `plants::tests::{sufficiency_is_the_most_limiting_factor, graded_growth_is_monotone_in_each_nutrient, graded_uptake_and_fixation_are_scaled_and_ledgered, starving_plants_stress_and_fed_ones_do_not, a_clover_field_on_poor_soil_grows_slower_than_on_rich_soil}`.
+Decisions:
+- test-fix: `tables::tests::loads_all_phase2_tables` pins the species list; it now ends with clover.
+- Additive: `substance_min` stays a gate and the pioneers have no demand, so they behave as before. Sufficiency covers the demanded nutrients only.
+- `PlantState` is unchanged (no `limit` or `reserve`), so the save format stays 2. Fixation is booked as `litter_in` (no new ledger field, no codec change).
+Next: V3, plant rendering.
+Blockers: none.

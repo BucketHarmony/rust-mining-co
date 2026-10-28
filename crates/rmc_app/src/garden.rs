@@ -10,9 +10,10 @@
 //! fed, and plants every species, clearing the wild plants of the meadow.
 //!
 //! The layout (x, z in cells): a square meadow of loam around [`CENTRE`],
-//! cut into four beds by two paths crossing at the spawn. The beds hold
-//! the species in `plants.ron` row order: north-west moss, north-east
-//! grass, south-west fireweed, south-east shrubs, each with gaps to
+//! cut into four beds by two paths crossing at the spawn, with a lawn
+//! around the crossing. The beds hold the species in `plants.ron` row
+//! order: north-west moss, north-east grass, south-west fireweed,
+//! south-east shrubs, and the lawn the fifth (clover), each with gaps to
 //! spread into.
 
 use std::collections::BTreeMap;
@@ -35,6 +36,11 @@ pub const CENTRE: (i32, i32) = (64, 64);
 const MEADOW: i32 = 22;
 /// Half-width of the paths crossing at the centre, which stay unplanted.
 const PATH: i32 = 1;
+/// Half-size of the lawn around the crossing (Chebyshev radius), which
+/// holds the fifth species.
+const LAWN: i32 = 6;
+/// The lawn's species: the row after the four quadrants'.
+const LAWN_BED: usize = 4;
 /// Loam laid at the top of each meadow column, in cells.
 const LOAM_DEPTH: i32 = 4;
 /// The loam's moisture: its field capacity, the most it holds.
@@ -135,15 +141,22 @@ pub struct Garden {
 }
 
 /// Which bed column (x, z) is in: the quadrants around the paths, in
-/// `plants.ron` row order (north-west, north-east, south-west, south-east).
-/// `None` on a path, outside the meadow, or past the last species.
+/// `plants.ron` row order (north-west, north-east, south-west, south-east),
+/// then the lawn around the crossing. `None` on a path, outside the
+/// meadow, or past the last species (a lawn without a fifth species joins
+/// its quadrant).
 fn bed(x: i32, z: i32, species: usize) -> Option<usize> {
     let (dx, dz) = (x - CENTRE.0, z - CENTRE.1);
     if dx.abs() > MEADOW || dz.abs() > MEADOW || dx.abs() <= PATH || dz.abs() <= PATH {
         return None;
     }
     let quadrant = usize::from(dx > 0) + 2 * usize::from(dz > 0);
-    (quadrant < species).then_some(quadrant)
+    let i = if dx.abs().max(dz.abs()) <= LAWN && LAWN_BED < species {
+        LAWN_BED
+    } else {
+        quadrant
+    };
+    (i < species).then_some(i)
 }
 
 /// A fixed per-column roll in 0..=255.

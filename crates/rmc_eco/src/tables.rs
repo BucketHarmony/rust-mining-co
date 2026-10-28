@@ -195,6 +195,17 @@ pub struct PlantDef {
     /// tables written before F168 keep their hash.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub worldgen_chance: u8,
+    /// Graded growth (docs/VEGETATION.md V2): per substance, what a fed
+    /// plant takes from its anchor per sub-step. The anchor's amount over
+    /// the demand, the least across substances (capped at 1), scales the
+    /// growth, the demand's uptake and `fix`. Empty: always fed. Not
+    /// encoded when empty, so older tables keep their hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub demand: Vec<(String, u8)>,
+    /// Per substance, what a fed plant adds to its anchor per sub-step
+    /// (a nitrogen fixer), scaled like the demand; ledger `litter_in`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fix: Vec<(String, u8)>,
 }
 
 /// Whether `n` is 0, for fields left out of the canonical encoding then.
@@ -272,6 +283,11 @@ pub struct EcoParams {
     /// hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tall_growth: Option<u8>,
+    /// Graded growth (docs/VEGETATION.md V2): a plant with a `demand`
+    /// whose sufficiency (in 256ths) is below this counts its needs as
+    /// unmet. `None`: sufficiency never stresses. Not encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starve_s: Option<u16>,
     // §7.9 activity
     pub quiet_skip: u8,
 }
@@ -609,6 +625,14 @@ impl EcoTables {
                 &sub_keys,
             )?;
             pairs_in(PLANTS_FILE, &p.key, "uptake", &p.uptake, &sub_keys)?;
+            pairs_in(PLANTS_FILE, &p.key, "demand", &p.demand, &sub_keys)?;
+            pairs_in(PLANTS_FILE, &p.key, "fix", &p.fix, &sub_keys)?;
+            if p.demand.iter().any(|(_, n)| *n == 0) {
+                return Err(invalid(
+                    PLANTS_FILE,
+                    format!("plant {:?} demands 0 of a substance", p.key),
+                ));
+            }
         }
 
         if seasons.substeps == 0 {
