@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use rmc_client::mesher::MeshInput;
 use rmc_client::{ClientEco, GameCamera, MeshQueue, MeshStats, Replica, Weather};
 use rmc_eco::parts::parts_of;
+use rmc_eco::tables::FormDef;
 use rmc_testkit::{TestApp, TestConfig, e2e};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::EditOp;
@@ -104,6 +105,10 @@ fn run(t: &mut TestApp) {
         .iter()
         .filter_map(|p| {
             let parts = p.parts.as_ref()?;
+            // Trees only: vines (V6) need a wall to climb.
+            if !matches!(parts.form, FormDef::Tree { .. }) {
+                return None;
+            }
             Some((
                 materials.id(&p.material)?,
                 materials.id(&parts.wood)?,

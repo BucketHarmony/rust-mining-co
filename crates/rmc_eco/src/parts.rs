@@ -691,7 +691,9 @@ mod tests {
 
     fn form(t: &EcoTables) -> (u8, u8, u8, u8) {
         let oak = &t.plants()[usize::from(species(t, "oak"))];
-        let FormDef::Tree { trunk, crown } = oak.parts.as_ref().unwrap().form;
+        let FormDef::Tree { trunk, crown } = oak.parts.as_ref().unwrap().form else {
+            panic!("oak is a tree");
+        };
         (trunk.0, trunk.1, crown.0, crown.1)
     }
 
