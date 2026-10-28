@@ -1147,6 +1147,7 @@ mod tests {
                         (i, PassId::Light),
                         (i, PassId::Growth),
                         (i, PassId::Spread),
+                        (i, PassId::Extend),
                     ]);
                 }
                 assert_eq!(observed, want, "seed {seed}: observed passes");
