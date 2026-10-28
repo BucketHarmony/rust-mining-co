@@ -1627,13 +1627,15 @@ mod tests {
         );
 
         // §7.8: four pioneer species, then clover (docs/VEGETATION.md V2)
-        // and oak (V4).
+        // and the trees (V4, V5).
         assert_eq!(
             t.plants()
                 .iter()
                 .map(|p| p.key.as_str())
                 .collect::<Vec<_>>(),
-            ["moss", "grass", "fireweed", "shrub", "clover", "oak"]
+            [
+                "moss", "grass", "fireweed", "shrub", "clover", "oak", "birch", "pine"
+            ]
         );
         let plant = |k: &str| t.plants().iter().find(|p| p.key == k).unwrap();
         assert!(plant("fireweed").holds, "fireweed hyperaccumulates");

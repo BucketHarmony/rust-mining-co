@@ -497,7 +497,9 @@ mod tests {
         for y in 1..height {
             assert_eq!(tree.get(&[0, y, 0]), Some(&PartKind::Trunk), "trunk {y}");
         }
-        // Every cell of the crown is a leaf, and every leaf in the crown.
+        // Every cell of the crown is a leaf or a branch, and every one in
+        // the crown; the branches (docs/VEGETATION.md V5) are the center
+        // and the cells on its horizontal axes short of the radius.
         let top = height - 1;
         let in_crown = |[x, y, z]: [i32; 3]| {
             let dy = y - top - 1;
@@ -505,10 +507,19 @@ mod tests {
         };
         let leaves: Vec<[i32; 3]> = tree
             .iter()
-            .filter(|&(_, &k)| k == PartKind::Leaf)
+            .filter(|&(_, &k)| matches!(k, PartKind::Leaf | PartKind::Branch))
             .map(|(&o, _)| o)
             .collect();
         assert!(leaves.iter().all(|&o| in_crown(o)));
+        for &[x, y, z] in &leaves {
+            let axis = y == top + 1 && (x == 0 || z == 0) && x.abs().max(z.abs()) < r;
+            let want = if axis {
+                PartKind::Branch
+            } else {
+                PartKind::Leaf
+            };
+            assert_eq!(tree[&[x, y, z]], want, "{:?}", [x, y, z]);
+        }
         let mut crown = 0;
         for y in top - h..=top + 1 + h {
             for z in -r..=r {
