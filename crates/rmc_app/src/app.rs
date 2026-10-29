@@ -25,9 +25,10 @@ use rmc_client::tiles::TileDir;
 use rmc_client::{
     CameraStart, CharacterPlugin, ClientItems, ClientMaterials, ControllerPlugin, CursorPlugin,
     DayNightPlugin, EditorPanelPlugin, EditorPlugin, FlyCamPlugin, FromHost, GameRenderPlugin,
-    HostConnection, HotbarPlugin, HudPlugin, MeshPipelinePlugin, NetPlugin, Pickaxe, PickaxePlugin,
-    Replica, ReplicaPlugin, SETTINGS_FILE, SavePlugin, SettingsFilePlugin, SoundConfig,
-    SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin, WeatherPlugin,
+    HostConnection, HotbarPlugin, HudPlugin, MapOverlayPlugin, MapOverlays, MeshPipelinePlugin,
+    NetPlugin, Pickaxe, PickaxePlugin, Replica, ReplicaPlugin, SETTINGS_FILE, SavePlugin,
+    SettingsFilePlugin, SoundConfig, SoundPlugin, UiKitPlugin, UiTheme, ViewModelPlugin,
+    WeatherPlugin,
 };
 use rmc_eco::{CALENDAR_FILE, Calendar};
 use rmc_host::{ChannelTransport, spawn_host_thread};
@@ -180,7 +181,7 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
             Ok(theme) => {
                 app.add_plugins(UiKitPlugin {
                     theme,
-                    assets_dir: Some(dir),
+                    assets_dir: Some(dir.clone()),
                 });
                 // The player's settings, kept beside the world's save.
                 app.add_plugins(SettingsFilePlugin {
@@ -188,6 +189,13 @@ pub fn build_game_app(config: GameConfig, windowed: bool) -> anyhow::Result<App>
                 });
             }
             Err(e) => warn!("no ui kit: {e}"),
+        }
+        // The data maps (M): heat maps of the soil and water.
+        match MapOverlays::load(dir.join("overlays.ron")) {
+            Ok(maps) => {
+                app.insert_resource(maps).add_plugins(MapOverlayPlugin);
+            }
+            Err(e) => warn!("no data maps: {e}"),
         }
     }
     app.insert_resource(ClientMaterials(assets.materials.clone()))

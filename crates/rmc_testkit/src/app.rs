@@ -81,6 +81,10 @@ pub struct TestConfig {
     /// default: the host then sends no `Bag` and the pickaxe swings as in
     /// Phase 1.
     pub items: bool,
+    /// Add the data maps (`rmc_client::overlay`: M picks a heat map, a
+    /// panel lists them) with the shipped `assets/overlays.ron`, as the
+    /// windowed game does. The panel needs `ui`. Off by default.
+    pub overlays: bool,
 }
 
 impl Default for TestConfig {
@@ -94,6 +98,7 @@ impl Default for TestConfig {
             ui: false,
             weather: false,
             items: false,
+            overlays: false,
         }
     }
 }
@@ -285,6 +290,12 @@ impl TestApp {
                 theme,
                 assets_dir: Some(asset_path("")),
             });
+        }
+        if config.overlays {
+            let maps = rmc_client::MapOverlays::load(asset_path("overlays.ron"))
+                .expect("assets/overlays.ron loads");
+            app.insert_resource(maps)
+                .add_plugins(rmc_client::MapOverlayPlugin);
         }
         if let Some(items) = items {
             app.insert_resource(rmc_client::ClientItems { items, tools })

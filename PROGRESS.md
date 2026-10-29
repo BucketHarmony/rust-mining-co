@@ -4222,3 +4222,19 @@ Decisions:
 - Deciduous leaves drop in the winter tick (their `shed` season), after turning in autumn.
 Next: VEGETATION V1–V7 are done. The owner playtests the garden (`saves/garden`, rebuilt for V7).
 Blockers: none.
+
+## 2026-10-28 — Data maps (docs/OVERLAYS.md) — passed
+Done:
+- `assets/overlays.ron`: twelve heat maps, covering nitrogen, phosphorus, potassium, moisture, water table, runoff, organic matter, temperature, sunlight, plant growth, copper and acidity. Each is a row with its source, range and two colors. The lows are near white, so the world turns pale and the value shows in the map's own color.
+- `rmc_client::overlay`: `M` / `Shift+M` cycles the maps (off past the ends). The picked map's `ColorSource` goes to `MeshColorSource`. A white panel on the right (`HudSlot(Right)`) lists the maps with color dots, marks the picked one, and shows a legend bar, the scale's end names and the value at the targeted cell. On the runoff map, gizmo arrows point downhill around the camera.
+- Mesher: `ColorSource::Column(ColumnField, Colormap)` with `water_table_depth` and `runoff` per cell column.
+- Editor: `follow_overlay` writes only when the editor's pick changes, so the two overlays coexist.
+- Wired into `rmc_app` (warns when the file is missing) and the testkit (`TestConfig.overlays`).
+- Docs: `docs/OVERLAYS.md`, `docs/CONTROLS.md` (M row and paragraph), `docs/UI.md` (panel section).
+Tests added: `overlay::tests::{the_shipped_maps_load_and_read_clearly, bad_tables_are_refused, m_steps_through_the_maps_and_back_to_off, readouts_name_their_units, m_picks_a_map_that_colors_the_meshes, the_panel_lists_the_maps_and_marks_the_picked_one, runoff_arrows_point_downhill}`, `mesher::tests::column_overlays_show_the_water_table_and_runoff`, e2e `overlays_render` (six screenshots in `docs/screens/`).
+Decisions:
+- The panel is light, with its own palette in `overlays.ron`, while the rest of the HUD keeps the dark theme. Its text contrast is tested at 4.5:1 over black and over white (rule 21: semantic asserts plus screenshots, no pixel thresholds).
+- Column maps are computed while meshing. A chunk does not re-mesh when the chunk below it changes; it catches up at its next re-mesh.
+- Arrows are gizmos (drawn only with `GizmoPlugin`); tests read `RunoffArrows`.
+Next: owner playtest of the data maps in the garden.
+Blockers: none.

@@ -645,9 +645,19 @@ fn request_season(mut state: ResMut<EditorState>, mut out: MessageWriter<ToHost>
     }
 }
 
-/// Keeps [`MeshColorSource`] on the editor's overlay pick. It is written
-/// only when it differs, so the mesh pipeline sees a change only on a pick.
-fn follow_overlay(state: Res<EditorState>, mut source: ResMut<MeshColorSource>) {
+/// Sets [`MeshColorSource`] to the editor's overlay pick when the pick
+/// changes. It is written only when it differs, so the mesh pipeline sees a
+/// change only on a pick, and between picks the game's data maps
+/// ([`crate::overlay`]) may set it too.
+fn follow_overlay(
+    state: Res<EditorState>,
+    mut source: ResMut<MeshColorSource>,
+    mut last: Local<Option<LayerId>>,
+) {
+    if *last == state.overlay {
+        return;
+    }
+    *last = state.overlay;
     let want = overlay_source(state.overlay);
     if source.0 != want {
         source.0 = want;

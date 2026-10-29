@@ -139,6 +139,18 @@ contrast rule holds over the world. It is bottom-left: the inventory and
 the readout hold the top corners. The same module draws the rain (see
 `docs/CONTROLS.md`). Shots: `docs/screens/weather_shows-*.png`.
 
+## Data map panel
+
+`rmc_client::overlay` (`docs/OVERLAYS.md`) is a `HudSlot(Right)` panel
+that shows while a data map is picked (`M`). It is the one light element:
+a near-white surface with a soft shadow, dark text and a blue fill on the
+picked row, after the clean look of modern city builders' data views, so
+that the heat-mapped terrain beside it reads as data and not as scenery.
+Its colors are its own and live in `assets/overlays.ron`, not in the
+theme's dark palette; the kit still sizes its fonts (`UiText`). A test
+holds its text pairs to 4.5:1 with the surface composited over black and
+over white. Shots: `docs/screens/overlays_render-*.png`.
+
 ## The HUD on the kit
 
 `hud.rs` predates the kit; it now takes the kit's look in place. The

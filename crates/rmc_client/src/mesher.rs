@@ -39,6 +39,11 @@
 //! the cell in front of the face. Overlay faces have no emissive, and
 //! liquid faces keep their opacity but drop the dissolved tint. Geometry
 //! and AO are the same for both sources; faces merge only at equal values.
+//! [`ColorSource::Column`] colors by a value derived per cell column
+//! instead of a stored layer (docs/OVERLAYS.md): the depth of the water
+//! table ([`water_table_depth`]) or the surface's drop toward where its
+//! runoff goes ([`runoff`]). Every cell of a column takes the column's
+//! value.
 //!
 //! Plants (docs/VEGETATION.md V3): a cell of a [`PLANT_TAG`] material is
 //! not a cube ([`is_cube`]) but two crossed vertical quads, each drawn
@@ -61,6 +66,7 @@ use std::sync::Arc;
 
 use bevy::color::Color;
 use bevy::prelude::{IVec3, Vec3};
+use rmc_world::columns::NO_SURFACE;
 use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
 use rmc_world::layers::LayerId;
 use std::collections::BTreeMap;
@@ -254,6 +260,81 @@ pub enum ColorSource {
     Material,
     /// The layer overlay: one layer's values through a colormap.
     Layer(LayerId, Colormap),
+    /// A value derived per cell column through a colormap.
+    Column(ColumnField, Colormap),
+}
+
+/// What a [`ColorSource::Column`] overlay shows for a cell column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ColumnField {
+    /// [`water_table_depth`], searched down to the colormap's `max`.
+    WaterTable,
+    /// The drop of [`runoff`]; 0 where no water runs off.
+    Runoff,
+}
+
+/// The four horizontal neighbours [`runoff`] looks at, in the fixed order
+/// that breaks ties.
+const RUNOFF_DIRS: [[i32; 2]; 4] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+/// How many cells below the surface of column `(x, z)` its water table
+/// lies: the first cell from the surface down that holds water (an
+/// [`is_liquid_pass`] cell) or is a porous cell at its `field_capacity`.
+/// 0 when the surface itself is water or saturated; `max` when no such cell
+/// is within `max` cells, or the column has no surface.
+pub fn water_table_depth(world: &World, x: i32, z: i32, max: i16) -> i16 {
+    let top = world.surface_y(x, z);
+    if top == NO_SURFACE {
+        return max;
+    }
+    let materials = world.materials();
+    for depth in 0..max.max(0) {
+        let cell = CellPos::new(x, i32::from(top) - i32::from(depth), z);
+        let Some(def) = world.get_cell(cell).and_then(|id| materials.get(id)) else {
+            break;
+        };
+        let saturated = is_liquid_pass(def)
+            || (def.field_capacity > 0
+                && world.layer(cell, LayerId::Moisture) >= i32::from(def.field_capacity));
+        if saturated {
+            return depth;
+        }
+    }
+    max
+}
+
+/// Where water on column `(x, z)` runs off: the horizontal neighbour whose
+/// surface is lowest, if it is lower than this column's, as the step
+/// `[dx, dz]` and the drop in cells. The first of [`RUNOFF_DIRS`] wins a
+/// tie. `None` on a flat or a pit, and with no surface.
+pub fn runoff(world: &World, x: i32, z: i32) -> Option<([i32; 2], i16)> {
+    let here = world.surface_y(x, z);
+    if here == NO_SURFACE {
+        return None;
+    }
+    let mut best: Option<([i32; 2], i16)> = None;
+    for step in RUNOFF_DIRS {
+        let there = world.surface_y(x + step[0], z + step[1]);
+        if there == NO_SURFACE {
+            continue;
+        }
+        let drop = i16::try_from(i32::from(here) - i32::from(there)).unwrap_or(i16::MAX);
+        if drop > 0 && best.is_none_or(|(_, b)| drop > b) {
+            best = Some((step, drop));
+        }
+    }
+    best
+}
+
+impl ColumnField {
+    /// This field's value for column `(x, z)`; `max` bounds the water
+    /// table search.
+    pub fn value(self, world: &World, x: i32, z: i32, max: i16) -> i16 {
+        match self {
+            ColumnField::WaterTable => water_table_depth(world, x, z, max),
+            ColumnField::Runoff => runoff(world, x, z).map_or(0, |(_, drop)| drop),
+        }
+    }
 }
 
 impl ColorSource {
@@ -374,7 +455,7 @@ impl MeshInput {
     pub fn with_color_source(mut self, source: ColorSource) -> Self {
         self.layer_values = match source {
             ColorSource::Material => None,
-            ColorSource::Layer(..) => Some(zeroed_volume()),
+            ColorSource::Layer(..) | ColorSource::Column(..) => Some(zeroed_volume()),
         };
         self.color_source = source;
         self
@@ -416,8 +497,8 @@ impl MeshInput {
             .with_tint(tint.to_vec())
             .with_color_source(source);
         let overlay = match source {
-            ColorSource::Material => None,
             ColorSource::Layer(id, _) => Some(id),
+            ColorSource::Material | ColorSource::Column(..) => None,
         };
         let liquid: Vec<bool> = input.materials.iter().map(is_liquid_pass).collect();
         // The 27 chunks the 34³ box touches, indexed by offset + 1.
@@ -454,6 +535,17 @@ impl MeshInput {
                                 amounts[i] = chunk.layers.get_u8(row.layer, local);
                             }
                         }
+                    }
+                }
+            }
+        }
+        if let (ColorSource::Column(field, cmap), Some(values)) = (source, &mut input.layer_values)
+        {
+            for z in -1..=CHUNK_SIZE {
+                for x in -1..=CHUNK_SIZE {
+                    let value = field.value(world, origin.x + x, origin.z + z, cmap.max);
+                    for y in -1..=CHUNK_SIZE {
+                        values[Self::index(x, y, z)] = value;
                     }
                 }
             }
@@ -608,10 +700,12 @@ impl MeshInput {
             .map_or(0, |v| v[Self::index(x, y, z)])
     }
 
-    /// For a layer source, its layer, colormap and values.
-    fn overlay(&self) -> Option<(LayerId, Colormap, &[i16; MESH_INPUT_VOLUME])> {
+    /// For a layer or column source: whether a face shows the cell in front
+    /// of it ([`samples_front`]), the colormap and the values.
+    fn overlay(&self) -> Option<(bool, Colormap, &[i16; MESH_INPUT_VOLUME])> {
         match (self.color_source, &self.layer_values) {
-            (ColorSource::Layer(id, cmap), Some(values)) => Some((id, cmap, values)),
+            (ColorSource::Layer(id, cmap), Some(values)) => Some((samples_front(id), cmap, values)),
+            (ColorSource::Column(_, cmap), Some(values)) => Some((false, cmap, values)),
             _ => None,
         }
     }
@@ -754,8 +848,8 @@ impl ChunkMesher for GreedyMesher {
                                     let c = is_solid(q + eu * su + ev * sv);
                                     ao_level(a, b, c)
                                 });
-                                let value = overlay.map_or(0, |(id, _, values)| {
-                                    let s = if samples_front(id) { q } else { p };
+                                let value = overlay.map_or(0, |(front, _, values)| {
+                                    let s = if front { q } else { p };
                                     values[MeshInput::index(s.x, s.y, s.z)]
                                 });
                                 Some(FaceKey {
@@ -3074,6 +3168,103 @@ mod tests {
             0,
             "the material source reads no layer"
         );
+    }
+
+    /// A world of one chunk of loam up to y 4 with a plateau up to y 6 over
+    /// x 10..16; the loam at `(3, 2, 3)` saturated; water at `(20, 5, 20)`.
+    fn terrain_world(t: &Arc<MaterialTable>) -> World {
+        let (loam, air, water) = (id(t, "loam"), id(t, "air"), id(t, "water"));
+        let bounds = CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 31, 31));
+        let mut world = World::new(t.clone(), bounds);
+        let mut chunk = Chunk::uniform(air);
+        for x in 0..32 {
+            for z in 0..32 {
+                let top = if (10..16).contains(&x) { 6 } else { 4 };
+                for y in 0..=top {
+                    chunk.storage.set(LocalPos::new(x, y, z), loam);
+                }
+            }
+        }
+        let cap = t.get(loam).unwrap().field_capacity;
+        assert!(cap > 0, "loam is porous");
+        chunk
+            .layers
+            .set_u8(LayerId::Moisture, LocalPos::new(3, 2, 3), cap);
+        chunk.storage.set(LocalPos::new(20, 5, 20), water);
+        chunk
+            .layers
+            .set_u8(LayerId::Moisture, LocalPos::new(20, 5, 20), u8::MAX);
+        world.insert_chunk(ChunkPos::new(0, 0, 0), chunk).unwrap();
+        world
+    }
+
+    #[test]
+    fn column_overlays_show_the_water_table_and_runoff() {
+        let t = table();
+        let world = terrain_world(&t);
+
+        // The water table: two cells under the surface where the loam is
+        // saturated, at the surface on water, and past the search when dry.
+        assert_eq!(water_table_depth(&world, 3, 3, 8), 2);
+        assert_eq!(water_table_depth(&world, 20, 20, 8), 0);
+        assert_eq!(water_table_depth(&world, 7, 7, 8), 8);
+        assert_eq!(
+            water_table_depth(&world, 3, 3, 2),
+            2,
+            "max bounds the search"
+        );
+        assert_eq!(water_table_depth(&world, 3, 3, 1), 1);
+        assert_eq!(water_table_depth(&world, 40, 3, 8), 8, "no surface");
+
+        // Runoff: off the plateau's edges, downhill; none on a flat; the
+        // fixed order breaks the water cell's four-way tie.
+        assert_eq!(runoff(&world, 10, 3), Some(([-1, 0], 2)));
+        assert_eq!(runoff(&world, 15, 3), Some(([1, 0], 2)));
+        assert_eq!(runoff(&world, 12, 3), None, "the plateau top is flat");
+        assert_eq!(runoff(&world, 5, 5), None);
+        assert_eq!(runoff(&world, 20, 20), Some(([1, 0], 1)));
+        assert_eq!(runoff(&world, 40, 3), None);
+
+        // A column source gives every cell of a column the column's value,
+        // the border included.
+        let cmap = Colormap {
+            min: 0,
+            max: 8,
+            low: [0, 90, 220],
+            high: [245, 245, 247],
+        };
+        let source = ColorSource::Column(ColumnField::WaterTable, cmap);
+        let input = MeshInput::from_world_colored(&world, ChunkPos::new(0, 0, 0), &[], source)
+            .expect("resident");
+        for y in [-1, 0, 4, 20, 32] {
+            assert_eq!(input.layer_value(3, y, 3), 2);
+            assert_eq!(input.layer_value(7, y, 7), 8);
+        }
+        let qs = quads(&mesh(&input));
+        let top_at = |x: f32, z: f32| {
+            with_normal(&qs, IVec3::Y)
+                .into_iter()
+                .find(|q| {
+                    let (lo, hi) = (q.min(), q.min() + Vec3::new(q.size().0, 0.0, q.size().1));
+                    (lo.x..hi.x).contains(&x) && (lo.z..hi.z).contains(&z)
+                })
+                .map(|q| q.colors[0])
+        };
+        assert_eq!(
+            top_at(3.5, 3.5),
+            Some(overlay_color(cmap, 2, 0.0, IVec3::Y)),
+            "a shallow table"
+        );
+        assert_eq!(
+            top_at(7.5, 7.5),
+            Some(overlay_color(cmap, 8, 0.0, IVec3::Y)),
+            "dry ground"
+        );
+        let slope = ColorSource::Column(ColumnField::Runoff, cmap);
+        let input =
+            MeshInput::from_world_colored(&world, ChunkPos::new(0, 0, 0), &[], slope).unwrap();
+        assert_eq!(input.layer_value(10, 6, 3), 2);
+        assert_eq!(input.layer_value(12, 6, 3), 0);
     }
 
     /// A world of one chunk: loam up to y 4, air above, and (if `plants`)

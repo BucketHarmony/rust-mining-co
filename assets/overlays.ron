@@ -1,0 +1,61 @@
+// Data maps (rmc_client::overlay, docs/OVERLAYS.md): the heat maps the
+// player cycles with M (Shift+M back). Each map colors the terrain from
+// `low` at `range.0` to `high` at `range.1`, clamped outside it. The lows are
+// near white, so the world turns white and the map's color shows where the
+// value is high. `legend` names the two ends of the scale.
+//
+// `source` is what the map reads:
+// - `Substance("<key>")`: a substance layer (`substances.ron` key);
+// - `Moisture`, `Temperature` (0.1 °C), `Light`, `Growth`, `Biomass`,
+//   `Regolith`: a scalar layer;
+// - `WaterTable`: cells from the surface down to the first saturated cell
+//   (water, or porous ground at its field capacity), searched to `range.1`;
+// - `Runoff`: how far the surface drops toward its lowest neighbour. This
+//   map also draws arrows where the water runs (`arrows`).
+(
+    // The panel: light and quiet. Text pairs keep a 4.5:1 contrast over
+    // black and white (checked by a test).
+    panel: (
+        width: 300.0,
+        radius: 14.0,
+        swatch: 14.0,
+        surface: "#FFFFFFF2",
+        text: "#1D1D1F",
+        text_dim: "#5E5E63",
+        border: "#D2D2D7",
+        selected: "#0066CC",
+        selected_text: "#FFFFFF",
+        shadow: "#00000033",
+    ),
+    // Runoff arrows: drawn every `spacing` columns within `radius` columns
+    // of the camera, `lift` cells above the ground.
+    arrows: (radius: 48, spacing: 2, lift: 0.3, color: "#0A60D0"),
+    // Swatches in the legend's color bar.
+    legend_steps: 8,
+    maps: [
+        (key: "nitrogen", label: "Nitrogen (N)", source: Substance("n"),
+         range: (0, 255), low: "#F5F5F7", high: "#1E8E3E", legend: ("None", "Rich")),
+        (key: "phosphorus", label: "Phosphorus (P)", source: Substance("p"),
+         range: (0, 255), low: "#F5F5F7", high: "#E8710A", legend: ("None", "Rich")),
+        (key: "potassium", label: "Potassium (K)", source: Substance("k"),
+         range: (0, 255), low: "#F5F5F7", high: "#8E44AD", legend: ("None", "Rich")),
+        (key: "moisture", label: "Moisture", source: Moisture,
+         range: (0, 64), low: "#F5F5F7", high: "#0071E3", legend: ("Dry", "Wet")),
+        (key: "water_table", label: "Water table", source: WaterTable,
+         range: (0, 16), low: "#0040DD", high: "#F5F5F7", legend: ("At surface", "Deep")),
+        (key: "runoff", label: "Runoff", source: Runoff,
+         range: (0, 4), low: "#F5F5F7", high: "#0FA3B1", legend: ("Flat", "Steep")),
+        (key: "organic", label: "Organic matter", source: Substance("c"),
+         range: (0, 128), low: "#F5F5F7", high: "#8B5A2B", legend: ("None", "Rich")),
+        (key: "temperature", label: "Temperature", source: Temperature,
+         range: (-200, 400), low: "#0A84FF", high: "#FF3B30", legend: ("Cold", "Hot")),
+        (key: "sunlight", label: "Sunlight", source: Light,
+         range: (0, 255), low: "#4A4A6A", high: "#FFD60A", legend: ("Shade", "Full sun")),
+        (key: "growth", label: "Plant growth", source: Growth,
+         range: (0, 255), low: "#F5F5F7", high: "#34A853", legend: ("Seedling", "Grown")),
+        (key: "copper", label: "Copper", source: Substance("cu"),
+         range: (0, 48), low: "#F5F5F7", high: "#00897B", legend: ("Clean", "Toxic")),
+        (key: "acidity", label: "Acidity", source: Substance("acid"),
+         range: (0, 96), low: "#F5F5F7", high: "#E91E63", legend: ("Neutral", "Acid")),
+    ],
+)

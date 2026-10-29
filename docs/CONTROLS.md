@@ -22,6 +22,7 @@ test kit. Keys are named by their position on a US layout.
 | `P` | Pause / resume the ecology clock and the time of day (one game hour, a season sub-step, every 5 s by default: `--day-seconds 120`; `--eco-tick-ms N` sets the hour directly, 0 stops the clock) |
 | `Mouse wheel` | Select the next (down) / previous (up) hotbar slot; without a bag, the next / previous material in the inventory |
 | `E` / `Q` | Select the next / previous hotbar slot; without a bag, the next / previous material |
+| `M` / `Shift+M` | Show the next / previous data map (nitrogen, phosphorus, potassium, moisture, water table, runoff, ...); past the last, the maps turn off (see below) |
 
 The player climbs a one-cell rise by walking into it; two cells need a jump.
 
@@ -30,6 +31,12 @@ temperature (in Fahrenheit unless Settings says Celsius) and the sky: dry,
 frost, or light, steady or heavy rain (snow below freezing). While the season's rain lands, rain falls around you, but not
 under a roof or in a cave. While the seasons are paused (`P`), nothing falls
 and the chip says so.
+
+The data maps (`M`) color the ground as a heat map of one value: pale where
+it is low, the map's color where it is high. A white panel on the right lists
+the maps, marks the one shown, and gives its scale and its value at the cell
+you look at. The runoff map also draws arrows where the water runs downhill.
+The maps are listed in `assets/overlays.ron` (`docs/OVERLAYS.md`).
 
 Placing spends one of the selected material per cell, and only works on an
 open cell (air or water) within the pickaxe's reach (3 m). Nothing is

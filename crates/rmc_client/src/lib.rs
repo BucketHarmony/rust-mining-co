@@ -17,6 +17,7 @@ pub mod material;
 pub mod mesher;
 pub mod meshpipe;
 pub mod net;
+pub mod overlay;
 pub mod panel;
 pub mod pickaxe;
 pub mod render;
@@ -85,6 +86,10 @@ pub use meshpipe::{
 };
 pub use net::{
     ClientMaterials, CommandSeq, FromHost, HostConnection, HostLink, NetPlugin, NetSystems, ToHost,
+};
+pub use overlay::{
+    MAP_KEY, MapDef, MapOverlay, MapOverlayPlugin, MapOverlaySystems, MapOverlays, MapPanel,
+    MapRow, MapSource, OverlayError, RunoffArrow, RunoffArrows, runoff_arrows, step_map,
 };
 pub use panel::{
     EditorPanelPlugin, EditorStats, HostTickTime, PANEL_TITLE, PanelView, STATS_WINDOW_S,
