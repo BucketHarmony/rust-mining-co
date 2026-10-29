@@ -67,6 +67,9 @@
     // `count` seeds in the `grow` season; they fall in the `fall` season
     // and take root with a chance of `take` in 256, else rot as litter.
     // Trees spread only by their fruit.
+    // `tuft`: the client draws a tuft of leaves on the trunk's growing tip
+    // (a look only), so a young trunk is not a bare post; it is hidden in
+    // the `shed` season.
     (key: "oak", material: "acorn", anchor_tags: ["soil"],
      needs: (light: 0, moisture: 16, temp: (-100, 350),
              substance_min: [("n", 4)],
@@ -76,7 +79,7 @@
      season_colors: [("autumn", (176, 96, 40))],
      parts: Some((cost: 8, leaf_feed: 32, leaf_light: 32,
              wood: "oak_wood", leaf: "oak_leaves",
-             form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true,
+             form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true, tuft: true,
              shed: Some("winter"),
              fruit: Some((grow: "autumn", fall: "winter", count: 6, take: 48))))),
     // Birch: a pioneer of poor soil, quick, narrow and deciduous.
@@ -88,7 +91,7 @@
      season_colors: [("autumn", (220, 180, 60))],
      parts: Some((cost: 6, leaf_feed: 32, leaf_light: 24,
              wood: "birch_wood", leaf: "birch_leaves",
-             form: Tree(trunk: (5, 7), crown: (1, 3)), branches: true,
+             form: Tree(trunk: (5, 7), crown: (1, 3)), branches: true, tuft: true,
              shed: Some("winter"),
              fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 64))))),
     // Pine: evergreen, slow, tolerant of acid soil, with a tall crown.
@@ -99,7 +102,7 @@
      lifespan_seasons: 240, uptake: [("n", 1)], worldgen_chance: 2, sway: 24,
      parts: Some((cost: 10, leaf_feed: 28, leaf_light: 24,
              wood: "pine_wood", leaf: "pine_needles",
-             form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true,
+             form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true, tuft: true,
              fruit: Some((grow: "summer", fall: "autumn", count: 4, take: 40))))),
     // Vines (docs/VEGETATION.md V6). The seed ripens into vine_stem, the root.
     // Form Vine: vine cells (the `leaf` material) grow into open cells that

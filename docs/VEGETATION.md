@@ -324,6 +324,20 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
     - Deciduous leaves drop in their `shed` season (winter). They turn in autumn, so on screen autumn colors and winter is bare.
     - Soil counts anchor cells only. Substance deeper in the ground is not what roots see.
 
+### Leaf tuft (owner request, 2026-10-28)
+
+A tree grows its whole trunk before its crown, so a young birch (white bark)
+looked like an ice pillar. A tree row with `parts.tuft: true` now carries a
+tuft of leaves on its growing tip. The client draws a plant cross in the
+tree's leaf color (season color included) in the open cell above the top
+trunk cell, or above the ripened root before the trunk grows. The tuft
+disappears once the crown covers the tip, and it is hidden in the tree's
+`shed` season. It is a look only: the simulation, the save and the ledger
+are unchanged. `PlantLook` gains `tuft` (the wood) and `bare` (per season
+row). Oak, birch and pine have it. Test:
+`mesher::tests::a_growing_trunk_carries_a_leaf_tuft_until_its_crown`; shot:
+`docs/screens/trees_render-summer-*.png`.
+
 ## 5. Pacing
 
 At 5 s a game hour, a season lasts 14 minutes and holds 7 growth passes, and a year lasts 56 minutes.

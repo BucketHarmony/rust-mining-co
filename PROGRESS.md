@@ -4238,3 +4238,10 @@ Decisions:
 - Arrows are gizmos (drawn only with `GizmoPlugin`); tests read `RunoffArrows`.
 Next: owner playtest of the data maps in the garden.
 Blockers: none.
+
+## 2026-10-28 — Leaf tuft on growing trees (owner request) — passed
+Done: `plants.ron` `parts.tuft` (on oak, birch and pine). The client draws a leaf cross in the tree's leaf and season color above the growing trunk tip, or above the ripened root. It is gone once the crown covers the tip, and hidden in the `shed` season. `PlantLook` gains `tuft` and `bare`. A young birch is no longer a white pillar.
+Tests added: `mesher::tests::a_growing_trunk_carries_a_leaf_tuft_until_its_crown`, `tables::tests::tree_looks_carry_a_tuft_and_stand_bare_in_their_shed_season`; trees_render re-shot.
+Decisions: the tuft is a look only (no sim, save or ledger change). The mesher test's `PlantLook` literals gain the two new fields in this commit, as with V5's `leaf`.
+Next: owner playtest.
+Blockers: none.

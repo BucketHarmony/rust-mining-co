@@ -63,6 +63,12 @@ pub struct PlantLook {
     /// A tree's leaf material (docs/VEGETATION.md V5): its cubes take the
     /// season colors too. `None` for a species without parts.
     pub leaf: Option<MaterialId>,
+    /// A tree whose trunk tip carries a leaf tuft while it grows: its wood
+    /// (the tuft takes `leaf`'s color). `None`: no tuft.
+    pub tuft: Option<MaterialId>,
+    /// Per `seasons.ron` row: whether the tree stands bare (its `shed`
+    /// season); empty for a species without parts.
+    pub bare: Vec<bool>,
 }
 
 /// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):

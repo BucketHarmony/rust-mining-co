@@ -247,6 +247,11 @@ pub struct PartsDef {
     /// Not encoded when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub branches: bool,
+    /// Whether the trunk's growing tip carries a tuft of leaves: a look
+    /// only, drawn by the client while the tree grows (docs/VEGETATION.md,
+    /// "Leaf tuft"). Not encoded when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tuft: bool,
     /// The season key in which the tree is bare (docs/VEGETATION.md V5):
     /// its leaves fall as litter and none grow. `None` is evergreen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1088,6 +1093,21 @@ impl EcoTables {
                     })
                     .collect(),
                 leaf: p.parts.as_ref().and_then(|d| self.materials.id(&d.leaf)),
+                tuft: p
+                    .parts
+                    .as_ref()
+                    .filter(|d| d.tuft)
+                    .and_then(|d| self.materials.id(&d.wood)),
+                bare: self
+                    .seasons
+                    .seasons
+                    .iter()
+                    .map(|s| {
+                        p.parts
+                            .as_ref()
+                            .is_some_and(|d| d.shed.as_deref() == Some(s.key.as_str()))
+                    })
+                    .collect(),
             })
             .collect()
     }
@@ -1551,6 +1571,34 @@ mod tests {
         "iron_dust",
         "salt_dust",
     ];
+
+    #[test]
+    fn tree_looks_carry_a_tuft_and_stand_bare_in_their_shed_season() {
+        // docs/VEGETATION.md "Leaf tuft".
+        let t = shipped();
+        let looks = t.plant_looks();
+        let mut tufted = 0;
+        for (p, look) in t.plants().iter().zip(&looks) {
+            let parts = p.parts.as_ref();
+            let want = parts
+                .filter(|d| d.tuft)
+                .and_then(|d| t.materials().id(&d.wood));
+            assert_eq!(look.tuft, want, "{}", p.key);
+            tufted += usize::from(want.is_some());
+            assert_eq!(look.bare.len(), t.seasons.seasons.len());
+            for (s, &bare) in t.seasons.seasons.iter().zip(&look.bare) {
+                let shed = parts.and_then(|d| d.shed.as_deref());
+                assert_eq!(bare, shed == Some(s.key.as_str()), "{} {}", p.key, s.key);
+            }
+        }
+        let birch = t.plants().iter().position(|p| p.key == "birch").unwrap();
+        assert!(looks[birch].tuft.is_some(), "birch carries a tuft");
+        assert!(
+            looks[birch].bare.iter().any(|&b| b),
+            "birch stands bare once"
+        );
+        assert!(tufted >= 3, "every tree");
+    }
 
     #[test]
     fn plant_looks_resolve_needs_sway_and_season_colors() {

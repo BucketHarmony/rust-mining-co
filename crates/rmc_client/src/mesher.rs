@@ -68,7 +68,7 @@ use bevy::color::Color;
 use bevy::prelude::{IVec3, Vec3};
 use rmc_world::columns::NO_SURFACE;
 use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
-use rmc_world::layers::LayerId;
+use rmc_world::layers::{LayerId, Part, PartKind};
 use std::collections::BTreeMap;
 
 use rmc_world::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
@@ -379,6 +379,9 @@ pub struct MeshInput {
     /// Materials drawn in another color than their table color: tree
     /// leaves in their season (docs/VEGETATION.md V5).
     pub recolor: BTreeMap<MaterialId, [u8; 3]>,
+    /// Leaf tufts on growing tree tips ([`tree_tufts`]): the tip cell
+    /// (chunk-local) and how the tuft above it is drawn, in (y, z, x) order.
+    pub tufts: Vec<(IVec3, PlantCell)>,
 }
 
 /// A [`MESH_INPUT_VOLUME`] array of zeros.
@@ -407,6 +410,7 @@ impl MeshInput {
             layer_values: None,
             plants: BTreeMap::new(),
             recolor: BTreeMap::new(),
+            tufts: Vec::new(),
         }
     }
 
@@ -448,6 +452,7 @@ impl MeshInput {
         }
         self.plants = cells;
         self.recolor = leaf_colors(&self.materials, looks, season);
+        self.tufts = tree_tufts(&self, world, looks, season);
         self
     }
 
@@ -1284,6 +1289,81 @@ fn mesh_plants(input: &MeshInput, out: &mut MeshData) {
             }
         }
     }
+    for &(p, cell) in &input.tufts {
+        let base = match overlay {
+            Some((_, cmap, values)) => {
+                overlay_base_color(cmap, values[MeshInput::index(p.x, p.y, p.z)], 0.0)
+            }
+            None => {
+                let [r, g, b] = cell.color;
+                let c = Color::srgb_u8(r, g, b).to_linear();
+                [c.red, c.green, c.blue, 0.0]
+            }
+        };
+        push_plant(out, p + IVec3::Y, cell, base);
+    }
+}
+
+/// The leaf tufts of a chunk (docs/VEGETATION.md, "Leaf tuft"): on every
+/// trunk cell (or root) of a species' `tuft` wood whose cell above is open,
+/// that is, the growing tip of a tree without its crown yet, a plant cross
+/// in the tree's leaf color for `season`. None in the tree's bare season.
+fn tree_tufts(
+    input: &MeshInput,
+    world: &World,
+    looks: &[PlantLook],
+    season: u32,
+) -> Vec<(IVec3, PlantCell)> {
+    let woods: Vec<(&PlantLook, MaterialId, MaterialId)> = looks
+        .iter()
+        .filter(|l| {
+            let rows = l.bare.len();
+            rows == 0 || !l.bare[usize::try_from(season).unwrap_or(0) % rows]
+        })
+        .filter_map(|l| Some((l, l.tuft?, l.leaf?)))
+        .collect();
+    let mut out = Vec::new();
+    if woods.is_empty() {
+        return out;
+    }
+    let table = &input.materials;
+    let origin = input.pos.origin_cell().0;
+    for y in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            for x in 0..CHUNK_SIZE {
+                let id = input.get(x, y, z);
+                let Some(&(look, _, leaf)) = woods.iter().find(|w| w.1 == id) else {
+                    continue;
+                };
+                if table.get(input.get(x, y + 1, z)).is_some_and(is_cube) {
+                    continue;
+                }
+                let cell = CellPos(origin + IVec3::new(x, y, z));
+                let part = world.layer(cell, LayerId::Part);
+                let tip = match Part::from_value(part) {
+                    Some(p) => p.kind == PartKind::Trunk,
+                    None => part == 0 && world.plant(cell).is_some(),
+                };
+                if !tip {
+                    continue;
+                }
+                let color = input.recolor.get(&leaf).copied().or_else(|| {
+                    let [r, g, b, _] = table.get(leaf)?.color;
+                    Some([r, g, b])
+                });
+                let Some(color) = color else {
+                    continue;
+                };
+                let cell = PlantCell {
+                    stage: u8::MAX,
+                    color,
+                    sway: look.sway,
+                };
+                out.push((IVec3::new(x, y, z), cell));
+            }
+        }
+    }
+    out
 }
 
 /// Appends the panels of every vine cell of the chunk: one against each
@@ -3334,6 +3414,8 @@ mod tests {
             sway: 0,
             season_colors: vec![None, None, Some(autumn), None],
             leaf: Some(leaves),
+            tuft: None,
+            bare: Vec::new(),
         }];
         assert!(leaf_colors(&t, &looks, 0).is_empty(), "spring: table color");
         let [r, g, b, _] = t.get(leaves).unwrap().color;
@@ -3350,6 +3432,8 @@ mod tests {
         );
         let bare = PlantLook {
             leaf: None,
+            tuft: None,
+            bare: Vec::new(),
             ..looks[0].clone()
         };
         assert!(
@@ -3381,6 +3465,116 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_trunk_carries_a_leaf_tuft_until_its_crown() {
+        // docs/VEGETATION.md "Leaf tuft": a young trunk is not a bare post.
+        let t = table();
+        let (loam, air) = (id(&t, "loam"), id(&t, "air"));
+        let (wood, leaves) = (id(&t, "birch_wood"), id(&t, "birch_leaves"));
+        let autumn = [220, 180, 60];
+        let look = PlantLook {
+            material: id(&t, "birch_seed"),
+            needs: Vec::new(),
+            sway: 48,
+            season_colors: vec![None, None, Some(autumn), None],
+            leaf: Some(leaves),
+            tuft: Some(wood),
+            bare: vec![false, false, false, true],
+        };
+        let tree = |height: u32, crown: bool| {
+            let mut world = World::new(
+                t.clone(),
+                CellAabb::new(CellPos::new(0, 0, 0), CellPos::new(31, 31, 31)),
+            );
+            let mut chunk = Chunk::uniform(air);
+            for x in 0..32 {
+                for z in 0..32 {
+                    for y in 0..5 {
+                        chunk.storage.set(LocalPos::new(x, y, z), loam);
+                    }
+                }
+            }
+            let root = LocalPos::new(8, 5, 8);
+            chunk.storage.set(root, wood);
+            chunk.plants.insert(root.index(), PlantState::default());
+            for y in 6..5 + height {
+                let cell = LocalPos::new(8, y, 8);
+                chunk.storage.set(cell, wood);
+                let part = Part::toward(
+                    CellPos::new(8, y as i32, 8),
+                    CellPos::new(8, y as i32 - 1, 8),
+                    PartKind::Trunk,
+                )
+                .unwrap();
+                chunk.layers.set_u8(LayerId::Part, cell, part.value());
+            }
+            if crown {
+                let cell = LocalPos::new(8, 5 + height, 8);
+                chunk.storage.set(cell, leaves);
+                let part = Part::toward(
+                    CellPos::new(8, (5 + height) as i32, 8),
+                    CellPos::new(8, (4 + height) as i32, 8),
+                    PartKind::Leaf,
+                )
+                .unwrap();
+                chunk.layers.set_u8(LayerId::Part, cell, part.value());
+            }
+            world.insert_chunk(ChunkPos::new(0, 0, 0), chunk).unwrap();
+            world
+        };
+        let tufts = |world: &World, looks: &[PlantLook], season: u32| {
+            MeshInput::from_world(world, ChunkPos::new(0, 0, 0))
+                .unwrap()
+                .with_plants(world, looks, &[], season)
+        };
+        let [r, g, b, _] = t.get(leaves).unwrap().color;
+        let green = PlantCell {
+            stage: u8::MAX,
+            color: [r, g, b],
+            sway: 48,
+        };
+
+        // On the top trunk cell, in the leaf color; in autumn, turned.
+        let world = tree(3, false);
+        let looks = [look.clone()];
+        let spring = tufts(&world, &looks, 0);
+        assert_eq!(spring.tufts, [(IVec3::new(8, 7, 8), green)]);
+        let turned = PlantCell {
+            color: mix([r, g, b], autumn, PLANT_SEASON_MIX),
+            ..green
+        };
+        assert_eq!(
+            tufts(&world, &looks, 2).tufts,
+            [(IVec3::new(8, 7, 8), turned)]
+        );
+        // Bare in its shed season; none for a species without a tuft.
+        assert!(tufts(&world, &looks, 3).tufts.is_empty(), "bare in winter");
+        let plain = PlantLook {
+            tuft: None,
+            ..look.clone()
+        };
+        assert!(tufts(&world, &[plain], 0).tufts.is_empty());
+        // A ripened root alone carries one; a crown replaces it.
+        assert_eq!(
+            tufts(&tree(1, false), &looks, 0).tufts,
+            [(IVec3::new(8, 5, 8), green)]
+        );
+        assert!(tufts(&tree(3, true), &looks, 0).tufts.is_empty());
+
+        // The mesher draws it as a plant cross in the open cell above.
+        let mut bare = spring.clone();
+        bare.tufts.clear();
+        assert_eq!(mesh(&spring).quad_count, mesh(&bare).quad_count + 4);
+        let data = mesh(&spring);
+        let above: Vec<usize> = (0..data.positions.len())
+            .filter(|&i| {
+                let p = Vec3::from(data.positions[i]) / CELL_SIZE_M;
+                p.y >= 8.0 && p.x > 8.0 && p.x < 9.0 && p.z > 8.0 && p.z < 9.0
+            })
+            .collect();
+        assert!(!above.is_empty(), "the tuft stands on the tip");
+    }
+
+    #[test]
     fn plants_are_crossed_quads_sized_by_growth_with_the_ground_beneath() {
         let t = table();
         let world = plant_world(&t, true);
@@ -3391,6 +3585,8 @@ mod tests {
             sway: 255,
             season_colors: vec![None, Some([200, 100, 0])],
             leaf: None,
+            tuft: None,
+            bare: Vec::new(),
         }];
         let deficiency = vec![(LayerId::Substance(0), [255, 255, 0])];
         let at = |season: u32| {
