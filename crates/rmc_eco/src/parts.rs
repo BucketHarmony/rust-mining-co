@@ -71,6 +71,16 @@
 //! paying `cost` per metamer added. A graph whose root is no longer a
 //! graph tree's is removed before the sweep.
 //!
+//! Its flowers and fruit (T6) are Flower and Fruit buds on its tips
+//! ([`crate::trees::bear`]). Steps 1 and 2 drop them as they drop part
+//! cells, from the cell their metamer ends in: fruit falls (and may take
+//! root) in its `fall` season, flowers wilt out of their seasons, and a
+//! bare season drops both as litter; the bud turns Active again. In step
+//! 3 a tree of at least `mature` metamers first opens flowers (in a
+//! flower season, on tips with `leaf_light`), then sets fruit (in the
+//! fruit's `grow` season, on any leafy tip), each up to its `count` and
+//! paying `cost`, the tips by the least seeded roll; what is left grows.
+//!
 //! **Severing** is a displacement rule (`rmc_world::displace`): a cell
 //! whose material changes stops being a part, and the parts hanging from it
 //! become air in turn, each leaving `eco.part_litter` in the anchor below
@@ -83,6 +93,7 @@ use rmc_world::coords::{CellPos, LocalPos};
 use rmc_world::layers::{LayerId, PART_DIRS, Part, PartKind, PlantState, SWEEP_EXTEND};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::tree::BudState;
 use rmc_world::world::World;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -589,8 +600,18 @@ impl ExtendPass {
         }
     }
 
-    /// Drops the fruit at `cell` of a plant of `species` (step 1).
-    fn fall(&self, ctx: &mut SweepCtx<'_>, form: &Form, species: u8, take: u8, cell: CellPos) {
+    /// Drops the fruit at `cell` of a plant of `species` (step 1): a part
+    /// cell, which becomes air, when `part`; else a graph tree's fruit bud
+    /// hanging in `cell`.
+    fn fall(
+        &self,
+        ctx: &mut SweepCtx<'_>,
+        form: &Form,
+        species: u8,
+        take: u8,
+        cell: CellPos,
+        part: bool,
+    ) {
         let landing = self.landing(ctx.world, cell);
         let start = landing.map(above).filter(|&target| {
             let r = roll(
@@ -606,7 +627,9 @@ impl ExtendPass {
                         .passes(species, target, anchor, |c, id| world.layer(c, id))
                 })
         });
-        ctx.world.eco_set(cell, self.air, ctx.ledger);
+        if part {
+            ctx.world.eco_set(cell, self.air, ctx.ledger);
+        }
         match start {
             Some(target) => {
                 ctx.world.eco_set(target, form.seed, ctx.ledger);
@@ -656,7 +679,7 @@ impl SweepPass for ExtendPass {
                 };
                 match (kind, falls) {
                     (PartKind::Fruit, Some(f)) if is_part => {
-                        self.fall(ctx, &form, species, f.take, c);
+                        self.fall(ctx, &form, species, f.take, c, true);
                     }
                     _ if is_part && drops => {
                         let landing = self.landing(ctx.world, c);
@@ -667,6 +690,31 @@ impl SweepPass for ExtendPass {
                 }
             }
             parts = parts_of(ctx.world, cell);
+        }
+
+        if let Shape::Graph(_) = &form.shape
+            && let Some(graph) = ctx.world.tree(cell)
+        {
+            let (kept, dropped) = trees::drop_buds(graph, |bud| match bud {
+                BudState::Fruit => bare || falls.is_some(),
+                BudState::Flower => bare || !blooms,
+                _ => false,
+            });
+            if !dropped.is_empty() {
+                ctx.world.eco_put_tree(cell, Some(kept));
+            }
+            for (bud, at) in dropped {
+                let from = trees::cell_at(cell, at);
+                match (bud, falls) {
+                    (BudState::Fruit, Some(f)) => {
+                        self.fall(ctx, &form, species, f.take, from, false);
+                    }
+                    _ => {
+                        let landing = self.landing(ctx.world, from);
+                        self.rot(ctx, landing);
+                    }
+                }
+            }
         }
 
         let mut graph = ctx.world.tree(cell).cloned().unwrap_or_default();
@@ -700,8 +748,32 @@ impl SweepPass for ExtendPass {
                 ctx.world.eco_set(cell, form.wood, ctx.ledger);
                 biomass -= form.cost;
             } else if let Shape::Graph(growth) = &form.shape {
-                let budget = usize::try_from(biomass / form.cost).unwrap_or(0);
+                let mut budget = usize::try_from(biomass / form.cost).unwrap_or(0);
                 let born = u16::try_from(self.season).unwrap_or(u16::MAX);
+                if graph.len() >= growth.mature {
+                    let flowers = form
+                        .flower
+                        .as_ref()
+                        .filter(|_| blooms)
+                        .map(|f| (BudState::Flower, f.count, form.leaf_light));
+                    let fruit = form
+                        .fruit
+                        .filter(|f| f.grow == self.row)
+                        .map(|f| (BudState::Fruit, f.count, 0));
+                    for (bud, most, light) in [flowers, fruit].into_iter().flatten() {
+                        let want = most.saturating_sub(trees::count(&graph, bud)).min(budget);
+                        let (bearing, set) = {
+                            let site = self.site(ctx.world, cell);
+                            let seed = self.seed ^ u64::from(self.season);
+                            trees::bear(&graph, &site, bud, want, light, seed)
+                        };
+                        if set > 0 {
+                            graph = bearing;
+                            budget -= set;
+                            biomass -= i32::try_from(set).unwrap_or(i32::MAX) * form.cost;
+                        }
+                    }
+                }
                 let (grown, added) = {
                     let site = self.site(ctx.world, cell);
                     trees::grow(&graph, &site, growth, budget, born, self.seed)

@@ -95,6 +95,7 @@ pub fn lab_json(
                         "length_mm": m.length_mm,
                         "born": m.born,
                         "leaf": m.leaf,
+                        "bud": m.bud.byte(),
                         "lateral": m.lateral,
                         "end": end,
                         "radius_um": r,

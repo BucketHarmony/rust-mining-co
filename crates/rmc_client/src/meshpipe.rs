@@ -1701,6 +1701,8 @@ mod tests {
             tuft: None,
             bare: Vec::new(),
             graph: Some(GraphLook {
+                fruit: t.id("acorn").unwrap(),
+                flower: None,
                 wood: t.id("oak_wood").unwrap(),
                 tip_um: 2000,
                 divergence: 1564,

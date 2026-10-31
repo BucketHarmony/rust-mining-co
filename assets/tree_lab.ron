@@ -1,7 +1,8 @@
 // The tree lab's forms (docs/TREES.md T4, §5): the Graph form each species
 // grows under `rmc_app --tree-lab`, until the shipped plants.ron rows switch
 // to graphs (TREES T7). Fields as in plants.ron's Graph form; T8 owns the
-// numbers. Angles are in steps of 4096 per turn.
+// numbers. Angles are in steps of 4096 per turn. `mature`: metamers before
+// the tree flowers and fruits.
 [
     // Oak: 25 cm internodes, 45° laterals on the golden angle, λ 0.52;
     // a broad, irregular crown.
@@ -9,18 +10,18 @@
      form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,
          divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
          bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4,
-         shed_light: 48, shed_after: 6, leaf_age: 8)),
+         shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200)),
     // Birch: 30 cm, 35°, λ 0.58; narrow and light.
     (species: "birch",
      form: Graph(internode_mm: 300, tip_um: 1500, branch_angle: 398,
          divergence: 1564, lambda: 148, gravitropism: 32, phototropism: 128,
          bud_light: 24, max_shoot: 3, max_metamers: 2500, leaf: 3,
-         shed_light: 40, shed_after: 4, leaf_age: 8)),
+         shed_light: 40, shed_after: 4, leaf_age: 8, mature: 150)),
     // Pine: 35 cm, near-flat laterals five to a turn, λ 0.65; a cone.
     // Needles stay three years.
     (species: "pine",
      form: Graph(internode_mm: 350, tip_um: 2500, branch_angle: 910,
          divergence: 819, lambda: 166, gravitropism: 96, phototropism: 48,
          bud_light: 24, max_shoot: 2, max_metamers: 3000, leaf: 2,
-         shed_light: 32, shed_after: 8, leaf_age: 12)),
+         shed_light: 32, shed_after: 8, leaf_age: 12, mature: 250)),
 ]

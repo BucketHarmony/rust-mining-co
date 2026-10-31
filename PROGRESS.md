@@ -4354,3 +4354,25 @@ Decisions:
 - The planned host test `a_felled_tree_matches_on_host_and_replica` is covered at world level by `chop::tests::a_chop_replays_on_a_replica`, which checks the full world hash after a chop and after felling.
 Next: T6, fruit and seed on the graph.
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.
+
+## 2026-10-31 — Trees as geometry T6: fruit and seed (docs/TREES.md) — passed
+Done:
+- `trees::{bear, drop_buds, count}`: Flower and Fruit buds on leafy tips. They are set by a seeded roll and dropped back to Active.
+- `ExtendPass` for graph trees:
+  - fruit falls in its `fall` season, taking root (`take`) or rotting;
+  - flowers wilt out of season;
+  - a bare season drops both;
+  - mature trees pay `cost` per flower or fruit before growth.
+- `FormDef::Graph.mature`, documented in plants.ron. Lab forms: oak 200, birch 150, pine 250.
+- Client: `GraphLook.{fruit, flower}`. treemesh draws an octahedron per Flower or Fruit bud.
+- The lab JSON carries `bud`.
+Tests added:
+- `trees::tests::{a_mature_crown_fruits_in_its_season_and_fallen_fruit_takes_root_or_rots, fallen_fruit_rots_as_part_litter, flowers_open_on_lit_tips_in_their_season_and_wilt_after, a_young_tree_bears_nothing}`
+- `treemesh::tests::flowers_and_fruit_hang_at_their_tips`
+Decisions:
+- Flowers and fruit are paid before growth once the tree is `mature`, instead of V5's "after the full form". A graph tree only reaches its full form at `max_metamers`, which would leave it barren for years.
+- Fruit and flowers sit on tips and stop them extending (sympodial). Fruit needs leaves but no light threshold, as in V5. Flowers need `leaf_light`, as in V6.
+- The take roll keeps V5's key (the cell the fruit hangs in), so two fruit in one cell share a roll. The second then finds the cell taken and rots.
+- No pixel or look test is added (rule 21). The octahedra are covered by a semantic mesh test, and the screenshot comes with T7's `trees_render` re-shoot.
+Next: T7, migration (shipped plants.ron rows to Graph, worldgen and garden, retire the cell-tree paths with `test-fix:` commits, re-shoot `trees_render`).
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.

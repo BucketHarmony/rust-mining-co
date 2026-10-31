@@ -85,6 +85,10 @@ pub struct GraphLook {
     /// Leaf cards turn this far about the twig from one metamer to the
     /// next, in steps of 4096 a turn.
     pub divergence: u16,
+    /// The fruit hanging from Fruit buds (the species' seed material).
+    pub fruit: MaterialId,
+    /// The flower on Flower buds; `None` for a species without flowers.
+    pub flower: Option<MaterialId>,
 }
 
 /// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):

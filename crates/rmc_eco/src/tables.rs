@@ -353,6 +353,10 @@ pub enum FormDef {
         /// good (but for the `shed` season).
         #[serde(default)]
         leaf_age: u16,
+        /// Metamers a tree needs before it flowers or fruits (docs/TREES.md
+        /// T6); 0 bears at once.
+        #[serde(default)]
+        mature: u16,
     },
 }
 
@@ -1189,6 +1193,11 @@ impl EcoTables {
                         wood: self.materials.id(&d.wood)?,
                         tip_um,
                         divergence,
+                        fruit: self.materials.id(&p.material)?,
+                        flower: d
+                            .flower
+                            .as_ref()
+                            .and_then(|f| self.materials.id(&f.material)),
                     }),
                     _ => None,
                 }),

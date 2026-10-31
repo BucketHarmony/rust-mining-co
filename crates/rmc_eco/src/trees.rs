@@ -30,6 +30,11 @@
 //!    of the cell it starts in; still blocked, its bud goes Dormant.
 //! 5. **Cap.** No metamer is added past `max_metamers`.
 //!
+//! **Flowers and fruit** (T6) are bud states on tips (metamers without a
+//! continuation): [`bear`] turns lit leafy tips with an Active bud into
+//! Flower or Fruit buds, which stop that tip growing; [`drop_buds`] lets
+//! them go again (the bud turns Active) and says where each hung.
+//!
 //! A tree reads only the light layer and the cells it would grow into, and
 //! writes only its own graph and its root's biomass, so trees grow the
 //! same in any order. Rolls are keyed by the world seed and metamer
@@ -77,6 +82,7 @@ pub struct Growth {
     pub shed_light: i32,
     pub shed_after: u8,
     pub leaf_age: u16,
+    pub mature: usize,
 }
 
 impl Growth {
@@ -97,6 +103,7 @@ impl Growth {
             shed_light,
             shed_after,
             leaf_age,
+            mature,
         } = form
         else {
             return None;
@@ -116,6 +123,7 @@ impl Growth {
             shed_light: i32::from(shed_light),
             shed_after,
             leaf_age,
+            mature: usize::from(mature),
         })
     }
 }
@@ -284,6 +292,76 @@ where
         }
     }
     (pruned, fallen)
+}
+
+/// How many of the graph's buds are in state `bud`.
+pub fn count(graph: &TreeGraph, bud: BudState) -> usize {
+    graph.metamers().iter().filter(|m| m.bud == bud).count()
+}
+
+/// Turns up to `want` tips of `graph` into `bud` buds (Flower or Fruit):
+/// tips whose bud is Active and that carry leaves, ending in a cell with at
+/// least `light`, the least seeded roll of `(seed, bud, index)` first.
+/// Returns the new graph and how many it turned.
+pub fn bear<L, P>(
+    graph: &TreeGraph,
+    site: &Site<L, P>,
+    bud: BudState,
+    want: usize,
+    light: i32,
+    seed: u64,
+) -> (TreeGraph, usize)
+where
+    L: Fn(CellPos) -> i32,
+    P: Fn(CellPos) -> bool,
+{
+    let ms = graph.metamers();
+    let mut tip = vec![true; ms.len()];
+    for m in ms.iter().filter(|m| !m.lateral && m.parent != NO_PARENT) {
+        tip[usize::from(m.parent)] = false;
+    }
+    let ends = graph.ends();
+    let mut open: Vec<(u64, usize)> = (0..ms.len())
+        .filter(|&i| {
+            tip[i]
+                && ms[i].bud == BudState::Active
+                && ms[i].leaf > 0
+                && site.light_at(ends[i]) >= light
+        })
+        .map(|i| {
+            let mut h = Xxh3::with_seed(seed);
+            h.update(&[bud.byte()]);
+            h.update(&(i as u64).to_le_bytes());
+            (h.digest(), i)
+        })
+        .collect();
+    open.sort_unstable();
+    let mut out = graph.clone();
+    let set = want.min(open.len());
+    for &(_, i) in &open[..set] {
+        let m = ms[i];
+        out.set_state(i, bud, m.leaf, m.shade);
+    }
+    (out, set)
+}
+
+/// Lets go of every bud `drops` picks: its metamer's bud turns Active
+/// again. Returns the new graph and, in metamer order, each dropped bud's
+/// state and the point it hung at (its metamer's end).
+pub fn drop_buds(
+    graph: &TreeGraph,
+    drops: impl Fn(BudState) -> bool,
+) -> (TreeGraph, Vec<(BudState, [i32; 3])>) {
+    let mut out = graph.clone();
+    let mut dropped = Vec::new();
+    let ends = graph.ends();
+    for (i, m) in graph.metamers().iter().enumerate() {
+        if drops(m.bud) {
+            dropped.push((m.bud, ends[i]));
+            out.set_state(i, BudState::Active, m.leaf, m.shade);
+        }
+    }
+    (out, dropped)
 }
 
 /// How many of the graph's leafy metamers end in a cell with at least
@@ -1020,5 +1098,198 @@ mod tests {
         let leaves: Vec<u8> = graph(&w, root).metamers().iter().map(|m| m.leaf).collect();
         assert_eq!(leaves, [0, 0, 4, 4], "only young wood leafs out");
         assert_eq!(w.layer(soil, organic(&t)), before + 4 * metamer_litter(&t));
+    }
+
+    /// The graph oak bearing from `mature` metamers, its fruit taking root
+    /// with chance `take`, and with `flower` up to three flowers in spring.
+    fn bearing_tables(mature: u16, take: u8, flower: bool) -> EcoTables {
+        let shipped = EcoTables::load(ASSETS).expect("Phase 2 tables load");
+        let mut src = EcoSources::read(ASSETS).unwrap();
+        let form = format!(
+            "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+             divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96, \
+             bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4, \
+             mature: {mature}),"
+        );
+        let fruit = "fruit: Some((grow: \"autumn\", fall: \"winter\", count: 6, take: 48))";
+        assert!(src.plants.contains(OAK_FORM) && src.plants.contains(fruit));
+        let flowers = if flower {
+            ", flower: Some((material: \"clematis_flower\", seasons: [\"spring\"], count: 3))"
+        } else {
+            ""
+        };
+        src.plants = src.plants.replace(OAK_FORM, &form).replace(
+            fruit,
+            &format!(
+                "fruit: Some((grow: \"autumn\", fall: \"winter\", count: 6, take: {take})){flowers}"
+            ),
+        );
+        EcoTables::from_sources(Arc::clone(shipped.materials()), &src).expect("the bearing oak")
+    }
+
+    /// The absolute season of row `key` in year `year`.
+    fn season_of(t: &EcoTables, key: &str, year: u32) -> u32 {
+        let rows = &t.seasons().seasons;
+        let row = rows.iter().position(|s| s.key == key).unwrap() as u32;
+        year * rows.len() as u32 + row
+    }
+
+    /// Wet, nitrogen-fed soil under the whole world, so seeds can start.
+    fn feed_soil(w: &mut World, t: &EcoTables) {
+        let n = LayerId::Substance(t.substance_index("n").unwrap());
+        for z in 0..32 {
+            for x in 0..64 {
+                let anchor = CellPos::new(x, 30, z);
+                w.eco_put_layer(anchor, LayerId::Moisture, 100);
+                w.eco_put_layer(anchor, n, 32);
+            }
+        }
+    }
+
+    /// One flush in season `season` with the root's biomass topped up: the
+    /// light, then the extension sweep (checked). Returns its ledger.
+    fn flush_in(w: &mut World, t: &EcoTables, root: CellPos, season: u32) -> SeasonLedger {
+        w.eco_put_layer(root, LayerId::Biomass, i32::from(u8::MAX));
+        LightPass::new(t).recompute(w);
+        let checker = InvariantChecker::new(w);
+        let mut ledger = SeasonLedger::default();
+        ExtendPass::for_season(t, season, SEED).run(w, &mut ledger);
+        checker.check(w, &ledger).unwrap_or_else(|v| panic!("{v}"));
+        ledger
+    }
+
+    /// The metamers of the tree at `root` whose bud is `bud`.
+    fn buds(w: &World, root: CellPos, bud: BudState) -> Vec<usize> {
+        let g = graph(w, root);
+        (0..g.len())
+            .filter(|&i| g.metamers()[i].bud == bud)
+            .collect()
+    }
+
+    #[test]
+    fn a_mature_crown_fruits_in_its_season_and_fallen_fruit_takes_root_or_rots() {
+        for (take, rooted) in [(0, false), (255, true)] {
+            let t = bearing_tables(0, take, false);
+            let mut w = world(&t);
+            feed_soil(&mut w, &t);
+            let root = CellPos::new(16, 31, 16);
+            oak(&mut w, &t, root);
+            for year in 0..2 {
+                flush_in(&mut w, &t, root, season_of(&t, "spring", year));
+                flush_in(&mut w, &t, root, season_of(&t, "summer", year));
+            }
+            assert!(
+                buds(&w, root, BudState::Fruit).is_empty(),
+                "none out of season"
+            );
+            assert!(graph(&w, root).len() > 30);
+
+            // Autumn: six fruit at once, on leafy tips, and those tips stop.
+            let autumn = season_of(&t, "autumn", 1);
+            flush_in(&mut w, &t, root, autumn);
+            let fruit = buds(&w, root, BudState::Fruit);
+            assert_eq!(fruit.len(), 6);
+            let g = graph(&w, root);
+            let tip = |i: usize| {
+                !g.metamers()
+                    .iter()
+                    .any(|m| usize::from(m.parent) == i && !m.lateral)
+            };
+            for &i in &fruit {
+                assert!(tip(i) && g.metamers()[i].leaf > 0, "fruit on leafy tip {i}");
+            }
+            flush_in(&mut w, &t, root, autumn);
+            assert_eq!(buds(&w, root, BudState::Fruit), fruit, "the count holds");
+            let g = graph(&w, root);
+            for &i in &fruit {
+                assert!(
+                    !g.metamers()
+                        .iter()
+                        .any(|m| usize::from(m.parent) == i && !m.lateral),
+                    "a fruiting tip does not grow on"
+                );
+            }
+
+            // Winter: the fruit falls from where it hung. With take 0 it
+            // rots; with 255 acorns start below the crown.
+            let ledger = flush_in(&mut w, &t, root, season_of(&t, "winter", 1));
+            assert!(buds(&w, root, BudState::Fruit).is_empty());
+            for i in fruit {
+                assert_eq!(graph(&w, root).metamers()[i].bud, BudState::Active);
+            }
+            let born: Vec<CellPos> = (0..32)
+                .flat_map(|z| (0..64).map(move |x| CellPos::new(x, 31, z)))
+                .filter(|&c| c != root && w.plant(c).is_some())
+                .collect();
+            assert_eq!(born.len() as u32, ledger.plants_born);
+            assert_eq!(!born.is_empty(), rooted, "take {take}: {born:?}");
+            for &c in &born {
+                assert_eq!(w.get_cell(c), Some(id(&t, "acorn")));
+            }
+        }
+    }
+
+    #[test]
+    fn fallen_fruit_rots_as_part_litter() {
+        let t = bearing_tables(0, 0, false);
+        let part_litter = i32::from(t.params().part_litter.unwrap());
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        for year in 0..2 {
+            flush_in(&mut w, &t, root, season_of(&t, "summer", year));
+        }
+        flush_in(&mut w, &t, root, season_of(&t, "autumn", 1));
+        let g = graph(&w, root);
+        let fruit = buds(&w, root, BudState::Fruit);
+        let leafy = g.metamers().iter().filter(|m| m.leaf > 0).count() as i64;
+        // Winter drops the fruit (rotting) and every leaf (bare).
+        let ledger = flush_in(&mut w, &t, root, season_of(&t, "winter", 1));
+        let litter = ledger.litter_in[usize::from(t.role_substance("organic").unwrap())];
+        assert_eq!(
+            litter,
+            fruit.len() as i64 * i64::from(part_litter) + leafy * i64::from(metamer_litter(&t))
+        );
+        assert_eq!(ledger.plants_born, 0);
+    }
+
+    #[test]
+    fn flowers_open_on_lit_tips_in_their_season_and_wilt_after() {
+        let t = bearing_tables(20, 48, true);
+        let part_litter = i64::from(t.params().part_litter.unwrap());
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        for _ in 0..6 {
+            flush_in(&mut w, &t, root, season_of(&t, "spring", 0));
+        }
+        let flowers = buds(&w, root, BudState::Flower);
+        assert_eq!(flowers.len(), 3);
+        let g = graph(&w, root);
+        let ends = g.ends();
+        let leaf_light = i32::from(oak_parts(&t).leaf_light);
+        for &i in &flowers {
+            assert!(w.layer(cell_of(root, ends[i]), LayerId::Light) >= leaf_light);
+        }
+        let ledger = flush_in(&mut w, &t, root, season_of(&t, "summer", 0));
+        assert!(buds(&w, root, BudState::Flower).is_empty(), "wilted");
+        let organic = usize::from(t.role_substance("organic").unwrap());
+        assert_eq!(ledger.litter_in[organic], 3 * part_litter);
+    }
+
+    #[test]
+    fn a_young_tree_bears_nothing() {
+        let t = bearing_tables(4000, 48, true);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        for year in 0..2 {
+            for key in ["spring", "summer", "autumn"] {
+                flush_in(&mut w, &t, root, season_of(&t, key, year));
+                assert!(buds(&w, root, BudState::Flower).is_empty());
+                assert!(buds(&w, root, BudState::Fruit).is_empty());
+            }
+        }
+        assert!(graph(&w, root).len() > 30);
     }
 }

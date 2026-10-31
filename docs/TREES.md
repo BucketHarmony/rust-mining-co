@@ -229,6 +229,16 @@ Each step is one session under CLAUDE.md, with a test named first.
 - **T6. Fruit and seed.**
   - Flower and fruit buds, seed fall and planting, on the graph.
   - Tests ported from V5's fruit tests.
+  - **Status (2026-10-31): done.** Notes:
+    - Flowers and fruit are bud states on tips (metamers without a continuation). They need an Active bud and leaves. A flower also needs `leaf_light`; fruit needs any light.
+    - Once a tree has `mature` metamers (a new Graph field, default 0), step 3 opens flowers in a flower season, then sets fruit in the fruit's `grow` season, each up to its `count`. Each costs `cost` and is paid before growth. Tips go by the least roll of (seed ^ season, bud, index).
+    - A flowering or fruiting tip stops extending. Once the flower or fruit drops, its bud turns Active again.
+    - Drops use the V5/V6 rules, starting from the cell the tip ends in:
+      - Fruit falls in its `fall` season. It takes root with `take`, otherwise it rots as `part_litter`.
+      - Flowers wilt out of their seasons.
+      - A bare season drops both.
+    - `mature` exists because a seedling's only tip would otherwise flower and stall. Lab values: oak 200, birch 150, pine 250. The lab oak (seed 1) first fruits in its first autumn at 202 metamers: six acorns every autumn, all down by winter.
+    - Client: Flower and Fruit buds draw as small octahedra in the flower and fruit material colors (`GraphLook.fruit`, `GraphLook.flower`); fruit hangs below the tip. The lab JSON gains each metamer's `bud`.
 - **T7. Migration and cleanup.**
   - Save v2 → v3 conversion, worldgen and the garden plant graph trees, and the tree code paths on Part cells are removed.
   - Test retirements go in a `test-fix:` commit.

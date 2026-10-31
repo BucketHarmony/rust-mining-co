@@ -82,6 +82,9 @@
     // and dropped as litter in the `shed` season; leaves shade the light
     // pass. A lateral branch whose every metamer has had less than
     // `shed_light` for `shed_after` flushes (0: never) is shed as litter.
+    // Flowers and fruit hang on tips as bud states once the tree has
+    // `mature` metamers (0: at once), paid before growth; they fall from
+    // the tip's cell by the same `flower` and `fruit` rules.
     // The shipped trees switch to it once the client draws graphs (TREES
     // T7), e.g. the oak:
     // form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,

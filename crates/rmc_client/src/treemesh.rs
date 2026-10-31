@@ -21,6 +21,12 @@
 //! up. They take the leaf material's color moved toward the season color,
 //! and none are drawn in a bare season.
 //!
+//! **Flowers and fruit** (docs/TREES.md T6). A metamer whose bud is a
+//! Flower or a Fruit carries a small octahedron at its end in the flower or
+//! fruit material's color, [`FLOWER_M`] or [`FRUIT_M`] across, the fruit
+//! hanging just below the end. They are drawn in every season (a bare
+//! season has dropped them already).
+//!
 //! **Sway.** `uv.y` is the wind amplitude in meters that the chunk shader
 //! turns into sway: the species' `sway` scaled by the node's distance from
 //! the root (up to [`TREE_SWAY_REACH_M`]) and by how thin it is (the twig
@@ -36,7 +42,7 @@ use bevy::prelude::*;
 use rmc_world::coords::{CELL_SIZE_M, CellPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::query::{GraphLook, PlantLook};
-use rmc_world::tree::{NO_PARENT, Q14, TURN, TreeGraph, perpendicular, rotate};
+use rmc_world::tree::{BudState, NO_PARENT, Q14, TURN, TreeGraph, perpendicular, rotate};
 
 use crate::eco::ClientEco;
 use crate::material::EmissiveChunkMaterial;
@@ -59,6 +65,9 @@ pub const LEAF_CARD_WIDTH: f32 = 0.5;
 /// points out from the twig.
 pub const LEAF_CARD_LEAN: f32 = 0.5;
 pub const LEAF_CARD_LIFT: f32 = 0.3;
+/// Across a fruit, and a flower, in meters.
+pub const FRUIT_M: f32 = 0.08;
+pub const FLOWER_M: f32 = 0.1;
 /// Sway of a twig at [`TREE_SWAY_REACH_M`] or more from the root, for a
 /// species of sway 255, in meters.
 pub const TREE_SWAY_M: f32 = 0.6 * CELL_SIZE_M;
@@ -199,6 +208,27 @@ pub fn tree_mesh(
     for [a, b] in &all {
         push_cylinder(&mut out, a, b, bark, wood_id);
     }
+    let color = |id: MaterialId| {
+        materials
+            .get(id)
+            .map_or([0; 3], |d| [d.color[0], d.color[1], d.color[2]])
+    };
+    for (m, [_, b]) in graph.metamers().iter().zip(&all) {
+        let (id, across, drop) = match (m.bud, g.flower) {
+            (BudState::Fruit, _) => (g.fruit, FRUIT_M, FRUIT_M / 2.0),
+            (BudState::Flower, Some(f)) => (f, FLOWER_M, 0.0),
+            _ => continue,
+        };
+        let center = b.center - Vec3::Y * drop;
+        push_bud(
+            &mut out,
+            center,
+            across / 2.0,
+            linear(color(id)),
+            f32::from(id.0),
+            b.sway,
+        );
+    }
     let Some(leaf) = leaf_color(look, materials, season) else {
         return out;
     };
@@ -241,6 +271,40 @@ fn push_cylinder(out: &mut MeshData, a: &Ring, b: &Ring, color: [f32; 4], id: f3
         out.indices.extend([a0, a1, b1, a0, b1, b0]);
         out.quad_count += 1;
     }
+}
+
+/// Appends an octahedron of `radius` around `center`: a flower or a
+/// fruit.
+fn push_bud(out: &mut MeshData, center: Vec3, radius: f32, color: [f32; 4], id: f32, sway: f32) {
+    let first = out.positions.len() as u32;
+    let points = [
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+        Vec3::Z,
+        Vec3::NEG_Z,
+    ];
+    for p in points {
+        out.positions.push((center + p * radius).to_array());
+        out.normals.push(p.to_array());
+        out.colors.push(color);
+        out.uvs.push([id, sway]);
+    }
+    // The eight faces, each wound counterclockwise from outside.
+    for (x, y, z) in [
+        (0, 2, 4),
+        (4, 2, 1),
+        (1, 2, 5),
+        (5, 2, 0),
+        (4, 3, 0),
+        (1, 3, 4),
+        (5, 3, 1),
+        (0, 3, 5),
+    ] {
+        out.indices.extend([first + x, first + y, first + z]);
+    }
+    out.quad_count += 4;
 }
 
 /// Appends a lens-shaped leaf card from `base` along `point`, its width
@@ -449,6 +513,8 @@ mod tests {
                 wood,
                 tip_um: 2000,
                 divergence: 1564,
+                fruit: t.id("acorn").unwrap(),
+                flower: t.id("clematis_flower"),
             }),
         };
         let g = look.graph.unwrap();
@@ -492,6 +558,62 @@ mod tests {
         let mut more = tree(3);
         more.push(metamer(4, [0, Q14 as i16, 0], false, 3)).unwrap();
         assert!(tree_mesh(&more, &look, &g, &t, 1).positions.len() > summer.positions.len());
+    }
+
+    #[test]
+    fn flowers_and_fruit_hang_at_their_tips() {
+        let t = materials();
+        let (look, g) = look(&t, false);
+        let plain = tree(3);
+        let base = tree_mesh(&plain, &look, &g, &t, 1);
+        let mut bearing = TreeGraph::default();
+        for (i, m) in plain.metamers().iter().enumerate() {
+            let bud = match i {
+                4 => BudState::Fruit,
+                7 | 9 => BudState::Flower,
+                _ => m.bud,
+            };
+            bearing.push(Metamer { bud, ..*m }).unwrap();
+        }
+        let mesh = tree_mesh(&bearing, &look, &g, &t, 1);
+        // Six corners per octahedron, after the wood.
+        assert_eq!(mesh.positions.len(), base.positions.len() + 3 * 6);
+        assert_eq!(mesh.indices.len(), 6 * mesh.quad_count as usize);
+        let wood: usize = rings(&plain, g.tip_um, look.sway)
+            .iter()
+            .map(|[a, _]| 2 * a.sides as usize)
+            .sum();
+        let ids: Vec<f32> = (0..3).map(|k| mesh.uvs[wood + 6 * k][0]).collect();
+        assert_eq!(
+            ids,
+            [g.fruit, g.flower.unwrap(), g.flower.unwrap()].map(|m| f32::from(m.0))
+        );
+        // The fruit hangs below its tip's end; flowers sit on theirs.
+        let ends = rings(&plain, g.tip_um, look.sway);
+        let low = (0..6)
+            .map(|k| mesh.positions[wood + k][1])
+            .fold(f32::MAX, f32::min);
+        assert!(
+            (low - (ends[4][1].center.y - FRUIT_M)).abs() < 1e-5,
+            "{low}"
+        );
+        // Every face of a bud points out of it.
+        let buds = (wood as u32)..(wood + 3 * 6) as u32;
+        let tris = mesh.indices.chunks(3).filter(|t| buds.contains(&t[0]));
+        for t in tris {
+            let [p, q, r] = [t[0], t[1], t[2]].map(|i| Vec3::from(mesh.positions[i as usize]));
+            let k = (t[0] as usize - wood) / 6;
+            let center = (0..6)
+                .map(|j| Vec3::from(mesh.positions[wood + 6 * k + j]))
+                .sum::<Vec3>()
+                / 6.0;
+            let outward = (q - p).cross(r - p).dot((p + q + r) / 3.0 - center);
+            assert!(outward > 0.0, "face {t:?} winds inward");
+        }
+        // A flower bud of a species without flowers is not drawn.
+        let g2 = GraphLook { flower: None, ..g };
+        let none = tree_mesh(&bearing, &look, &g2, &t, 1);
+        assert_eq!(none.positions.len(), base.positions.len() + 6);
     }
 
     #[test]
