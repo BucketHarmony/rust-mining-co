@@ -726,8 +726,9 @@ fn setpoint(dir: Dir, steps: u32) -> Dir {
 }
 
 /// `dir` if an internode of `length` from `at` along it ends in a passable
-/// cell, else `dir` turned toward the brightest passable face of `at`'s
-/// cell if that one does; `None` when both are blocked.
+/// cell no lower than the trunk's base, else `dir` turned toward the
+/// brightest passable face of `at`'s cell if that one does; `None` when
+/// both are blocked.
 fn clear<L, P>(site: &Site<L, P>, dir: Dir, at: [i32; 3], length: u16) -> Option<Dir>
 where
     L: Fn(CellPos) -> i32,
@@ -735,7 +736,8 @@ where
 {
     let ends_open = |d: Dir| {
         let s = tree::step(d, length);
-        (site.passable)(site.cell([at[0] + s[0], at[1] + s[1], at[2] + s[2]]))
+        let end = [at[0] + s[0], at[1] + s[1], at[2] + s[2]];
+        end[1] >= 0 && (site.passable)(site.cell(end))
     };
     if ends_open(dir) {
         return Some(dir);
@@ -1689,6 +1691,33 @@ mod tests {
         // turn holds them near level.
         assert!(up > i64::from(Q14) * 3 / 4, "{up}");
         assert!(level < i64::from(Q14) / 3, "{level} vs {up}");
+    }
+
+    #[test]
+    fn no_shoot_ends_below_the_trunks_base() {
+        // Wide-angled, level, whorled laterals from the first nodes, their
+        // own laterals starting square to them, in open air all round.
+        let g = Growth {
+            branch_angle: 910,
+            lateral_setpoint: 1000,
+            lambda: 128,
+            whorl: 5,
+            whorl_gap: 2,
+            whorl_mm: 30,
+            ..growth()
+        };
+        let site = Site {
+            root: CellPos::new(0, 0, 0),
+            light: |_| 255,
+            passable: |_| true,
+        };
+        let mut tree = TreeGraph::default();
+        for f in 0..12 {
+            tree = grow(&tree, &site, &g, 8, f, SEED).0;
+        }
+        assert!(tree.len() > 40, "{} metamers", tree.len());
+        let low = tree.ends().iter().map(|e| e[1]).min().unwrap();
+        assert!(low >= 0, "a shoot ends {low} mm below the base");
     }
 
     #[test]

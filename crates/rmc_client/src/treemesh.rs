@@ -47,7 +47,7 @@ use bevy::prelude::*;
 use rmc_world::coords::{CELL_SIZE_M, CellPos, LocalPos};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::query::{GraphLook, PlantLook};
-use rmc_world::tree::{BudState, NO_PARENT, Q14, TURN, TreeGraph, perpendicular, rotate};
+use rmc_world::tree::{self, BudState, NO_PARENT, Q14, TURN, TreeGraph, perpendicular, rotate};
 
 use crate::eco::ClientEco;
 use crate::material::EmissiveChunkMaterial;
@@ -250,6 +250,10 @@ pub fn tree_mesh(
         let cards = u32::from(m.leaf);
         if g.needles > 0 {
             let needles = u32::from(g.needles);
+            // The twig's square frame, built once: a needle `turn` round
+            // the twig points along `side · cos + across · sin`.
+            let side = unit(perpendicular(m.dir));
+            let across = unit(m.dir).cross(side);
             for k in 0..cards {
                 let base = a.center.lerp(b.center, (k + 1) as f32 / (cards + 1) as f32);
                 for j in 0..needles {
@@ -257,7 +261,8 @@ pub fn tree_mesh(
                         + (k * TURN / needles) / 2
                         + j * TURN / needles)
                         % TURN;
-                    let radial = unit(rotate(perpendicular(m.dir), m.dir, turn));
+                    let (c, s) = (tree::cos(turn) as f32, tree::sin(turn) as f32);
+                    let radial = (side * c + across * s) / Q14 as f32;
                     let card = Card {
                         base,
                         point: (radial + along * NEEDLE_SWEEP).normalize_or(radial),

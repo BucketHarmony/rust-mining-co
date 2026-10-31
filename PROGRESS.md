@@ -4440,3 +4440,16 @@ Decisions:
 - No pixel test (rule 21). The needles have a semantic mesh test; the screenshot is for the playtester.
 Next: owner items: the playtester judges the new shapes; oak survival balance; re-run the `tree_mesh` bench with a pine.
 Blockers: none.
+
+## 2026-10-31 — Trees as geometry T9 follow-ups (owner picks on the update page) — passed
+Done:
+- No shoot ends below its trunk's base.
+- `tree_graph_render` grows four years (GROW 17), and its evergreen shot stands back to frame the cone. Screenshots re-shot.
+- Bench `tree_mesh_pine` added beside `tree_mesh`. Needles build each twig's frame once in floats. Pine `needles` 6 → 4 (plants.ron and tree_lab.ron).
+Tests added: `trees::tests::no_shoot_ends_below_the_trunks_base`
+Decisions:
+- The owner picked these options on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): grow the scenario four years, stop branches at ground level, benchmark the needles and trim if slow.
+- `tree_graph_render` now takes about 20 min on lavapipe (was about 5). It runs in the linux-e2e job, which has a 150-minute timeout; no CI change.
+- Needles trimmed to 4 a ring: the pine mesh goes from 7.0 ms to 4.1 ms (oak 1.24 ms). The remaining gap is bark quads, not trimmed further.
+Next: oak survival balance (owner's "what next" pick).
+Blockers: none.

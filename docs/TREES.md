@@ -289,13 +289,16 @@ Each step is one session under CLAUDE.md, with a test named first.
     - `max_reach_mm` is dropped from the shipped rows. The shape bounds the width, and `max_height_mm` still caps the height.
     - Lateral setpoint: lateral axes bend toward `lateral_setpoint` from straight up (gravitropism toward that angle, not toward up). Oak 55°, birch 40°, pine 88° (level branches).
     - Whorls: `whorl` short nodes (`whorl_mm` long) every `whorl_gap` long internodes, and only whorl nodes sprout laterals. Pine: 5 nodes, gap 2, 30 mm.
-    - Needles: with `needles` above 0, the client draws `leaf` rings of that many long, thin cards per leafy metamer, staggered by half a step and swept forward along the twig, instead of leaf cards. Pine draws 6.
+    - Needles: with `needles` above 0, the client draws `leaf` rings of that many long, thin cards per leafy metamer, staggered by half a step and swept forward along the twig, instead of leaf cards. Pine draws 4 (6 at first; see the follow-ups).
     - A tree that has stopped growing (at its cap or envelope) keeps the leaves of its newest wood (within `leaf_age` flushes of its newest metamer). Before this, a capped birch shed its whole crown.
     - Competition needs no new mechanism. Leaves already shade the light grid (T3), so a neighbor's crown darkens a tree's side buds. Those buds lose vigor, and the tree reaches out less and rises more. The test grows a 3 × 3 stand at 4-cell spacing against a lone tree.
     - Shipped shapes: oak ratio 300 peak 140 damp 2, birch 150 / 110 / 2, pine 180 / 0 / 32. The pine's damp is higher so its lower whorls keep growing into the cone. Pine λ is 128.
     - Lab, seed 1, 10 years, full budget: oak about 6.5 m tall and 9 m across, irregular and broad; birch an oval, 10.3 m by 7.5 m; pine a cone, 6.9 m tall and 6.4 m across its base.
     - At the shipped pine cost (10), the pine is a round bush of 3.3 m at year 2, a cone of 5.8 m by 5.6 m at year 5, and 6.8 m by 6.2 m at year 7. The `tree_graph_render` scenario grows two years, so its pine (new `evergreen` close shot) is still a sapling. The cone shows from about year 4.
-    - Open: some pine laterals end half a cell below the root's level (the crown base reads −0.5 m). Needle cards add 6× the quads of leaf cards per leafy metamer; the mesh bench was not re-run.
+    - Follow-ups (owner picks, 2026-10-31):
+      - No shoot ends below the trunk's base (`clear` treats such an end as blocked). Before, low pine laterals ended half a cell down, beside the root cell.
+      - `tree_graph_render` grows four years (17 seasons, into the fifth summer), so its pine shows its cone. The scenario now takes about 20 minutes on lavapipe instead of about 5.
+      - Bench `tree_mesh_pine`: a ten-year pine (3 000 metamers) took 7.0 ms and 39 931 quads with 6 needles a ring, against the oak's 1.24 ms and 15 748 quads. Building each twig's frame once in floats saved 5 %. 4 needles a ring (2 rings, staggered: 8 directions) bring it to 4.1 ms and 31 115 quads. About 13 500 of those are bark, so the rest of the gap is wood, not needles.
 
 ## 8. Defaults chosen (the owner can overrule)
 

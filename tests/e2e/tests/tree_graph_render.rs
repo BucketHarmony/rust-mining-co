@@ -39,8 +39,9 @@ const DEPTH: i32 = 3;
 const FED: i32 = 200;
 /// Open air kept above the bed.
 const HEADROOM: i32 = 30;
-/// Seasons grown before the first shot: into the second summer.
-const GROW: usize = 5;
+/// Seasons grown before the first shot: four years, into the fifth
+/// summer, so the pine has formed its cone (TREES T9).
+const GROW: usize = 17;
 /// How far back the camera stands from the row of trees, and how far
 /// above the ground at its feet, in cells.
 const BACK: i32 = 34;
@@ -270,8 +271,8 @@ fn run(t: &mut TestApp) {
         let at = Vec3::new(roots[i].0.x as f32 + 0.5, y as f32, mz as f32 + 0.5) * CELL_SIZE_M;
         shoot(
             t,
-            at + Vec3::new(2.0, 1.5, -3.0),
-            at + Vec3::Y * 1.5,
+            at + Vec3::new(3.0, 2.0, -8.0),
+            at + Vec3::Y * 2.5,
             "evergreen",
         );
     }
