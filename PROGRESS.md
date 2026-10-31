@@ -4478,3 +4478,13 @@ Decisions:
 - `tree_graph_render` was not re-shot: the root zone changes what the trees draw on, not how they look.
 Next: owner items: the playtester judges the tree shots.
 Blockers: none.
+
+## 2026-10-31 — test-fix: tailings_kill_moss end check — passed
+Done:
+- CI's linux-e2e has failed on `tailings_kill_moss` since 2026-10-28 (run 40692649315), and it reproduced locally. The error: "CellPos(24, 102, 24): anchor acid 10 against moss's cap 4, moss alive true".
+- The end check required moss alive exactly when its anchor's acid was within the cap. Since the rain was balanced against evaporation (7a496be), acid keeps seeping into the shelf through the two final dry seasons. A moss whose anchor crosses the cap in the last season is stressed but has not yet had `stress_death` (16) sub-steps to die.
+- Under the cap the check is unchanged (the moss must live). Over the cap, the moss must be dead or carry stress. The other checks are unchanged: some moss died, all control moss lives, less moss in the polluted swale, acid water.
+Tests added: none (test-fix of `e2e:tailings_kill_moss`, passes locally in 64 s).
+Decisions: the check is fixed, not the scenario. Adding dry seasons to give late-stressed moss time to die would tune the scenario to the test.
+Next: watch CI on the push.
+Blockers: none.

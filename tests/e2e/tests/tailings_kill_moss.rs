@@ -392,7 +392,10 @@ fn run(t: &mut TestApp) {
         c.moss
     );
     // The moss that died is the moss whose anchor took in more acid than
-    // moss tolerates; the rest lives.
+    // moss tolerates. A moss whose anchor passed the cap only lately is
+    // still alive but stressed, counting toward `stress_death` (acid keeps
+    // seeping into the shelf through the dry seasons since the rain was
+    // balanced against evaporation). The rest lives unstressed by acid.
     let cap = eco
         .plants()
         .iter()
@@ -404,10 +407,14 @@ fn run(t: &mut TestApp) {
         let anchor = c.with_y(c.0.y - 1);
         let acid = t.layer_u8(anchor, layers.acid);
         let alive = t.host_world().get_cell(c) == Some(moss);
-        assert_eq!(
-            alive,
-            acid <= cap,
-            "{c:?}: anchor acid {acid} against moss's cap {cap}, moss alive {alive}"
+        let stress = t.host_world().plant(c).map_or(0, |p| p.stress);
+        assert!(
+            if acid <= cap {
+                alive
+            } else {
+                !alive || stress > 0
+            },
+            "{c:?}: anchor acid {acid} against moss's cap {cap}, moss alive {alive},              stress {stress}"
         );
         assert_eq!(
             alive,
