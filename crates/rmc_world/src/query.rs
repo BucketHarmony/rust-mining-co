@@ -82,6 +82,9 @@ pub struct GraphLook {
     pub wood: MaterialId,
     /// A twig's pipe radius, in micrometers.
     pub tip_um: u32,
+    /// Wood's ring per cycle of age, in micrometers
+    /// (`TreeGraph::wood_radii`).
+    pub ring_um: u32,
     /// Leaf cards turn this far about the twig from one metamer to the
     /// next, in steps of 4096 a turn.
     pub divergence: u16,

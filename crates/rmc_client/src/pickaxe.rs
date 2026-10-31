@@ -631,6 +631,7 @@ mod tests {
         assert_eq!(w.apply(&set).status, EditStatus::Applied);
         w.set_tree_rules(TreeRules {
             tip_um: vec![200_000],
+            ring_um: Vec::new(),
             solid_radius_um: 80_000,
             metamer_litter: 1,
             wood_per_item_dm3: 5,

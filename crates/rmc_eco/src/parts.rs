@@ -69,7 +69,11 @@
 //! leafy metamers feed it like leaves, and step 3 grows its metamer graph
 //! by [`crate::trees::grow`] with every whole `cost` of the biomass,
 //! paying `cost` per metamer added. A graph whose root is no longer a
-//! graph tree's is removed before the sweep.
+//! graph tree's is removed before the sweep. When that budget would take
+//! the graph past `max_metamers`, the tree first sheds up to `renew`
+//! metamers of its darkest twigs ([`crate::trees::renew`], docs/TREES.md
+//! T11), each metamer and leaf rotting as `eco.metamer_litter` like a
+//! shed limb's.
 //!
 //! Before its other steps, a graph tree with `root_cells` tops its anchor
 //! up from the soil beside it (`ExtendPass::draw_roots`, docs/TREES.md
@@ -861,6 +865,21 @@ impl SweepPass for ExtendPass {
                             biomass -= i32::try_from(set).unwrap_or(i32::MAX) * form.cost;
                         }
                     }
+                }
+                // A tree at its cap sheds twigs to make room (TREES T11).
+                let want = (graph.len() + budget)
+                    .saturating_sub(growth.max_metamers)
+                    .min(growth.renew);
+                if want > 0 {
+                    let (renewed, fallen) = {
+                        let site = self.site(ctx.world, cell);
+                        trees::renew(&graph, &site, want)
+                    };
+                    for at in fallen {
+                        let landing = self.landing(ctx.world, trees::cell_at(cell, at));
+                        self.rot_by(ctx, landing, self.metamer_litter);
+                    }
+                    graph = renewed;
                 }
                 let (grown, added) = {
                     let site = self.site(ctx.world, cell);

@@ -1705,6 +1705,7 @@ mod tests {
                 flower: None,
                 wood: t.id("oak_wood").unwrap(),
                 tip_um: 2000,
+                ring_um: 0,
                 divergence: 1564,
                 needles: 0,
                 bark_min_um: 0,

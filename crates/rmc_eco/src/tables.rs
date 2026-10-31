@@ -407,6 +407,16 @@ pub enum FormDef {
         /// alone.
         #[serde(default)]
         root_cells: u8,
+        /// Wood's ring per cycle of age, as a radius (docs/TREES.md T11):
+        /// a metamer is this much thicker than its pipe radius for every
+        /// cycle it is older than the tree's newest metamer.
+        #[serde(default)]
+        ring_um: u32,
+        /// The most metamers a tree at `max_metamers` sheds in a flush to
+        /// make room for new growth (docs/TREES.md T11): its darkest twigs
+        /// go first. 0: a capped tree stops growing.
+        #[serde(default)]
+        renew: u16,
     },
 }
 
@@ -1244,6 +1254,7 @@ impl EcoTables {
                 graph: p.parts.as_ref().and_then(|d| match d.form {
                     FormDef::Graph {
                         tip_um,
+                        ring_um,
                         divergence,
                         needles,
                         bark_min_um,
@@ -1251,6 +1262,7 @@ impl EcoTables {
                     } => Some(GraphLook {
                         wood: self.materials.id(&d.wood)?,
                         tip_um,
+                        ring_um,
                         divergence,
                         needles,
                         bark_min_um,
@@ -1376,8 +1388,8 @@ impl EcoTables {
     }
 
     /// What the world needs to collide with, chop and fell graph trees
-    /// (docs/TREES.md T5): each species' twig radius (0 for species not
-    /// grown as graphs) and the `eco` tree params.
+    /// (docs/TREES.md T5): each species' twig radius and ring (0 for
+    /// species not grown as graphs) and the `eco` tree params.
     pub fn tree_rules(&self) -> TreeRules {
         TreeRules {
             tip_um: self
@@ -1385,6 +1397,14 @@ impl EcoTables {
                 .iter()
                 .map(|p| match p.parts.as_ref().map(|d| &d.form) {
                     Some(FormDef::Graph { tip_um, .. }) => *tip_um,
+                    _ => 0,
+                })
+                .collect(),
+            ring_um: self
+                .plants
+                .iter()
+                .map(|p| match p.parts.as_ref().map(|d| &d.form) {
+                    Some(FormDef::Graph { ring_um, .. }) => *ring_um,
                     _ => 0,
                 })
                 .collect(),

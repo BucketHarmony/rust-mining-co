@@ -46,8 +46,8 @@ pub struct LightPass {
     falloff: u8,
     /// `light_attenuation` by material id.
     attenuation: Vec<u8>,
-    /// Per `plants.ron` row: the twig radius of a graph tree.
-    tips: Vec<Option<u32>>,
+    /// Per `plants.ron` row: the twig radius and ring of a graph tree.
+    tips: Vec<Option<(u32, u32)>>,
     canopy: Canopy,
 }
 
@@ -161,7 +161,7 @@ impl LightPass {
                 .iter()
                 .map(|p| {
                     let parts = p.parts.as_ref()?;
-                    Growth::from_form(&parts.form).map(|g| g.tip_um)
+                    Growth::from_form(&parts.form).map(|g| (g.tip_um, g.ring_um))
                 })
                 .collect(),
             canopy: Canopy {

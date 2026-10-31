@@ -98,7 +98,11 @@
     // grown tree tops its anchor up to its `substance_min` plus its `uptake`
     // from the soil cells beside it, out to its crown's reach and at most
     // this many cells (docs/TREES.md T10). `bark_min_um`: the client draws
-    // no wood thinner than this radius. Part cells left
+    // no wood thinner than this radius. `ring_um`: wood is this much
+    // thicker for each cycle it is older than the tree's newest metamer;
+    // `renew`: the most metamers of its darkest twigs a tree at
+    // `max_metamers` sheds in a flush to grow new ones (docs/TREES.md T11).
+    // Part cells left
     // on a graph tree's root by an older save rot as litter.
     // Form Tree (docs/VEGETATION.md V4), the older cell tree, still allowed:
     // each part costing `cost` is a cell, the trunk straight up to a seeded
@@ -121,7 +125,7 @@
                  bud_light: 32, max_shoot: 2, max_metamers: 4000, leaf: 4,
                  shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200,
                  max_height_mm: 12000, lateral_setpoint: 512, crown_ratio: 220,
-                 crown_peak: 128, crown_damp: 2, root_cells: 4, bark_min_um: 12000),
+                 crown_peak: 128, crown_damp: 2, root_cells: 4, bark_min_um: 12000, ring_um: 600, renew: 16),
              shed: Some("winter"),
              fruit: Some((grow: "autumn", fall: "winter", count: 6, take: 48))))),
     // Birch: a pioneer of poor soil, quick, narrow and deciduous.
@@ -138,7 +142,7 @@
                  bud_light: 24, max_shoot: 3, max_metamers: 2500, leaf: 3,
                  shed_light: 40, shed_after: 4, leaf_age: 8, mature: 150,
                  max_height_mm: 10000, lateral_setpoint: 455, crown_ratio: 150,
-                 crown_peak: 110, crown_damp: 2, root_cells: 3, bark_min_um: 8000),
+                 crown_peak: 110, crown_damp: 2, root_cells: 3, bark_min_um: 8000, ring_um: 500, renew: 16),
              shed: Some("winter"),
              fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 64))))),
     // Pine: evergreen, slow, tolerant of acid soil; a cone of whorled,
@@ -156,7 +160,7 @@
                  shed_light: 32, shed_after: 8, leaf_age: 12, mature: 250,
                  max_height_mm: 9000, lateral_setpoint: 1000, crown_ratio: 180,
                  crown_peak: 0, crown_damp: 32, whorl: 5, whorl_gap: 2, whorl_mm: 30,
-                 needles: 4, root_cells: 3, bark_min_um: 12000),
+                 needles: 4, root_cells: 3, bark_min_um: 12000, ring_um: 500, renew: 16),
              fruit: Some((grow: "summer", fall: "autumn", count: 4, take: 40))))),
     // Vines (docs/VEGETATION.md V6). The seed ripens into vine_stem, the root.
     // Form Vine: vine cells (the `leaf` material) grow into open cells that

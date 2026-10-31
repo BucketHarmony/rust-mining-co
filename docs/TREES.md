@@ -313,6 +313,14 @@ Each step is one session under CLAUDE.md, with a test named first.
     - Pine: needles 0.2 m long (were 0.14 m) and 16% as wide (12%); bark color (66, 46, 34).
     - Oak retune: `crown_ratio` 300 → 220, `crown_peak` 140 → 128, `lateral_setpoint` 55° → 45°, `max_height_mm` 9 000 → 12 000. Lab, seed 1: year 3 7.8 m tall and 7.8 m across (was 6.3 m by 8.5 m); year 10 10.0 m by 9.3 m (was 6.5 m by 9.0 m), with an even dome instead of a flat-topped umbrella. Headless, 40 seasons: oaks 62 → 54, tallest 9.4 m. Birch and pine unchanged.
 
+- **T11 — Capped trees age (owner pick "thicken", 2026-10-31).** In the ten-year world, trees stopped changing once they reached their cap: birch at 2 500 metamers by season 20, pine at 3 000. The pipe model only thickens wood as twigs are added, so a capped tree's trunk stopped too. The owner picked: a capped tree keeps thickening and replaces shed twigs.
+    - Secondary growth: new Graph field `ring_um`. A metamer's wood radius is its pipe radius plus `ring_um` for each cycle between its birth and the birth of the graph's newest metamer (`TreeGraph::wood_radii`). It reads only the graph, so the save format is unchanged. The host's light pass, chopping and collision, and the client's mesh all compute the same radii.
+    - Renewal: new Graph field `renew`. When a flush's budget would take the graph past `max_metamers`, the tree first sheds whole twigs (lateral axes that carry no lateral of their own), darkest first, until the budget fits or `renew` metamers have gone. Darkest means the least of the most light at any of the twig's ends; ties go to the oldest base, then the lowest index. The node a twig grew from may sprout again (its Dead bud turns Active). Shed metamers and leaves rot as `metamer_litter` on their landing, as `tend`'s shed limbs do. It runs in the extension sweep just before `grow`, so the conservation checks hold.
+    - Renewal keeps new metamers coming every growing season, so the newest metamer stays current. The capped tree keeps adding rings, and the `leaf_age` rule keeps fresh leaves on its new twigs. A starved tree (no budget) neither renews nor thickens.
+    - Shipped: `ring_um` oak 600, birch 500, pine 500 (2–2.4 mm of radius a year); `renew` 16 for all three. 0 for either field keeps the old behavior.
+    - Lab, seed 1, 10 years: the capped birch's trunk goes from 70 mm at year 6 to 78 mm at year 10 (it was fixed at 59 mm). It still adds about 60 new metamers a year at its cap. Oak 9.3 m tall, trunk 120 mm. Pine 5.8 m, trunk 94 mm.
+    - Headless, seed 1, 128 × 64 × 128, 40 seasons: oaks 62 → 58, tallest oak 10.5 m, birch 10.3 m, pine 9.1 m. Invariants held.
+
 ## 8. Defaults chosen (the owner can overrule)
 
 - Pace is accelerated with realistic proportions (§5), not real time.

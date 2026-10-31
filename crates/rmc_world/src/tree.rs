@@ -232,6 +232,22 @@ impl TreeGraph {
             .collect()
     }
 
+    /// Each metamer's wood radius in micrometers (docs/TREES.md T11): its
+    /// [`radii`](Self::radii) by the pipe model plus `ring_um` for every
+    /// cycle between its birth and the newest metamer's, so wood keeps
+    /// thickening while the tree keeps growing or renewing.
+    pub fn wood_radii(&self, tip_um: u32, ring_um: u32) -> Vec<u32> {
+        let newest = self.metamers.iter().map(|m| m.born).max().unwrap_or(0);
+        self.radii(tip_um)
+            .into_iter()
+            .zip(&self.metamers)
+            .map(|(r, m)| {
+                let age = u32::from(newest - m.born);
+                r.saturating_add(ring_um.saturating_mul(age))
+            })
+            .collect()
+    }
+
     /// The graph without the subtrees of the metamers `cut` marks, and
     /// which metamers went (a cut one and everything growing from it).
     /// Parents are renumbered; the order is kept.
@@ -471,6 +487,24 @@ mod tests {
         let chain = TreeGraph::try_from(vec![m(NO_PARENT, UP, 100), m(0, UP, 100)]).unwrap();
         assert_eq!(chain.ends(), [[0, 100, 0], [0, 200, 0]]);
         assert_eq!(chain.radii(1500), [1500, 1500]);
+    }
+
+    #[test]
+    fn wood_gains_a_ring_for_each_cycle_older_than_the_newest_metamer() {
+        let born = |b: u16, mut x: Metamer| {
+            x.born = b;
+            x
+        };
+        let g = TreeGraph::try_from(vec![
+            born(0, m(NO_PARENT, UP, 100)),
+            born(3, m(0, UP, 100)),
+            born(5, m(1, UP, 100)),
+        ])
+        .unwrap();
+        assert_eq!(g.wood_radii(1500, 0), g.radii(1500));
+        assert_eq!(g.wood_radii(1500, 100), [2000, 1700, 1500]);
+        // A graph whose metamers are all one age has the pipe radii.
+        assert_eq!(y_fork().wood_radii(2000, 100), y_fork().radii(2000));
     }
 
     #[test]

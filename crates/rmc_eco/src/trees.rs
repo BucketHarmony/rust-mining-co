@@ -40,7 +40,8 @@
 //! 4. **Collision.** An internode whose end cell is not passable (open,
 //!    a part, or a plant) turns once toward the brightest passable face
 //!    of the cell it starts in; still blocked, its bud goes Dormant.
-//! 5. **Cap.** No metamer is added past `max_metamers`.
+//! 5. **Cap.** No metamer is added past `max_metamers`. A tree at its cap
+//!    makes room first by [`renew`] (T11, run by the extension sweep).
 //!
 //! **Flowers and fruit** (T6) are bud states on tips (metamers without a
 //! continuation): [`bear`] turns lit leafy tips with an Active bud into
@@ -107,6 +108,8 @@ pub struct Growth {
     pub whorl_gap: u32,
     pub whorl_mm: u16,
     pub root_cells: i64,
+    pub ring_um: u32,
+    pub renew: usize,
 }
 
 impl Growth {
@@ -138,6 +141,8 @@ impl Growth {
             whorl_gap,
             whorl_mm,
             root_cells,
+            ring_um,
+            renew,
             ..
         } = form
         else {
@@ -169,6 +174,8 @@ impl Growth {
             whorl_gap: u32::from(whorl_gap),
             whorl_mm,
             root_cells: i64::from(root_cells),
+            ring_um,
+            renew: usize::from(renew),
         })
     }
 
@@ -308,16 +315,16 @@ pub struct Canopy {
 }
 
 /// Calls `shade(cell, attenuation)` for every metamer of `graph` (rooted at
-/// `root`, twig radius `tip_um`) that takes light from the cell it ends
-/// in: its leaves, and its wood when it is solid.
+/// `root`, twig radius `tip_um`, ring `ring_um`) that takes light from the
+/// cell it ends in: its leaves, and its wood when it is solid.
 pub fn shade_cells(
     graph: &TreeGraph,
     root: CellPos,
-    tip_um: u32,
+    (tip_um, ring_um): (u32, u32),
     canopy: Canopy,
     mut shade: impl FnMut(CellPos, u32),
 ) {
-    let radii = graph.radii(tip_um);
+    let radii = graph.wood_radii(tip_um, ring_um);
     for ((m, end), r) in graph.metamers().iter().zip(graph.ends()).zip(radii) {
         let solid = canopy.solid_radius_um > 0 && r >= canopy.solid_radius_um;
         let a = u32::from(m.leaf) * canopy.leaf_attenuation
@@ -391,6 +398,77 @@ where
             if m.leaf > 0 {
                 fallen.push(ends[i]);
             }
+        }
+    }
+    (pruned, fallen)
+}
+
+/// Room for new growth on a tree at its cap (docs/TREES.md T11): sheds
+/// whole twigs (lateral axes that carry no lateral of their own), the
+/// darkest first (the least of the most light at any of the twig's ends,
+/// then the oldest, then the lowest index), until `want` metamers are gone
+/// or no twig is left. The node a twig grew from may sprout again. Returns
+/// the pruned graph and a point for every metamer shed and every leaf on
+/// it, where each leaves litter.
+pub fn renew<L, P>(graph: &TreeGraph, site: &Site<L, P>, want: usize) -> (TreeGraph, Vec<[i32; 3]>)
+where
+    L: Fn(CellPos) -> i32,
+    P: Fn(CellPos) -> bool,
+{
+    let ms = graph.metamers();
+    let n = ms.len();
+    if want == 0 || n == 0 {
+        return (graph.clone(), Vec::new());
+    }
+    let ends = graph.ends();
+    // Whether anything grown from a metamer starts a lateral, and how many
+    // metamers its subtree holds.
+    let mut forks = vec![false; n];
+    let mut size = vec![1usize; n];
+    for i in (1..n).rev() {
+        let p = usize::from(ms[i].parent);
+        forks[p] |= forks[i] || ms[i].lateral;
+        size[p] += size[i];
+    }
+    // Each twig's light: the most at any of its metamers' ends.
+    let mut twig: Vec<Option<usize>> = vec![None; n];
+    let mut lit: BTreeMap<usize, i32> = BTreeMap::new();
+    for i in 0..n {
+        twig[i] = if ms[i].lateral && !forks[i] {
+            Some(i)
+        } else if ms[i].parent == NO_PARENT {
+            None
+        } else {
+            twig[usize::from(ms[i].parent)]
+        };
+        if let Some(t) = twig[i] {
+            let l = site.light_at(ends[i]);
+            lit.entry(t).and_modify(|m| *m = (*m).max(l)).or_insert(l);
+        }
+    }
+    let mut order: Vec<(i32, u16, usize)> =
+        lit.into_iter().map(|(t, l)| (l, ms[t].born, t)).collect();
+    order.sort_unstable();
+    let mut cut = vec![false; n];
+    let mut marked = graph.clone();
+    let mut freed = 0;
+    for (_, _, t) in order {
+        if freed >= want {
+            break;
+        }
+        cut[t] = true;
+        freed += size[t];
+        let p = usize::from(ms[t].parent);
+        if ms[p].bud == BudState::Dead {
+            marked.set_state(p, BudState::Active, ms[p].leaf, ms[p].shade);
+        }
+    }
+    let (pruned, gone) = marked.prune(&cut);
+    let mut fallen = Vec::new();
+    for (i, m) in ms.iter().enumerate().filter(|&(i, _)| gone[i]) {
+        fallen.push(ends[i]);
+        if m.leaf > 0 {
+            fallen.push(ends[i]);
         }
     }
     (pruned, fallen)
@@ -1361,6 +1439,123 @@ mod tests {
     }
 
     #[test]
+    fn renewal_sheds_the_darkest_twigs_first_and_never_the_trunk() {
+        // A trunk of six; twig A (+x, 3) from metamer 1; twig B (-x, 3)
+        // from metamer 2; branch C (+x, 2) from metamer 3 with twig D
+        // (+z, 2) from C's first metamer, grown a cycle after A.
+        let (east, west, south) = (
+            [Q14 as i16, 0, 0],
+            [-(Q14 as i16), 0, 0],
+            [0, 0, Q14 as i16],
+        );
+        let mut g = TreeGraph::default();
+        g.push(metamer(NO_PARENT, UP, 0, false, 1)).unwrap();
+        for p in 0..5 {
+            g.push(metamer(p, UP, 0, false, 1)).unwrap();
+        }
+        let chain = |g: &mut TreeGraph, from: u16, dir: Dir, born: u16, len: u16| {
+            let first = g.push(metamer(from, dir, born, true, 1)).unwrap();
+            for k in 1..len {
+                g.push(metamer(first + k - 1, dir, born, false, 1)).unwrap();
+            }
+            first
+        };
+        let a = chain(&mut g, 1, east, 0, 3);
+        let b = chain(&mut g, 2, west, 0, 3);
+        let c = chain(&mut g, 3, east, 0, 2);
+        let d = chain(&mut g, c, south, 1, 2);
+        assert_eq!([a, b, c, d], [6, 9, 12, 14]);
+        for p in [1, 2, 3, c] {
+            let m = g.metamers()[usize::from(p)];
+            g.set_state(usize::from(p), BudState::Dead, m.leaf, m.shade);
+        }
+        let root = CellPos::new(16, 31, 16);
+        let site = Site {
+            root,
+            light: |c: CellPos| if c.0.x > root.0.x { 200 } else { 40 },
+            passable: |_| true,
+        };
+        let n = g.len();
+
+        // Nothing wanted: unchanged.
+        let (same, fallen) = renew(&g, &site, 0);
+        assert_eq!(same, g);
+        assert!(fallen.is_empty());
+
+        // Two wanted: the dark twig B (three metamers) goes whole.
+        let (one, fallen) = renew(&g, &site, 2);
+        assert_eq!(one.len(), n - 3);
+        assert_eq!(fallen.len(), 3 * 2, "a metamer and its leaf each");
+        assert!(one.ends().iter().all(|e| e[0] >= 0), "no -x wood left");
+        assert_eq!(
+            one.metamers()[2].bud,
+            BudState::Active,
+            "B's node may sprout"
+        );
+        assert_eq!(
+            one.metamers()[1].bud,
+            BudState::Dead,
+            "A's node still bears A"
+        );
+
+        // Four wanted: B, then A (lit as D, but older).
+        let (two, _) = renew(&g, &site, 4);
+        assert_eq!(two.len(), n - 6);
+        assert_eq!(two.metamers()[1].bud, BudState::Active);
+        let souths = two.metamers().iter().filter(|m| m.dir == south).count();
+        assert_eq!(souths, 2, "D stays");
+
+        // All wanted: every twig goes (A, B, D); the trunk and C stay.
+        let (bare, _) = renew(&g, &site, usize::MAX);
+        assert_eq!(bare.len(), 6 + 2);
+    }
+
+    #[test]
+    fn a_capped_tree_renews_and_keeps_thickening() {
+        // Grown over seasons with `renew` and without; both reach the cap.
+        let grow = |renew: u16| {
+            let t = tables_with(&format!(
+                "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+                 divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96, \
+                 bud_light: 32, max_shoot: 3, max_metamers: 60, leaf: 4, \
+                 ring_um: 100, renew: {renew}),"
+            ))
+            .expect("the renewing oak loads");
+            let growth = Growth::from_form(&oak_parts(&t).form).unwrap();
+            let mut w = world(&t);
+            let root = CellPos::new(16, 31, 16);
+            oak(&mut w, &t, root);
+            let light = LightPass::new(&t);
+            let mut trunk = Vec::new();
+            for season in 0..24 {
+                w.eco_put_layer(root, LayerId::Biomass, i32::from(u8::MAX));
+                light.recompute(&mut w);
+                extend_in(&mut w, &t, season);
+                let g = graph(&w, root);
+                assert!(g.len() <= 60, "season {season}: {} metamers", g.len());
+                let newest = g.metamers().iter().map(|m| m.born).max().unwrap_or(0);
+                let r = g.wood_radii(growth.tip_um, growth.ring_um)[0];
+                trunk.push((g.len(), newest, r));
+            }
+            trunk
+        };
+        let frozen = grow(0);
+        let renewing = grow(8);
+        let capped = frozen
+            .iter()
+            .position(|&(n, ..)| n == 60)
+            .expect("reaches the cap");
+        assert!(capped < 12, "capped by season {capped}");
+        // Without renewal the capped tree is fixed: no new wood, no rings.
+        assert!(frozen[capped..].iter().all(|&s| s == frozen[capped]));
+        // With it, new wood keeps coming after the cap and the trunk keeps
+        // gaining rings.
+        let (_, newest, r) = renewing[23];
+        assert!(newest >= 20, "newest wood from season {newest}");
+        assert!(r > frozen[23].2, "trunk {r} um against {} um", frozen[23].2);
+    }
+
+    #[test]
     fn a_shaded_lower_limb_is_shed_and_its_mass_becomes_litter() {
         let shed_after = 3;
         let t = shedding_tables(shed_after, 0, 0);
@@ -1730,6 +1925,8 @@ mod tests {
             whorl_gap: 0,
             whorl_mm: 0,
             root_cells: 0,
+            ring_um: 0,
+            renew: 0,
         }
     }
 

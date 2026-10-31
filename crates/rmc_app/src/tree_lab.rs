@@ -65,6 +65,7 @@ pub fn lab_json(
     let FormDef::Graph {
         internode_mm,
         tip_um,
+        ring_um,
         divergence,
         leaf,
         ..
@@ -82,7 +83,7 @@ pub fn lab_json(
         .iter()
         .map(|f| {
             let ends = f.graph.ends();
-            let radii = f.graph.radii(tip_um);
+            let radii = f.graph.wood_radii(tip_um, ring_um);
             let metamers: Vec<Value> = f
                 .graph
                 .metamers()

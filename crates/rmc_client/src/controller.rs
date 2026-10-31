@@ -1458,6 +1458,7 @@ mod tests {
         fill(&mut world, (20, 3, 32), (20, 3, 32), oak);
         world.set_tree_rules(TreeRules {
             tip_um: vec![tip_um],
+            ring_um: Vec::new(),
             solid_radius_um: 80_000,
             metamer_litter: 1,
             wood_per_item_dm3: 5,

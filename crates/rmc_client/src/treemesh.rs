@@ -6,7 +6,8 @@
 //! hash or the season changes ([`sync_tree_meshes`]).
 //!
 //! **Wood.** Every metamer is a generalized cylinder between two
-//! [`Ring`]s. Its end ring has its pipe radius ([`TreeGraph::radii`]); its
+//! [`Ring`]s. Its end ring has its wood radius: the pipe radius plus a ring per
+//! cycle of age ([`TreeGraph::wood_radii`]); its
 //! start ring is its parent's end ring when it continues the parent's
 //! axis, and its own radius at the parent's end when it starts a lateral.
 //! A ring faces the average of the directions meeting there, so an axis
@@ -124,7 +125,7 @@ fn unit(d: [i16; 3]) -> Vec3 {
 /// keep to [`rings`].
 pub fn wood_rings(graph: &TreeGraph, g: &GraphLook, sway: u8) -> Vec<[Ring; 2]> {
     let floor = g.bark_min_um as f32 * M_PER_UM;
-    let mut out = rings(graph, g.tip_um, sway);
+    let mut out = rings(graph, g.tip_um, g.ring_um, sway);
     for ring in out.iter_mut().flatten() {
         ring.radius_m = ring.radius_m.max(floor);
     }
@@ -138,11 +139,11 @@ pub fn wood_rings(graph: &TreeGraph, g: &GraphLook, sway: u8) -> Vec<[Ring; 2]> 
 }
 
 /// The start and end ring of every metamer of `graph`, in its order, for a
-/// species of twig radius `tip_um` and sway `sway`.
-pub fn rings(graph: &TreeGraph, tip_um: u32, sway: u8) -> Vec<[Ring; 2]> {
+/// species of twig radius `tip_um`, ring `ring_um` and sway `sway`.
+pub fn rings(graph: &TreeGraph, tip_um: u32, ring_um: u32, sway: u8) -> Vec<[Ring; 2]> {
     let ms = graph.metamers();
     let ends = graph.ends();
-    let radii = graph.radii(tip_um);
+    let radii = graph.wood_radii(tip_um, ring_um);
     // The child continuing each metamer's axis, if any.
     let mut next = vec![None; ms.len()];
     for (i, m) in ms.iter().enumerate() {
@@ -244,7 +245,7 @@ pub fn tree_mesh(
     for [a, b] in &wood_rings(graph, g, look.sway) {
         push_cylinder(&mut out, a, b, bark, wood_id);
     }
-    let all = rings(graph, g.tip_um, look.sway);
+    let all = rings(graph, g.tip_um, g.ring_um, look.sway);
     let color = |id: MaterialId| {
         materials
             .get(id)
@@ -590,6 +591,7 @@ mod tests {
             graph: Some(GraphLook {
                 wood,
                 tip_um: 2000,
+                ring_um: 0,
                 divergence: 1564,
                 needles: 0,
                 bark_min_um: 0,
@@ -606,7 +608,7 @@ mod tests {
         let t = materials();
         let (look, g) = look(&t, true);
         let graph = tree(3);
-        let rings = rings(&graph, g.tip_um, look.sway);
+        let rings = rings(&graph, g.tip_um, g.ring_um, look.sway);
         assert_eq!(rings.len(), graph.len());
         let wood: usize = rings.iter().map(|[a, _]| 2 * a.sides as usize).sum();
         // Two sides of four corners per card.
@@ -645,7 +647,7 @@ mod tests {
         let t = materials();
         let (look, g) = look(&t, false);
         let graph = tree(3);
-        let plain = rings(&graph, g.tip_um, look.sway);
+        let plain = rings(&graph, g.tip_um, g.ring_um, look.sway);
         let floor = g.tip_um * 3 / 2;
         let g = GraphLook {
             bark_min_um: floor,
@@ -701,7 +703,7 @@ mod tests {
         let (look, g) = look(&t, true);
         let g = GraphLook { needles: 6, ..g };
         let graph = tree(2);
-        let wood: usize = rings(&graph, g.tip_um, look.sway)
+        let wood: usize = rings(&graph, g.tip_um, g.ring_um, look.sway)
             .iter()
             .map(|[a, _]| 2 * a.sides as usize)
             .sum();
@@ -745,7 +747,7 @@ mod tests {
         // Six corners per octahedron, after the wood.
         assert_eq!(mesh.positions.len(), base.positions.len() + 3 * 6);
         assert_eq!(mesh.indices.len(), 6 * mesh.quad_count as usize);
-        let wood: usize = rings(&plain, g.tip_um, look.sway)
+        let wood: usize = rings(&plain, g.tip_um, g.ring_um, look.sway)
             .iter()
             .map(|[a, _]| 2 * a.sides as usize)
             .sum();
@@ -755,7 +757,7 @@ mod tests {
             [g.fruit, g.flower.unwrap(), g.flower.unwrap()].map(|m| f32::from(m.0))
         );
         // The fruit hangs below its tip's end; flowers sit on theirs.
-        let ends = rings(&plain, g.tip_um, look.sway);
+        let ends = rings(&plain, g.tip_um, g.ring_um, look.sway);
         let low = (0..6)
             .map(|k| mesh.positions[wood + k][1])
             .fold(f32::MAX, f32::min);
@@ -787,7 +789,7 @@ mod tests {
         let t = materials();
         let (look, g) = look(&t, false);
         let graph = tree(1);
-        let rings = rings(&graph, g.tip_um, look.sway);
+        let rings = rings(&graph, g.tip_um, g.ring_um, look.sway);
         for (i, (m, [a, b])) in graph.metamers().iter().zip(&rings).enumerate() {
             assert!(a.radius_m >= b.radius_m, "metamer {i} widens");
             if m.parent != NO_PARENT && !m.lateral {

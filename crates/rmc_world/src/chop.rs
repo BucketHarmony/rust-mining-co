@@ -55,6 +55,9 @@ pub struct TreeRules {
     /// Twig radius per plant species index; 0 for species that do not grow
     /// as graphs.
     pub tip_um: Vec<u32>,
+    /// Ring per cycle of age per plant species index
+    /// ([`TreeGraph::wood_radii`]); missing means 0.
+    pub ring_um: Vec<u32>,
     /// `eco.solid_radius_um`: from this radius a limb is solid. 0: none is.
     pub solid_radius_um: u32,
     /// `eco.metamer_litter`: organic per fallen leaf (and per metamer of a
@@ -124,6 +127,15 @@ impl World {
         self.tree_rules = Arc::new(rules);
     }
 
+    /// The yearly-ring growth of the graph tree rooted at `root` (per cycle
+    /// of age, [`TreeGraph::wood_radii`]); 0 without a plant or a ring.
+    pub fn tree_ring_um(&self, root: CellPos) -> u32 {
+        self.plant(root)
+            .and_then(|p| self.tree_rules.ring_um.get(usize::from(p.species)))
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Twig radius of the graph tree rooted at `root`, from its plant's
     /// species; `None` without a plant or for a species not grown as a
     /// graph.
@@ -147,7 +159,7 @@ impl World {
         }
         let o = root_origin_mm(root);
         let ends = graph.ends();
-        let radii = graph.radii(tip);
+        let radii = graph.wood_radii(tip, self.tree_ring_um(root));
         let mut out = Vec::new();
         for (i, m) in graph.metamers().iter().enumerate() {
             if radii[i] < solid {
@@ -232,7 +244,7 @@ impl World {
         let (Some(graph), Some(tip)) = (self.tree(root).cloned(), self.tree_tip_um(root)) else {
             return;
         };
-        let radii = graph.radii(tip);
+        let radii = graph.wood_radii(tip, self.tree_ring_um(root));
         let i = usize::from(metamer);
         let hardness = self
             .plant(root)
@@ -266,7 +278,8 @@ impl World {
         let Some(graph) = self.tree(cell).cloned() else {
             return;
         };
-        let radii = graph.radii(self.tree_tip_um(cell).unwrap_or(0));
+        let tip = self.tree_tip_um(cell).unwrap_or(0);
+        let radii = graph.wood_radii(tip, self.tree_ring_um(cell));
         let all = vec![true; graph.len()];
         self.drop_metamers(cell, &graph, &radii, &all, cause, ledger, fx);
         self.put_tree(cell, None, fx);
@@ -439,6 +452,7 @@ mod tests {
         });
         w.set_tree_rules(TreeRules {
             tip_um: vec![tip_um],
+            ring_um: Vec::new(),
             solid_radius_um: SOLID,
             metamer_litter: 1,
             wood_per_item_dm3: WOOD_DM3,
