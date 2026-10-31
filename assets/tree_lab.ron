@@ -7,14 +7,14 @@
 // envelope (T8). The crown shape, setpoint, whorl and needle fields: T9.
 [
     // Oak: 25 cm internodes, 45° laterals on the golden angle, λ 0.52;
-    // a broad, irregular crown.
+    // a round crown, taller than the birch once grown (12 m cap).
     (species: "oak",
      form: Graph(internode_mm: 250, tip_um: 2500, branch_angle: 512,
          divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
          bud_light: 32, max_shoot: 2, max_metamers: 4000, leaf: 4,
          shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200,
-         max_height_mm: 9000, lateral_setpoint: 626, crown_ratio: 300,
-         crown_peak: 140, crown_damp: 2, root_cells: 4, bark_min_um: 12000)),
+         max_height_mm: 12000, lateral_setpoint: 512, crown_ratio: 220,
+         crown_peak: 128, crown_damp: 2, root_cells: 4, bark_min_um: 12000)),
     // Birch: 30 cm, 35°, λ 0.58; a narrow oval.
     (species: "birch",
      form: Graph(internode_mm: 300, tip_um: 1800, branch_angle: 398,

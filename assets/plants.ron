@@ -120,8 +120,8 @@
                  divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
                  bud_light: 32, max_shoot: 2, max_metamers: 4000, leaf: 4,
                  shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200,
-                 max_height_mm: 9000, lateral_setpoint: 626, crown_ratio: 300,
-                 crown_peak: 140, crown_damp: 2, root_cells: 4, bark_min_um: 12000),
+                 max_height_mm: 12000, lateral_setpoint: 512, crown_ratio: 220,
+                 crown_peak: 128, crown_damp: 2, root_cells: 4, bark_min_um: 12000),
              shed: Some("winter"),
              fruit: Some((grow: "autumn", fall: "winter", count: 6, take: 48))))),
     // Birch: a pioneer of poor soil, quick, narrow and deciduous.

@@ -307,6 +307,11 @@ Each step is one session under CLAUDE.md, with a test named first.
     - A seedling's crown reaches no cell, so it draws only from its anchor. The zone widens as the crown does.
     - Shipped: oak 4, birch 3, pine 3 (also in `tree_lab.ron`).
     - Headless, seed 1, 128 × 64 × 128, 40 seasons: oaks 62 → 53 (were 62 → 0). Birch (100 → 99), pine (61 → 63) and the other plants barely change.
+- **Playtest follow-ups (owner picks, 2026-10-31; docs/PLAYTEST.md "Trees").**
+    - Wood floor: new Graph field `bark_min_um`. The client draws no wood thinner than that radius (oak 12 mm, birch 8 mm, pine 12 mm), so twigs stay visible at range. The pipe radii on the host are unchanged.
+    - Stump: the root cell of a tree with a graph is left out of the chunk mesh. The tree mesh's first ring drops to the root cell's floor, `STUMP_FLARE` (1.6) times the trunk's radius. The cell stays solid for digging and collision.
+    - Pine: needles 0.2 m long (were 0.14 m) and 16% as wide (12%); bark color (66, 46, 34).
+    - Oak retune: `crown_ratio` 300 → 220, `crown_peak` 140 → 128, `lateral_setpoint` 55° → 45°, `max_height_mm` 9 000 → 12 000. Lab, seed 1: year 3 7.8 m tall and 7.8 m across (was 6.3 m by 8.5 m); year 10 10.0 m by 9.3 m (was 6.5 m by 9.0 m), with an even dome instead of a flat-topped umbrella. Headless, 40 seasons: oaks 62 → 54, tallest 9.4 m. Birch and pine unchanged.
 
 ## 8. Defaults chosen (the owner can overrule)
 
