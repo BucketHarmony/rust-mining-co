@@ -4453,3 +4453,14 @@ Decisions:
 - Needles trimmed to 4 a ring: the pine mesh goes from 7.0 ms to 4.1 ms (oak 1.24 ms). The remaining gap is bark quads, not trimmed further.
 Next: oak survival balance (owner's "what next" pick).
 Blockers: none.
+
+## 2026-10-31 — Oak survival: diagnosis — blocked (owner choice)
+Done:
+- Ten-year headless world (seed 1, 128 × 64 × 128, `--seasons 40`, release): oaks fall from 62 to 0, mostly between seasons 4 and 14. Birch and pine hold.
+- A throwaway print at the growth-pass death (not committed) shows every oak dies with 0 nitrogen in its anchor. Light, temperature and moisture all meet its needs.
+- The oak takes 1 n a day from its single anchor cell and needs `substance_min` n 4 there. Birch and pine take n the same way but have no floor.
+- Oak n floor at 2: no change (62 → 0). Floor removed: 62 → 70 oaks, tallest 9.1 m.
+Tests added: none (diagnosis only; no code or data changed).
+Decisions: none. The fix is a balance choice, put to the owner on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): drop the oak's n floor, give grown trees a root zone, or leave it.
+Next: apply the owner's pick.
+Blockers: waiting on the owner's pick.
