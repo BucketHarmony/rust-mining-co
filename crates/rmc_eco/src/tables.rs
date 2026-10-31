@@ -13,7 +13,7 @@ use std::sync::Arc;
 use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
-use rmc_world::query::{PhRule, PlantLook, SubstanceTint, ToxProfile};
+use rmc_world::query::{GraphLook, PhRule, PlantLook, SubstanceTint, ToxProfile};
 use rmc_world::tree::{NO_PARENT, TURN};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -1178,6 +1178,16 @@ impl EcoTables {
                             .is_some_and(|d| d.shed.as_deref() == Some(s.key.as_str()))
                     })
                     .collect(),
+                graph: p.parts.as_ref().and_then(|d| match d.form {
+                    FormDef::Graph {
+                        tip_um, divergence, ..
+                    } => Some(GraphLook {
+                        wood: self.materials.id(&d.wood)?,
+                        tip_um,
+                        divergence,
+                    }),
+                    _ => None,
+                }),
             })
             .collect()
     }

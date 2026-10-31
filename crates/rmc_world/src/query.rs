@@ -69,6 +69,22 @@ pub struct PlantLook {
     /// Per `seasons.ron` row: whether the tree stands bare (its `shed`
     /// season); empty for a species without parts.
     pub bare: Vec<bool>,
+    /// A tree grown as a metamer graph (docs/TREES.md): how the client
+    /// draws its graph. `None` for every other species.
+    pub graph: Option<GraphLook>,
+}
+
+/// How the client draws a graph tree (docs/TREES.md §4.4), from its
+/// `plants.ron` row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphLook {
+    /// The bark: its color and tile.
+    pub wood: MaterialId,
+    /// A twig's pipe radius, in micrometers.
+    pub tip_um: u32,
+    /// Leaf cards turn this far about the twig from one metamer to the
+    /// next, in steps of 4096 a turn.
+    pub divergence: u16,
 }
 
 /// The derived pH of a cell holding `lime` and `acid` (SAD-P2 §7.6):

@@ -206,6 +206,12 @@ Each step is one session under CLAUDE.md, with a test named first.
   - A browser viewer artifact draws it with the same cylinder and leaf-card rules for fast look iteration.
   - The client mesh (cylinders, bark, leaf cards, seasons, sway).
   - Tests: the semantic mesh test (vertex count follows the metamers; radii decrease along every axis) and e2e `trees_render` re-shot (rule 21).
+  - **Status (2026-10-31): done.** Notes:
+    - Lab: `rmc_eco::tree_lab::grow` plants the species on a 3×3×3-chunk field of its first anchor material and, per flush, tops the root's biomass up to full, recomputes light and runs the season's extension sweep. `rmc_app --tree-lab <species> --years N [--seed S] [--flushes F] [--out file.json]` writes every flush: the species look (bark, leaf and season colors, the Graph form) and each metamer's parent, direction, length, birth, leaf, end (mm) and pipe radius (µm).
+    - `assets/tree_lab.ron` gives oak, birch and pine `Graph` forms for the lab and the T4 e2e until T7 moves them into `plants.ron`. Three lab years (seed 1, 4 flushes): oak 1039 metamers, 10.5 m tall, 2.2 m reach; birch 1398, 13.2 m, 3.6 m; pine 1047, 15.5 m. All are taller and thinner than §5's targets; T8 tunes them.
+    - Viewer: https://claude.ai/artifact/9JPzknLdRZxM5Nk6HZ8VXz (three.js). It embeds the season-end frames of those three runs and opens any lab file; its geometry mirrors `treemesh.rs` constant for constant.
+    - Client (`rmc_client::treemesh`): one mesh entity per graph tree, rebuilt when the graph hash or the season changes. Each metamer is a tapered cylinder of 4 + r/6 mm sides (at most 10) from its parent's end ring; continuations share the parent's ring, so axes are seamless. Each leaf is a double-sided lens card 16 cm long, turned by the divergence per metamer and spread over the leaf count, leaning out along the twig and up. Bark uses the chunk shader's triplanar tile by material id (`uv.x`); sway (`uv.y`) grows with path length up to 3 m and with thinness, so the trunk stands still and twigs move.
+    - The look test is a new e2e `tree_graph_render` (summer, close, autumn, winter shots), not a re-shoot of `trees_render`: that scenario draws the shipped cell trees until T7, which re-shoots it.
 - **T5. Interaction.**
   - Capsule collision, the raycast hit, `EditOp::Chop`, felling, root death and placement refusal.
   - Tests:

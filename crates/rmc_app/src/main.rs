@@ -9,9 +9,23 @@ use rmc_app::app::{GameConfig, build_game_app};
 use rmc_app::cli::Cli;
 use rmc_app::eco_clock::EcoClock;
 use rmc_app::headless::{REPORT_FILE, run_headless};
+use rmc_app::session::{DEFAULT_SEED, assets_dir};
+use rmc_app::tree_lab::run_tree_lab;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(species) = &cli.tree_lab {
+        let years = cli.years.context("--tree-lab needs --years")?;
+        let seed = cli.seed.unwrap_or(DEFAULT_SEED);
+        let lab = run_tree_lab(&assets_dir(), species, seed, years, cli.flushes, &cli.out)?;
+        println!(
+            "{species}: {} frames, {} metamers, written to {}",
+            lab.frames,
+            lab.metamers,
+            cli.out.display()
+        );
+        return Ok(());
+    }
     let config = GameConfig::from_cli(&cli)?;
     let hours = config.calendar.as_ref().map(|c| c.hours);
     if cli.headless {

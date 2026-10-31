@@ -20,7 +20,8 @@ pub const DEFAULT_WORLD_SIZE: WorldSize = WorldSize {
 };
 
 /// `rmc_app [--seed N] [--save DIR] [--world-size WxHxD]
-/// [--headless --seasons N] [--day-seconds S] [--eco-tick-ms MS]`.
+/// [--headless --seasons N] [--day-seconds S] [--eco-tick-ms MS]
+/// [--tree-lab SPECIES --years N [--flushes K] [--out FILE]]`.
 #[derive(Parser, Clone, Debug, PartialEq, Eq)]
 #[command(name = "rmc_app", version, about = "Rust Mining Co")]
 pub struct Cli {
@@ -53,7 +54,32 @@ pub struct Cli {
     /// instead of `--day-seconds` / hours; 0 turns the ecology clock off.
     #[arg(long, value_name = "MS")]
     pub eco_tick_ms: Option<u64>,
+    /// Grow one tree of this species headless for `--years`, write it after
+    /// every flush to `--out` as JSON, and exit (docs/TREES.md T4). The
+    /// species grows its `assets/tree_lab.ron` form.
+    #[arg(
+        long,
+        value_name = "SPECIES",
+        requires = "years",
+        conflicts_with = "headless"
+    )]
+    pub tree_lab: Option<String>,
+    /// Years a `--tree-lab` tree grows: a `seasons.ron` cycle each.
+    #[arg(long, value_name = "N", requires = "tree_lab")]
+    pub years: Option<u32>,
+    /// Growth flushes in each season of a `--tree-lab` run.
+    #[arg(long, value_name = "K", default_value_t = DEFAULT_FLUSHES)]
+    pub flushes: u32,
+    /// Where a `--tree-lab` run writes its JSON.
+    #[arg(long, value_name = "FILE", default_value = DEFAULT_TREE_LAB_OUT)]
+    pub out: PathBuf,
 }
+
+/// Growth flushes a season in the tree lab (docs/TREES.md §5, the oak).
+pub const DEFAULT_FLUSHES: u32 = 4;
+
+/// Where the tree lab writes when `--out` is not given.
+pub const DEFAULT_TREE_LAB_OUT: &str = "tree_lab.json";
 
 /// A calendar day of the game's wall clock, in seconds: two minutes, so a
 /// season of 7 days is 14 minutes.
@@ -205,6 +231,41 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_tree_lab_needs_years_and_takes_flushes_and_an_out_file() {
+        let cli = parse(&["--tree-lab", "oak", "--years", "3"]).unwrap();
+        assert_eq!(cli.tree_lab.as_deref(), Some("oak"));
+        assert_eq!(cli.years, Some(3));
+        assert_eq!(cli.flushes, DEFAULT_FLUSHES);
+        assert_eq!(cli.out, PathBuf::from(DEFAULT_TREE_LAB_OUT));
+        let cli = parse(&[
+            "--tree-lab",
+            "pine",
+            "--years",
+            "1",
+            "--flushes",
+            "2",
+            "--out",
+            "p.json",
+        ])
+        .unwrap();
+        assert_eq!((cli.flushes, cli.out), (2, PathBuf::from("p.json")));
+        assert!(parse(&["--tree-lab", "oak"]).is_err());
+        assert!(parse(&["--years", "3"]).is_err());
+        assert!(
+            parse(&[
+                "--tree-lab",
+                "oak",
+                "--years",
+                "1",
+                "--headless",
+                "--seasons",
+                "1"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

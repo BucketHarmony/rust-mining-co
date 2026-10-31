@@ -19,6 +19,7 @@ pub mod tables;
 pub mod temperature;
 pub mod tick;
 pub mod transitions;
+pub mod tree_lab;
 pub mod trees;
 pub mod water;
 pub mod weathering;

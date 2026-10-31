@@ -345,6 +345,7 @@ impl Plugin for MeshPipelinePlugin {
                     poll_jobs,
                     start_jobs,
                     upload_meshes,
+                    crate::treemesh::sync_tree_meshes,
                 )
                     .chain()
                     .in_set(MeshSystems),
@@ -1679,6 +1680,111 @@ mod tests {
             Some(bevy::mesh::VertexAttributeValues::Float32x4(v)) => v.clone(),
             other => panic!("colors {other:?}"),
         }
+    }
+
+    #[test]
+    fn graph_trees_get_a_mesh_each_rebuilt_when_their_graph_changes() {
+        use rmc_world::layers::{PlantState, SubstanceLayers};
+        use rmc_world::query::{GraphLook, PlantLook};
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        use crate::treemesh::{TreeMesh, tree_origin};
+
+        let mut f = Fixture::new(true, MeshBudget::default(), true);
+        let t = Arc::clone(f.host.materials());
+        let oak = PlantLook {
+            material: t.id("acorn").unwrap(),
+            needs: Vec::new(),
+            sway: 32,
+            season_colors: Vec::new(),
+            leaf: t.id("oak_leaves"),
+            tuft: None,
+            bare: Vec::new(),
+            graph: Some(GraphLook {
+                wood: t.id("oak_wood").unwrap(),
+                tip_um: 2000,
+                divergence: 1564,
+            }),
+        };
+        f.app.insert_resource(ClientEco {
+            substances: SubstanceLayers::new(["n"]).unwrap(),
+            gases: Vec::new(),
+            ph: Default::default(),
+            player_tox: Default::default(),
+            plant_tox: Default::default(),
+            tint: Vec::new(),
+            gas_tint: Vec::new(),
+            flammable: Vec::new(),
+            plants: vec!["oak".to_string()],
+            plant_looks: vec![oak],
+            deficiency: Vec::new(),
+        });
+        f.join();
+        f.drain();
+        let trees = |f: &mut Fixture| -> Vec<(Entity, TreeMesh, Option<Transform>)> {
+            let mut q = f
+                .app
+                .world_mut()
+                .query::<(Entity, &TreeMesh, Option<&Transform>)>();
+            q.iter(f.app.world())
+                .map(|(e, t, x)| (e, t.clone(), x.copied()))
+                .collect()
+        };
+        assert!(trees(&mut f).is_empty());
+
+        // An oak of three metamers on the stone floor of chunk (1, 1, 1).
+        let pos = c(1, 1, 1);
+        let local = LocalPos::new(8, 8, 8);
+        let root = CellPos::from_chunk_local(pos, local);
+        let up = [0, Q14 as i16, 0];
+        let m = |parent| Metamer {
+            parent,
+            dir: up,
+            length_mm: 250,
+            born: 0,
+            bud: BudState::Dormant,
+            leaf: 2,
+            shade: 0,
+            lateral: false,
+        };
+        let mut g = TreeGraph::default();
+        for p in [NO_PARENT, 0, 1] {
+            g.push(m(p)).unwrap();
+        }
+        let mut chunk = f.host.chunk(pos).unwrap().clone();
+        chunk.storage.set(local, t.id("oak_wood").unwrap());
+        chunk.plants.insert(local.index(), PlantState::default());
+        chunk.trees.insert(local.index(), g.clone());
+        chunk.revision += 1;
+        f.host.insert_chunk(pos, chunk.clone()).unwrap();
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &chunk)]);
+        f.drain();
+        let now = trees(&mut f);
+        assert_eq!(now.len(), 1, "one mesh per tree");
+        let (entity, mesh, at) = now[0].clone();
+        assert_eq!((mesh.root, mesh.hash), (root, g.hash()));
+        assert_eq!(at.unwrap().translation, tree_origin(root));
+        assert!(f.app.world().get::<Mesh3d>(entity).is_some());
+        let before = mesh.vertices;
+
+        // It grows: the same entity, rebuilt for the new graph.
+        g.push(m(2)).unwrap();
+        chunk.trees.insert(local.index(), g.clone());
+        chunk.revision += 1;
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &chunk)]);
+        f.drain();
+        let now = trees(&mut f);
+        assert_eq!(now.len(), 1);
+        assert_eq!((now[0].0, now[0].1.hash), (entity, g.hash()));
+        assert!(now[0].1.vertices > before);
+
+        // It goes: so does its mesh.
+        chunk.trees.clear();
+        chunk.plants.clear();
+        chunk.revision += 1;
+        f.deliver(vec![ServerMsg::chunk_snapshot(pos, &chunk)]);
+        f.drain();
+        assert!(trees(&mut f).is_empty());
     }
 
     #[test]

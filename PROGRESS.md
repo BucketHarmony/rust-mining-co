@@ -4304,3 +4304,19 @@ Decisions:
 - Shade counters also tick in the shed season, when the bare crown lets more light through.
 Next: T4, tree lab and look (`--tree-lab` export, browser viewer, client mesh).
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.
+
+## 2026-10-31 — Trees as geometry T4: tree lab and look (docs/TREES.md) — passed
+Done:
+- `rmc_eco::tree_lab`: grows one graph tree headless in a scratch world, frame per flush; `with_forms` applies `assets/tree_lab.ron` (Graph forms for oak, birch, pine) over the shipped plant rows.
+- `rmc_app --tree-lab <species> --years N [--seed S] [--flushes F] [--out file.json]` writes the lab JSON (look plus every metamer's parent, direction, length, leaf, end mm, pipe radius µm).
+- Browser viewer artifact: https://claude.ai/artifact/9JPzknLdRZxM5Nk6HZ8VXz (embedded oak/birch/pine three-year runs, opens any lab file, same cylinder and leaf-card rules as the client).
+- `rmc_client::treemesh`: one mesh per graph tree (tapered cylinders with shared rings along an axis, 4–10 sides by radius, double-sided lens leaf cards by phyllotaxis, season leaf color, sway by path length and thinness), rebuilt on graph hash or season change; `PlantLook.graph` (`GraphLook`) carries wood, tip radius and divergence to the client. `TestApp::with_eco` builds a test app on given tables.
+Tests added: `rmc_eco tree_lab::tests::{the_lab_grows_each_lab_species_the_same_way_twice, the_lab_refuses_a_tree_that_is_not_a_graph}`, `rmc_app cli::tests::the_tree_lab_needs_years_and_takes_flushes_and_an_out_file`, `rmc_app tree_lab::tests::the_lab_writes_a_frame_per_flush_with_ends_and_radii`, `rmc_client treemesh::tests::{the_mesh_has_a_cylinder_per_metamer_and_cards_per_leaf, radii_taper_along_every_axis_and_sides_follow_them}`, `meshpipe::tests::graph_trees_get_a_mesh_each_rebuilt_when_their_graph_changes`, e2e `tree_graph_render` (passed, 536 s; shots in docs/screens).
+Decisions:
+- Leaf cards are lens-shaped polygons in the chunk material, not alpha-tested textures; bark takes the chunk shader's triplanar tile by material id because `uv.x`/`uv.y` already carry material id and sway.
+- The lab tops the root's biomass up every flush (a well-fed tree, as in the T2/T3 tests) so the look can be judged apart from the economy.
+- `tree_lab.ron` holds the Graph forms until T7 moves them into `plants.ron`.
+- Rule 21: the look test is the new e2e `tree_graph_render` (semantic: replica graph equals host graph, one `TreeMesh` per tree with the hash and vertex count of `tree_mesh`, deciduous bare and evergreen in leaf in the shed season). `trees_render` is not re-shot: it draws the shipped cell trees until T7 re-shoots it.
+- In the testkit `advance_season` ticks season N and the client then shows N+1, so the e2e checks bareness against the last ticked season.
+Next: T5, interaction (capsule collision, raycast, `EditOp::Chop`, felling, trees in `ChunkDelta::Layers`).
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2. The lab trees are tall and thin (T8 tunes).

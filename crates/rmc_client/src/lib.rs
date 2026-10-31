@@ -26,6 +26,7 @@ pub mod save;
 pub mod sound;
 pub mod surfaces;
 pub mod tiles;
+pub mod treemesh;
 pub mod ui;
 pub mod viewmodel;
 pub mod weather;

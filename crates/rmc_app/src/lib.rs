@@ -10,3 +10,4 @@ pub mod garden;
 pub mod headless;
 pub mod report;
 pub mod session;
+pub mod tree_lab;

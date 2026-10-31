@@ -149,6 +149,15 @@ impl TestApp {
         Self::with_world(config, world, eco, host_config(&config, &params), None)
     }
 
+    /// Like [`TestApp::new`], but the host and client run on `eco` instead
+    /// of the shipped Phase 2 tables (built against the shipped material
+    /// table), as the tree lab's forms (docs/TREES.md T4) need.
+    pub fn with_eco(config: TestConfig, eco: Arc<EcoTables>) -> Self {
+        let params = gen_params(&config);
+        let world = generate_world(&config, &params, &eco);
+        Self::with_world(config, world, eco, host_config(&config, &params), None)
+    }
+
     /// Like [`TestApp::new`], but the host starts with the save in `dir`
     /// (SAD §10 load: the world generated from `config.seed` and
     /// `config.world_bounds`, then overwritten by the saved chunks), and

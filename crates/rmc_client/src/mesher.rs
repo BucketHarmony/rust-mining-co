@@ -3416,6 +3416,7 @@ mod tests {
             leaf: Some(leaves),
             tuft: None,
             bare: Vec::new(),
+            graph: None,
         }];
         assert!(leaf_colors(&t, &looks, 0).is_empty(), "spring: table color");
         let [r, g, b, _] = t.get(leaves).unwrap().color;
@@ -3479,6 +3480,7 @@ mod tests {
             leaf: Some(leaves),
             tuft: Some(wood),
             bare: vec![false, false, false, true],
+            graph: None,
         };
         let tree = |height: u32, crown: bool| {
             let mut world = World::new(
@@ -3587,6 +3589,7 @@ mod tests {
             leaf: None,
             tuft: None,
             bare: Vec::new(),
+            graph: None,
         }];
         let deficiency = vec![(LayerId::Substance(0), [255, 255, 0])];
         let at = |season: u32| {
