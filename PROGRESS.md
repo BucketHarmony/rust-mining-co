@@ -4376,3 +4376,19 @@ Decisions:
 - No pixel or look test is added (rule 21). The octahedra are covered by a semantic mesh test, and the screenshot comes with T7's `trees_render` re-shoot.
 Next: T7, migration (shipped plants.ron rows to Graph, worldgen and garden, retire the cell-tree paths with `test-fix:` commits, re-shoot `trees_render`).
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.
+
+## 2026-10-31 — Trees as geometry T7: migration (docs/TREES.md) — passed
+Done:
+- The shipped `plants.ron` oak, birch and pine are `Graph` rows, with the lab numbers and `mature`. Comments are rewritten.
+- `tree_lab.ron` is kept as the lab override, equal to them.
+- `ExtendPass`: on a Graph root, leftover part cells from an old world turn to air and rot as `part_litter` at their landing (ledgered). The graph then grows from the root.
+- Worldgen and the garden plant seeds, so they needed no change. Save conversion landed in T1.
+Tests added:
+- `trees::tests::an_old_cell_tree_turns_into_a_growing_graph`
+- `test-fix:` 940b750: the cell-tree tests restore the V4 Tree forms through `tables::fixtures::cell_tree_sources`.
+- `test-fix:` `trees_render` builds its own Tree-form tables.
+Decisions:
+- The Tree form (`next_tree_part`, the cell-tree mesher path, the tuft) stays as a data option. Deleting it would mean deleting its tests (rule 6). This is the conservative reading of TREES §4.5 "removed once T7 lands".
+- `trees_render` is not re-shot as graph trees. It stays the cell-tree scenario (passes, screenshots unchanged), and `tree_graph_render` covers the shipped look (rule 21).
+Next: T8, balance and performance (ten-year headless run, Extend and mesher benches, caps, thicker trunks).
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.

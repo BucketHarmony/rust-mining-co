@@ -242,6 +242,12 @@ Each step is one session under CLAUDE.md, with a test named first.
 - **T7. Migration and cleanup.**
   - Save v2 → v3 conversion, worldgen and the garden plant graph trees, and the tree code paths on Part cells are removed.
   - Test retirements go in a `test-fix:` commit.
+  - **Status (2026-10-31): done.** Notes:
+    - `plants.ron` ships oak, birch and pine as `Graph` rows, with the lab numbers. `tree_lab.ron` stays as the lab override and is equal to them for now.
+    - Worldgen and the garden plant a seed (a root cell with a `PlantState`), so both grow graphs with no change.
+    - Saves already converted in T1. An old world's part cells on a Graph root rot in the extension sweep: each turns to air and rots as `part_litter` at its landing (ledgered). The graph then grows from the root.
+    - The `Tree` form, `next_tree_part`, the cell-tree mesher path and the tuft stay as a data option rather than being deleted. Removing them would mean deleting their tests (rule 6), and a modder can still pick them. The cell-tree tests restore the V4 forms through `tables::fixtures::cell_tree_sources` (`test-fix:` commit 940b750).
+    - `trees_render` is not re-shot as graph trees. It keeps drawing cell trees from its own Tree-form tables (`test-fix:`). The shipped look is `tree_graph_render`.
 - **T8. Balance and performance.**
   - The ten-year headless run with trees, Extend-pass and mesher benches, and the metamer caps tuned.
   - Numbers go in this file.
