@@ -10,11 +10,13 @@ use rmc_world::items::{Bag, SlotRef};
 use rmc_world::layers::{ChunkLayers, PlantState};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::MaterialId;
+use rmc_world::tree::TreeGraph;
 use serde::{Deserialize, Serialize};
 
 /// Sent in `Hello`; the host rejects a client whose version differs.
 /// Version 2 is Phase 2: snapshots carry layers and plants, and seasons.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 3 adds tree graphs to snapshots (docs/TREES.md §4.1).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Width and depth of a player's box, in meters. The box's bottom face is
 /// centered on `PlayerState::pos`, the feet. Narrower than a cell, so the
@@ -103,7 +105,7 @@ pub enum ServerMsg {
     Rejected {
         reason: String,
     },
-    /// The join encoding of a chunk (v2): cells, layers and plants.
+    /// The join encoding of a chunk (v3): cells, layers, plants and trees.
     ChunkSnapshot {
         pos: ChunkPos,
         revision: u64,
@@ -111,6 +113,7 @@ pub enum ServerMsg {
         storage: ChunkStorage,
         layers: ChunkLayers,
         plants: BTreeMap<u16, PlantState>,
+        trees: BTreeMap<u16, TreeGraph>,
     },
     /// A chunk whose only change in a season was ecological.
     LayerSnapshot {
@@ -118,6 +121,7 @@ pub enum ServerMsg {
         eco_revision: u64,
         layers: ChunkLayers,
         plants: BTreeMap<u16, PlantState>,
+        trees: BTreeMap<u16, TreeGraph>,
     },
     Applied(EditResult),
     Inventory {
@@ -149,8 +153,8 @@ pub enum ServerMsg {
 }
 
 impl ServerMsg {
-    /// The v2 join encoding of a resident chunk: cells, layers and plants
-    /// with both revisions.
+    /// The v3 join encoding of a resident chunk: cells, layers, plants and
+    /// trees with both revisions.
     pub fn chunk_snapshot(pos: ChunkPos, chunk: &Chunk) -> Self {
         ServerMsg::ChunkSnapshot {
             pos,
@@ -159,6 +163,19 @@ impl ServerMsg {
             storage: chunk.storage.clone(),
             layers: chunk.layers.clone(),
             plants: chunk.plants.clone(),
+            trees: chunk.trees.clone(),
+        }
+    }
+
+    /// The layer snapshot of a resident chunk: its layers, plants and trees
+    /// with its eco revision.
+    pub fn layer_snapshot(pos: ChunkPos, chunk: &Chunk) -> Self {
+        ServerMsg::LayerSnapshot {
+            pos,
+            eco_revision: chunk.eco_revision,
+            layers: chunk.layers.clone(),
+            plants: chunk.plants.clone(),
+            trees: chunk.trees.clone(),
         }
     }
 }

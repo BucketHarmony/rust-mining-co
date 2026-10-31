@@ -1737,13 +1737,20 @@ mod tests {
         }
         let eco_revision = chunk.eco_revision + 1;
         f.host
-            .apply_eco_snapshot(pos, eco_revision, layers.clone(), Default::default())
+            .apply_eco_snapshot(
+                pos,
+                eco_revision,
+                layers.clone(),
+                Default::default(),
+                Default::default(),
+            )
             .unwrap();
         f.deliver(vec![ServerMsg::LayerSnapshot {
             pos,
             eco_revision,
             layers,
             plants: Default::default(),
+            trees: Default::default(),
         }]);
         f.drain();
         let input = MeshInput::from_world_tinted(&f.host, pos, &[fe_tint]).unwrap();
@@ -1841,13 +1848,20 @@ mod tests {
         }
         let eco_revision = chunk.eco_revision + 1;
         f.host
-            .apply_eco_snapshot(pos, eco_revision, layers.clone(), Default::default())
+            .apply_eco_snapshot(
+                pos,
+                eco_revision,
+                layers.clone(),
+                Default::default(),
+                Default::default(),
+            )
             .unwrap();
         f.deliver(vec![ServerMsg::LayerSnapshot {
             pos,
             eco_revision,
             layers,
             plants: Default::default(),
+            trees: Default::default(),
         }]);
         f.drain();
         let want_full = GreedyMesher.mesh_liquid(&MeshInput::from_world(&f.host, pos).unwrap());

@@ -1,14 +1,14 @@
-//! Save format v2 (SAD §10, SAD-P2 §3): a RON header naming everything the
-//! world was built from, plus the saved chunks as
+//! Save format v3 (SAD §10, SAD-P2 §3, docs/TREES.md §4.1): a RON header
+//! naming everything the world was built from, plus the saved chunks as
 //! `zstd(postcard(Vec<SavedChunk>))`, sorted by position. A chunk is saved
-//! when its cells or its ecology state (layers, plants) differ from worldgen
-//! output.
+//! when its cells or its ecology state (layers, plants, trees) differ from
+//! worldgen output. Version 2 saves (no trees) still load, with no trees.
 //!
 //! Loading generates the world from the seed (the caller supplies the
 //! generator, since worldgen sits above this crate) and then overwrites it
 //! with the saved chunks. Any header mismatch fails the load; a save of
-//! another format version (Phase 1 saves are version 1) fails with a version
-//! message.
+//! format version this build does not read (Phase 1 saves are version 1) fails
+//! with a version message.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -21,11 +21,16 @@ use crate::chunk::{Chunk, ChunkStorage};
 use crate::coords::{CellAabb, ChunkPos};
 use crate::edit::ChunkDelta;
 use crate::layers::{ChunkLayers, PlantState};
+use crate::tree::TreeGraph;
 use crate::world::{DeltaError, World};
 
 /// Version of the on-disk layout. Bump on any change to the header or chunk
-/// encoding. Version 2 adds `tables_hash` and per-chunk ecology state.
-pub const SAVE_FORMAT_VERSION: u32 = 2;
+/// encoding. Version 2 adds `tables_hash` and per-chunk ecology state;
+/// version 3 adds tree graphs.
+pub const SAVE_FORMAT_VERSION: u32 = 3;
+/// The oldest format version this build loads. Version 2 chunks load with
+/// no trees.
+pub const OLDEST_READABLE_VERSION: u32 = 2;
 /// Header file name inside a save directory.
 pub const HEADER_FILE: &str = "header.ron";
 /// Chunk file name inside a save directory.
@@ -171,6 +176,32 @@ pub struct SavedChunk {
     /// Compacted.
     pub layers: ChunkLayers,
     pub plants: BTreeMap<u16, PlantState>,
+    pub trees: BTreeMap<u16, TreeGraph>,
+}
+
+/// A saved chunk of format version 2: no trees.
+#[derive(Deserialize)]
+struct SavedChunkV2 {
+    pos: ChunkPos,
+    revision: u64,
+    storage: Option<ChunkStorage>,
+    eco_revision: u64,
+    layers: ChunkLayers,
+    plants: BTreeMap<u16, PlantState>,
+}
+
+impl From<SavedChunkV2> for SavedChunk {
+    fn from(c: SavedChunkV2) -> Self {
+        SavedChunk {
+            pos: c.pos,
+            revision: c.revision,
+            storage: c.storage,
+            eco_revision: c.eco_revision,
+            layers: c.layers,
+            plants: c.plants,
+            trees: BTreeMap::new(),
+        }
+    }
 }
 
 /// Why a save or load failed. A failed load returns no world.
@@ -214,7 +245,7 @@ fn mismatch_message(field: HeaderField, expected: &str, found: &str) -> String {
     match field {
         HeaderField::FormatVersion => format!(
             "save format version {found} is not supported: this build reads save format \
-             version {expected} only"
+             version {expected}, and version {OLDEST_READABLE_VERSION} saves without trees"
         ),
         _ => format!("save header {field:?} mismatch: expected {expected}, save has {found}"),
     }
@@ -256,6 +287,7 @@ pub fn snapshot(world: &World) -> Vec<SavedChunk> {
                 eco_revision: chunk.eco_revision,
                 layers,
                 plants: chunk.plants.clone(),
+                trees: chunk.trees.clone(),
             }
         })
         .collect()
@@ -304,9 +336,10 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
     fs::rename(&tmp, path).map_err(io_err(path))
 }
 
-/// Reads the header of the save in `dir`. A header of another format
-/// version (a Phase 1 save, say) fails with a
+/// Reads the header of the save in `dir`. A header of a format version
+/// this build does not read (a Phase 1 save, say) fails with a
 /// [`HeaderField::FormatVersion`] mismatch before the rest of it is parsed.
+/// The header keeps the version it was saved with.
 pub fn read_header(dir: &Path) -> Result<SaveHeader, SaveError> {
     let path = dir.join(HEADER_FILE);
     let text = fs::read_to_string(&path).map_err(io_err(&path))?;
@@ -315,21 +348,34 @@ pub fn read_header(dir: &Path) -> Result<SaveHeader, SaveError> {
         source: Box::new(source),
     };
     let probe: VersionProbe = ron::from_str(&text).map_err(parse_err)?;
-    same(
-        HeaderField::FormatVersion,
-        &SAVE_FORMAT_VERSION,
-        &probe.format_version,
-    )?;
+    if !(OLDEST_READABLE_VERSION..=SAVE_FORMAT_VERSION).contains(&probe.format_version) {
+        same(
+            HeaderField::FormatVersion,
+            &SAVE_FORMAT_VERSION,
+            &probe.format_version,
+        )?;
+    }
     ron::from_str(&text).map_err(parse_err)
 }
 
-/// Reads the chunks of the save in `dir`, checking they are strictly
-/// ascending. The storage is not validated here; [`load`] does that.
+/// Reads the chunks of the save in `dir`, in the format version its header
+/// names, checking they are strictly ascending. The storage is not
+/// validated here; [`load`] does that. Tree graphs are checked as they
+/// decode.
 pub fn read_chunks(dir: &Path) -> Result<Vec<SavedChunk>, SaveError> {
+    let version = read_header(dir)?.format_version;
     let path = dir.join(CHUNKS_FILE);
     let compressed = fs::read(&path).map_err(io_err(&path))?;
     let encoded = zstd::decode_all(compressed.as_slice()).map_err(SaveError::Decompress)?;
-    let chunks: Vec<SavedChunk> = postcard::from_bytes(&encoded).map_err(SaveError::ChunkDecode)?;
+    let chunks: Vec<SavedChunk> = if version < SAVE_FORMAT_VERSION {
+        postcard::from_bytes::<Vec<SavedChunkV2>>(&encoded)
+            .map_err(SaveError::ChunkDecode)?
+            .into_iter()
+            .map(SavedChunk::from)
+            .collect()
+    } else {
+        postcard::from_bytes(&encoded).map_err(SaveError::ChunkDecode)?
+    };
     check_sorted(&chunks)?;
     Ok(chunks)
 }
@@ -342,7 +388,7 @@ fn check_sorted(chunks: &[SavedChunk]) -> Result<(), SaveError> {
 }
 
 /// Loads the save in `dir`. Its header must equal `expected` field for
-/// field. Then `generate` builds the world from the seed (it is not called
+/// field, except that an older readable format version loads too. Then `generate` builds the world from the seed (it is not called
 /// if the save is refused before that), and the world must match the
 /// header's bounds and material table. Each saved chunk then overwrites the
 /// generated one:
@@ -350,7 +396,7 @@ fn check_sorted(chunks: &[SavedChunk]) -> Result<(), SaveError> {
 ///   storage must be well formed, in bounds and use only known materials,
 ///   and the chunk keeps its saved revision and is marked modified;
 /// - its ecology state goes through [`World::apply_eco_snapshot`]: the
-///   chunk takes the saved layers, plants and eco revision.
+///   chunk takes the saved layers, plants, trees and eco revision.
 ///
 /// Damage starts empty.
 pub fn load(
@@ -358,7 +404,12 @@ pub fn load(
     expected: &SaveHeader,
     generate: impl FnOnce() -> World,
 ) -> Result<World, SaveError> {
-    let found = read_header(dir)?;
+    let mut found = read_header(dir)?;
+    // read_header refuses versions this build does not read, so an older
+    // readable save matches a current header.
+    if expected.format_version == SAVE_FORMAT_VERSION {
+        found.format_version = SAVE_FORMAT_VERSION;
+    }
     expected.check(&found)?;
     let chunks = read_chunks(dir)?;
     let mut world = generate();
@@ -371,6 +422,7 @@ pub fn load(
         eco_revision,
         layers,
         plants,
+        trees,
     } in chunks
     {
         if let Some(storage) = storage {
@@ -383,7 +435,7 @@ pub fn load(
                 .map_err(SaveError::BadChunk)?;
         }
         world
-            .apply_eco_snapshot(pos, eco_revision, layers, plants)
+            .apply_eco_snapshot(pos, eco_revision, layers, plants, trees)
             .map_err(SaveError::BadChunk)?;
     }
     tracing::info!(dir = %dir.display(), chunks = count, "world loaded");
@@ -594,6 +646,7 @@ mod tests {
             eco_revision: 0,
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
+            trees: BTreeMap::new(),
         }
     }
 
@@ -1040,7 +1093,7 @@ mod tests {
             );
             plants.insert(LocalPos::new(30, 0, 2).index(), PlantState::default());
             let eco_revision = chunk.eco_revision + 5 + u64::from(k);
-            w.apply_eco_snapshot(pos, eco_revision, layers, plants)
+            w.apply_eco_snapshot(pos, eco_revision, layers, plants, BTreeMap::new())
                 .unwrap();
         }
         [edited, unedited]
@@ -1151,7 +1204,7 @@ mod tests {
             let mut g = generate(7, t.clone());
             let mut layers = ChunkLayers::default();
             layers.set_u8(LayerId::Growth, LocalPos::new(0, 0, 0), 200);
-            g.apply_eco_snapshot(unedited, 0, layers, BTreeMap::new())
+            g.apply_eco_snapshot(unedited, 0, layers, BTreeMap::new(), BTreeMap::new())
                 .unwrap();
             g
         })
@@ -1266,6 +1319,121 @@ mod tests {
         ));
         save(dir.path(), &header(7, &t), &generate(7, t.clone())).unwrap();
         assert_eq!(read_header(dir.path()).unwrap(), header(7, &t));
+    }
+
+    #[test]
+    fn v3_saves_carry_trees_and_v2_saves_load_without_them() {
+        use crate::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        let t = phase1();
+        let mut w = generate(7, t.clone());
+        edit(&mut w);
+        let d = 11_585; // Q14 · √½
+        let metamer = |parent, dir, length_mm, bud| Metamer {
+            parent,
+            dir,
+            length_mm,
+            born: 2,
+            bud,
+            leaf: 5,
+            shade: 1,
+        };
+        let fork = TreeGraph::try_from(vec![
+            metamer(NO_PARENT, [0, Q14 as i16, 0], 1000, BudState::Dormant),
+            metamer(0, [d, d, 0], 500, BudState::Active),
+            metamer(0, [-d, d, 0], 500, BudState::Fruit),
+        ])
+        .unwrap();
+        let pos = ChunkPos::new(0, 0, 0);
+        let root = LocalPos::new(3, 0, 4).index();
+        let chunk = w.chunk(pos).unwrap();
+        let plants = BTreeMap::from([(root, PlantState::default())]);
+        let trees = BTreeMap::from([(root, fork)]);
+        let (layers, eco_revision) = (chunk.layers.clone(), chunk.eco_revision + 1);
+        let without_trees = {
+            let mut c = chunk.clone();
+            c.plants = plants.clone();
+            c.hash()
+        };
+        w.apply_eco_snapshot(pos, eco_revision, layers, plants.clone(), trees.clone())
+            .unwrap();
+        assert_ne!(
+            w.chunk(pos).unwrap().hash(),
+            without_trees,
+            "the chunk hash covers trees"
+        );
+
+        // Version 3: the trees save and load, and the world hash matches.
+        let dir = TempDir::new("v3_trees");
+        save(dir.path(), &header(7, &t), &w).unwrap();
+        assert_eq!(read_header(dir.path()).unwrap().format_version, 3);
+        let saved = read_chunks(dir.path()).unwrap();
+        assert_eq!(saved.iter().find(|c| c.pos == pos).unwrap().trees, trees);
+        let loaded = load(dir.path(), &header(7, &t), || generate(7, t.clone())).unwrap();
+        assert_eq!(loaded.chunk(pos).unwrap().trees, trees);
+        assert_eq!(loaded.hash(), w.hash());
+
+        // A tree rooted outside its chunk is refused.
+        let mut bad = saved.clone();
+        let record = bad.iter_mut().find(|c| c.pos == pos).unwrap();
+        let graph = record.trees.remove(&root).unwrap();
+        record.trees.insert(CHUNK_VOLUME as u16, graph);
+        let bad_dir = TempDir::new("v3_bad_tree");
+        write(bad_dir.path(), &header(7, &t), &bad).unwrap();
+        assert!(matches!(
+            load(bad_dir.path(), &header(7, &t), || generate(7, t.clone())),
+            Err(SaveError::BadChunk(DeltaError::BadIndex { .. }))
+        ));
+
+        // Version 2: the same save without trees, as a v2 build wrote it.
+        #[derive(Serialize)]
+        struct V2Chunk {
+            pos: ChunkPos,
+            revision: u64,
+            storage: Option<ChunkStorage>,
+            eco_revision: u64,
+            layers: ChunkLayers,
+            plants: BTreeMap<u16, PlantState>,
+        }
+        let v2: Vec<V2Chunk> = saved
+            .iter()
+            .map(|c| V2Chunk {
+                pos: c.pos,
+                revision: c.revision,
+                storage: c.storage.clone(),
+                eco_revision: c.eco_revision,
+                layers: c.layers.clone(),
+                plants: c.plants.clone(),
+            })
+            .collect();
+        let v2_dir = TempDir::new("v2_no_trees");
+        let v2_header = SaveHeader {
+            format_version: OLDEST_READABLE_VERSION,
+            ..header(7, &t)
+        };
+        fs::create_dir_all(v2_dir.path()).unwrap();
+        fs::write(
+            v2_dir.path().join(HEADER_FILE),
+            ron::ser::to_string_pretty(&v2_header, Default::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            v2_dir.path().join(CHUNKS_FILE),
+            zstd::encode_all(postcard::to_stdvec(&v2).unwrap().as_slice(), 3).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_header(v2_dir.path()).unwrap(), v2_header);
+        let old = load(v2_dir.path(), &header(7, &t), || generate(7, t.clone())).unwrap();
+        let c = old.chunk(pos).unwrap();
+        assert!(c.trees.is_empty(), "v2 saves have no trees");
+        assert_eq!((c.plants.clone(), c.hash()), (plants, without_trees));
+        // Saved again, it is a version 3 save.
+        let again = TempDir::new("v2_resaved");
+        save(again.path(), &header(7, &t), &old).unwrap();
+        assert_eq!(
+            read_header(again.path()).unwrap().format_version,
+            SAVE_FORMAT_VERSION
+        );
     }
 
     #[test]

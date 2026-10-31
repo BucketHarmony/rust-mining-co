@@ -2854,6 +2854,7 @@ mod tests {
             eco_revision,
             layers,
             plants: BTreeMap::new(),
+            trees: Default::default(),
         }]);
         assert_eq!(rig.hud().temperature, Some(i16::MIN));
         assert_eq!(temperature_text(&mut rig), "-3276.8 C");
@@ -3217,6 +3218,7 @@ mod tests {
             eco_revision: chunk.eco_revision,
             layers: chunk.layers.clone(),
             plants: BTreeMap::new(),
+            trees: Default::default(),
         }]);
         let hud = rig.hud();
         assert_eq!(hud.gases, vec![gas(chokedamp, "chokedamp", 7)]);

@@ -337,6 +337,7 @@ mod tests {
             storage: ChunkStorage::Uniform(MaterialId(5)),
             layers: Default::default(),
             plants: Default::default(),
+            trees: Default::default(),
         };
         let applied = ServerMsg::Applied(EditResult {
             command: CommandId {

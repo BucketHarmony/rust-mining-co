@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::coords::{CHUNK_VOLUME, LocalPos};
 use crate::layers::{CellSet, ChunkLayers, N_SWEEPS, PlantState, plants_hash};
 use crate::materials::MaterialId;
+use crate::tree::{TreeGraph, trees_hash};
 
 /// Bit widths a paletted chunk may use. Each divides 64, so no entry spans two words.
 pub const PALETTE_BITS: [u8; 5] = [1, 2, 4, 8, 16];
@@ -20,6 +21,8 @@ pub struct Chunk {
     pub layers: ChunkLayers,
     /// Plant state by local index.
     pub plants: BTreeMap<u16, PlantState>,
+    /// Tree graphs by their root's local index (docs/TREES.md §4.1).
+    pub trees: BTreeMap<u16, TreeGraph>,
     /// Season-scoped freeze-thaw bits. Not hashed or saved.
     pub freeze_thaw: CellSet,
     /// Cells each sweep visits. Not hashed or saved.
@@ -45,6 +48,7 @@ impl Chunk {
             storage,
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
+            trees: BTreeMap::new(),
             freeze_thaw: CellSet::default(),
             active: Default::default(),
             water_settled: CellSet::default(),
@@ -59,19 +63,21 @@ impl Chunk {
         Self::new(ChunkStorage::Uniform(id))
     }
 
-    /// Content hash of the cells, layers and plants (SAD-P2 §6). Revisions,
-    /// `modified`, freeze-thaw bits and active sets are not part of it.
+    /// Content hash of the cells, layers, plants and trees (SAD-P2 §6,
+    /// docs/TREES.md §4.1). Revisions, `modified`, freeze-thaw bits and
+    /// active sets are not part of it.
     ///
-    /// A chunk whose layers all read 0 and that has no plants hashes as its
-    /// storage alone ([`ChunkStorage::hash`]), so Phase 1 hashes are
-    /// unchanged. Otherwise the hash is xxh3 over a prefix and the storage,
-    /// layer and plant hashes.
+    /// A chunk whose layers all read 0 and that has no plants or trees
+    /// hashes as its storage alone ([`ChunkStorage::hash`]), so Phase 1
+    /// hashes are unchanged. Otherwise the hash is xxh3 over a prefix and
+    /// the storage, layer and plant hashes, then the trees hash when there
+    /// are trees, so chunks without trees keep their hashes.
     pub fn hash(&self) -> u64 {
-        if self.layers.is_zero() && self.plants.is_empty() {
+        if self.layers.is_zero() && self.plants.is_empty() && self.trees.is_empty() {
             return self.storage.hash();
         }
         const PREFIX: &[u8] = b"rmc.chunk.eco.v1";
-        let mut buf = Vec::with_capacity(PREFIX.len() + 3 * 8);
+        let mut buf = Vec::with_capacity(PREFIX.len() + 4 * 8);
         buf.extend_from_slice(PREFIX);
         for h in [
             self.storage.hash(),
@@ -80,11 +86,14 @@ impl Chunk {
         ] {
             buf.extend_from_slice(&h.to_le_bytes());
         }
+        if !self.trees.is_empty() {
+            buf.extend_from_slice(&trees_hash(&self.trees).to_le_bytes());
+        }
         xxhash_rust::xxh3::xxh3_64(&buf)
     }
 
     /// Bytes the chunk owns on the heap: storage, layers, bitsets, and the
-    /// plant entries (map node overhead excluded).
+    /// plant entries and tree metamers (map node overhead excluded).
     pub fn heap_bytes(&self) -> usize {
         self.storage.heap_bytes()
             + self.layers.heap_bytes()
@@ -92,6 +101,11 @@ impl Chunk {
             + self.active.iter().map(CellSet::heap_bytes).sum::<usize>()
             + self.water_settled.heap_bytes()
             + self.plants.len() * std::mem::size_of::<(u16, PlantState)>()
+            + self
+                .trees
+                .values()
+                .map(TreeGraph::heap_bytes)
+                .sum::<usize>()
     }
 }
 

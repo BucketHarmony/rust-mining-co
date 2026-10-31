@@ -836,6 +836,7 @@ mod tests {
                 eco_revision: other_chunk.eco_revision + 1,
                 layers: other_chunk.layers.clone(),
                 plants: other_chunk.plants.clone(),
+                trees: other_chunk.trees.clone(),
             },
             ServerMsg::SeasonDone {
                 season: 7,

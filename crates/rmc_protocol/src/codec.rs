@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use rmc_world::coords::CHUNK_VOLUME;
 use rmc_world::edit::ChunkDelta;
 use rmc_world::layers::PlantState;
+use rmc_world::tree::TreeGraph;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -28,7 +29,7 @@ pub enum CodecError {
     Decode(postcard::Error),
     #[error("{0} trailing bytes after the message")]
     TrailingBytes(usize),
-    #[error("message carries malformed chunk storage or plant indices")]
+    #[error("message carries malformed chunk storage or plant or tree indices")]
     MalformedStorage,
 }
 
@@ -46,16 +47,24 @@ pub fn encode_server(msg: &ServerMsg) -> Result<Vec<u8>, CodecError> {
 
 /// Decodes one server message and rejects any chunk storage that is not
 /// well formed (`ChunkSnapshot` and `Full` deltas in `Applied`) and any
-/// snapshot plant index outside the chunk.
+/// snapshot plant or tree root index outside the chunk. Tree graphs are
+/// checked as they decode.
 pub fn decode_server(bytes: &[u8]) -> Result<ServerMsg, CodecError> {
     let msg: ServerMsg = decode(bytes)?;
-    let plants_ok =
-        |plants: &BTreeMap<u16, PlantState>| plants.keys().all(|&i| usize::from(i) < CHUNK_VOLUME);
+    let inside = |plants: &BTreeMap<u16, PlantState>, trees: &BTreeMap<u16, TreeGraph>| {
+        plants
+            .keys()
+            .chain(trees.keys())
+            .all(|&i| usize::from(i) < CHUNK_VOLUME)
+    };
     let well_formed = match &msg {
         ServerMsg::ChunkSnapshot {
-            storage, plants, ..
-        } => storage.is_well_formed() && plants_ok(plants),
-        ServerMsg::LayerSnapshot { plants, .. } => plants_ok(plants),
+            storage,
+            plants,
+            trees,
+            ..
+        } => storage.is_well_formed() && inside(plants, trees),
+        ServerMsg::LayerSnapshot { plants, trees, .. } => inside(plants, trees),
         ServerMsg::Applied(result) => result.deltas.iter().all(|delta| match delta {
             ChunkDelta::Full { storage, .. } => storage.is_well_formed(),
             ChunkDelta::Cells { .. } | ChunkDelta::Layers { .. } => true,
@@ -412,6 +421,7 @@ mod tests {
                 storage,
                 layers: ChunkLayers::default(),
                 plants: BTreeMap::new(),
+                trees: Default::default(),
             });
         }
 
@@ -622,6 +632,7 @@ mod tests {
                 } else {
                     BTreeMap::new()
                 },
+                trees: Default::default(),
             });
         }
         msgs.push(ServerMsg::LayerSnapshot {
@@ -629,12 +640,14 @@ mod tests {
             eco_revision: 9,
             layers: sample_layers(3),
             plants: sample_plants(),
+            trees: Default::default(),
         });
         msgs.push(ServerMsg::LayerSnapshot {
             pos: ChunkPos(IVec3::new(i32::MIN, 0, i32::MAX)),
             eco_revision: u64::MAX,
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
+            trees: Default::default(),
         });
         msgs.push(ServerMsg::Clock(crate::msg::GameClock::default()));
         msgs.push(ServerMsg::Clock(crate::msg::GameClock {
@@ -861,6 +874,7 @@ mod tests {
                 storage: storage.clone(),
                 layers: ChunkLayers::default(),
                 plants: BTreeMap::new(),
+                trees: Default::default(),
             };
             let ServerMsg::ChunkSnapshot { storage: back, .. } =
                 decode_server(&encode_server(&msg).unwrap()).unwrap()
@@ -911,6 +925,7 @@ mod tests {
                 storage: storage.clone(),
                 layers: ChunkLayers::default(),
                 plants: BTreeMap::new(),
+                trees: Default::default(),
             };
             let bytes = encode_server(&snapshot).unwrap();
             assert!(matches!(
@@ -950,6 +965,51 @@ mod tests {
         assert!(decode_server(&[0xff; 16]).is_err());
         // A huge declared length with no data is an error, not an allocation.
         assert!(decode_server(&[1, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
+    }
+
+    #[test]
+    fn snapshots_carry_tree_graphs_at_protocol_3() {
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        assert_eq!(PROTOCOL_VERSION, 3, "version 3 adds trees");
+        let d = 11_585; // Q14 · √½
+        let metamer = |parent, dir, length_mm| Metamer {
+            parent,
+            dir,
+            length_mm,
+            born: 4,
+            bud: BudState::Flower,
+            leaf: 9,
+            shade: 2,
+        };
+        let fork = TreeGraph::try_from(vec![
+            metamer(NO_PARENT, [0, Q14 as i16, 0], 1000),
+            metamer(0, [d, d, 0], 500),
+            metamer(0, [-d, d, 0], 500),
+        ])
+        .unwrap();
+        let mut chunk = Chunk::uniform(MaterialId::AIR);
+        chunk.trees.insert(17, fork.clone());
+        chunk.trees.insert(900, fork);
+        let pos = ChunkPos(IVec3::new(-3, 1, 2));
+        for msg in [
+            ServerMsg::chunk_snapshot(pos, &chunk),
+            ServerMsg::layer_snapshot(pos, &chunk),
+        ] {
+            check_roundtrip(&msg, encode_server, decode_server, false);
+        }
+        // A tree rooted outside the chunk is refused.
+        let graph = chunk.trees.remove(&900).unwrap();
+        chunk.trees.insert(CHUNK_VOLUME as u16, graph);
+        for msg in [
+            ServerMsg::chunk_snapshot(pos, &chunk),
+            ServerMsg::layer_snapshot(pos, &chunk),
+        ] {
+            assert!(matches!(
+                decode_server(&encode_server(&msg).unwrap()),
+                Err(CodecError::MalformedStorage)
+            ));
+        }
     }
 
     #[test]
@@ -1027,12 +1087,14 @@ mod tests {
                 storage: ChunkStorage::Uniform(MaterialId::AIR),
                 layers: ChunkLayers::default(),
                 plants: plants.clone(),
+                trees: Default::default(),
             },
             ServerMsg::LayerSnapshot {
                 pos: ChunkPos(IVec3::ZERO),
                 eco_revision: 1,
                 layers: ChunkLayers::default(),
                 plants,
+                trees: Default::default(),
             },
         ] {
             let bytes = encode_server(&msg).unwrap();

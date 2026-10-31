@@ -18,6 +18,7 @@ use crate::layers::{ChunkLayers, LayerId, PlantState};
 use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialDef, MaterialId, MaterialTable, Phase};
 use crate::shape::Shape;
+use crate::tree::TreeGraph;
 
 /// Errors from world mutation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -610,8 +611,10 @@ impl World {
     }
 
     /// Replaces the ecology state of the resident chunk at `pos` (snapshot
-    /// application: a save load, or a layer snapshot): its layers and plants
-    /// become `layers` and `plants` and its eco revision `eco_revision`.
+    /// application: a save load, or a layer snapshot): its layers, plants
+    /// and trees become `layers`, `plants` and `trees` and its eco revision
+    /// `eco_revision`. Tree graphs are checked when decoded, so only their
+    /// root indices are checked here.
     /// Cells, revision, `modified` and `surface_y` are untouched, since
     /// layers do not change materials. A refused snapshot changes nothing.
     pub fn apply_eco_snapshot(
@@ -620,11 +623,16 @@ impl World {
         eco_revision: u64,
         layers: ChunkLayers,
         plants: BTreeMap<u16, PlantState>,
+        trees: BTreeMap<u16, TreeGraph>,
     ) -> Result<(), DeltaError> {
         if !self.bounds.intersects_chunk(pos) {
             return Err(DeltaError::OutOfBounds(pos));
         }
-        if let Some(&index) = plants.keys().find(|&&i| usize::from(i) >= CHUNK_VOLUME) {
+        if let Some(&index) = plants
+            .keys()
+            .chain(trees.keys())
+            .find(|&&i| usize::from(i) >= CHUNK_VOLUME)
+        {
             return Err(DeltaError::BadIndex { pos, index });
         }
         let chunk = self
@@ -633,6 +641,7 @@ impl World {
             .ok_or(DeltaError::NotResident(pos))?;
         chunk.layers = layers;
         chunk.plants = plants;
+        chunk.trees = trees;
         chunk.eco_revision = eco_revision;
         self.wake_water_chunk(pos);
         tracing::debug!(?pos, eco_revision, "eco snapshot applied");

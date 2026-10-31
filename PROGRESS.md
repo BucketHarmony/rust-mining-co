@@ -4252,3 +4252,19 @@ Tests added: none (plan only).
 Decisions: vines and one-cell plants stay on the grid; pace accelerated with realistic proportions; limbs over 8 cm block the player.
 Next: owner signs off §6 (CLAUDE.md rules 2/14, SAD-P2 §5–§7.8 are protected), then T1.
 Blockers: rule amendments in protected files.
+
+## 2026-10-30 — Trees as geometry T1: tree graph data (docs/TREES.md) — passed
+Done:
+- `rmc_world::tree`: `Metamer`, `BudState`, `TreeGraph` (validated on push and on decode), Q14 directions, the integer sine table and Rodrigues rotation, `perpendicular`, `normalize`, prefix end positions (mm), pipe radii (µm), the 15-byte encoding and hashes.
+- `Chunk.trees` is in the chunk hash (only when non-empty, so existing hashes are unchanged) and in `heap_bytes`.
+- `World::apply_eco_snapshot` takes trees and refuses roots outside the chunk.
+- Save format 3 carries trees, and version 2 saves still load with none. Protocol 3: `ChunkSnapshot` and `LayerSnapshot` carry trees (`ServerMsg::layer_snapshot` is new). The codec and both replicas check root indices.
+- docs/TREES.md §6 holds the rule-amendment text the owner approved, for pasting into the protected CLAUDE.md and SAD-P2.
+Tests added: `tree::tests::{a_y_fork_has_exact_positions_and_pipe_radii, graphs_refuse_bad_parents_and_directions, the_hash_changes_with_any_field, the_chunk_hash_covers_trees_only_when_there_are_some, the_sine_table_matches_known_angles, rotations_turn_right_handed_and_stay_unit, five_golden_turns_stay_unit_within_one_step, perpendicular_is_unit_and_square_to_its_input}`, `save::tests::v3_saves_carry_trees_and_v2_saves_load_without_them`, `codec::tests::snapshots_carry_tree_graphs_at_protocol_3`, `rmc_host replica::tests::trees_replicate_by_snapshot`.
+Decisions:
+- test-fix (own commits 1af6d52, 2d4004c): the save and protocol tests read the version constants instead of pinning 2. The Phase 2 codec test keeps a protocol >= 2 floor as a const assert, and T1's own test pins 3.
+- The pipe exponent is 2. The golden angle is 1564/4096 turns. The rest is in docs/TREES.md T1 status.
+- Tree changes in `ChunkDelta::Layers` wait for T5. Before then trees change only through snapshots.
+- The commit gate hook matches `git commit` and `git -C <dir> commit` only. Commits made as `git -c user.name=... commit` skipped it, 1af6d52 included, which let a clippy lint through; 2d4004c fixes it. Commits now set identity through `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so the hook runs.
+Next: T2, growth (the tree pass and the `form: Graph(...)` row).
+Blockers: the rule amendments (docs/TREES.md §6) need pasting into CLAUDE.md and SAD-P2, which are protected.

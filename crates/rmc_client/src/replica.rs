@@ -190,12 +190,16 @@ impl Replica {
                 storage,
                 layers,
                 plants,
+                trees,
             } => {
                 let pos = *pos;
                 // insert_chunk trusts its storage; a malformed one would
                 // panic later in get or compact.
                 if !storage.is_well_formed()
-                    || plants.keys().any(|&i| usize::from(i) >= CHUNK_VOLUME)
+                    || plants
+                        .keys()
+                        .chain(trees.keys())
+                        .any(|&i| usize::from(i) >= CHUNK_VOLUME)
                 {
                     return Err(ReplicaError::MalformedSnapshot(pos));
                 }
@@ -212,6 +216,7 @@ impl Replica {
                 chunk.eco_revision = *eco_revision;
                 chunk.layers = layers.clone();
                 chunk.plants = plants.clone();
+                chunk.trees = trees.clone();
                 self.world
                     .insert_chunk(pos, chunk)
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
@@ -258,12 +263,19 @@ impl Replica {
                 eco_revision,
                 layers,
                 plants,
+                trees,
             } => {
                 if self.awaiting.contains(pos) {
                     return Ok(());
                 }
                 self.world
-                    .apply_eco_snapshot(*pos, *eco_revision, layers.clone(), plants.clone())
+                    .apply_eco_snapshot(
+                        *pos,
+                        *eco_revision,
+                        layers.clone(),
+                        plants.clone(),
+                        trees.clone(),
+                    )
                     .map_err(ReplicaError::LayerSnapshot)?;
                 self.mark_layers(*pos);
             }
@@ -681,6 +693,7 @@ mod tests {
                     storage: ChunkStorage::Uniform(MaterialId::AIR),
                     layers: Default::default(),
                     plants: Default::default(),
+                    trees: Default::default(),
                 },
             ]);
             app.update();
@@ -841,6 +854,7 @@ mod tests {
             eco_revision,
             layers,
             plants: Default::default(),
+            trees: Default::default(),
         };
 
         // No liquid anywhere: a layer snapshot marks nothing.

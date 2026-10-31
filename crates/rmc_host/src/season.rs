@@ -332,12 +332,7 @@ fn season_snapshots(world: &World, before: &BTreeMap<ChunkPos, (u64, u64)>) -> V
         .filter_map(|(pos, c)| match before.get(&pos) {
             Some(&(r, _)) if r != c.revision => Some(ServerMsg::chunk_snapshot(pos, c)),
             None => Some(ServerMsg::chunk_snapshot(pos, c)),
-            Some(&(_, e)) if e != c.eco_revision => Some(ServerMsg::LayerSnapshot {
-                pos,
-                eco_revision: c.eco_revision,
-                layers: c.layers.clone(),
-                plants: c.plants.clone(),
-            }),
+            Some(&(_, e)) if e != c.eco_revision => Some(ServerMsg::layer_snapshot(pos, c)),
             Some(_) => None,
         })
         .collect()
@@ -740,6 +735,7 @@ mod tests {
                 eco_revision: c.eco_revision,
                 layers: c.layers.clone(),
                 plants: c.plants.clone(),
+                trees: c.trees.clone(),
             }
         );
         assert_eq!(c.revision, before[&hot].0, "materials unchanged");

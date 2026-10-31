@@ -19,6 +19,7 @@ pub mod raycast;
 pub mod save;
 pub mod shape;
 pub mod tools;
+pub mod tree;
 pub mod world;
 
 pub use displace::EcoRules;

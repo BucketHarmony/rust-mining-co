@@ -2100,6 +2100,7 @@ mod tests {
                     eco_revision,
                     layers,
                     plants: Default::default(),
+                    trees: Default::default(),
                 }));
             frame(&mut self.app);
         }

@@ -161,6 +161,7 @@ impl Replica {
                 storage,
                 layers,
                 plants,
+                trees,
             } => {
                 let world = self
                     .world
@@ -169,7 +170,10 @@ impl Replica {
                 // insert_chunk trusts its storage; a malformed one would
                 // panic later in get or compact.
                 if !storage.is_well_formed()
-                    || plants.keys().any(|&i| usize::from(i) >= CHUNK_VOLUME)
+                    || plants
+                        .keys()
+                        .chain(trees.keys())
+                        .any(|&i| usize::from(i) >= CHUNK_VOLUME)
                 {
                     return Err(ReplicaError::MalformedSnapshot(pos));
                 }
@@ -185,6 +189,7 @@ impl Replica {
                 chunk.eco_revision = eco_revision;
                 chunk.layers = layers;
                 chunk.plants = plants;
+                chunk.trees = trees;
                 world
                     .insert_chunk(pos, chunk)
                     .map_err(|_| ReplicaError::SnapshotOutOfBounds(pos))?;
@@ -226,6 +231,7 @@ impl Replica {
                 eco_revision,
                 layers,
                 plants,
+                trees,
             } => {
                 let world = self
                     .world
@@ -236,7 +242,7 @@ impl Replica {
                     return Ok(());
                 }
                 world
-                    .apply_eco_snapshot(pos, eco_revision, layers, plants)
+                    .apply_eco_snapshot(pos, eco_revision, layers, plants, trees)
                     .map_err(ReplicaError::LayerSnapshot)?;
             }
             ServerMsg::PlayerStates(_)
@@ -1053,6 +1059,7 @@ mod tests {
                 storage,
                 layers: Default::default(),
                 plants: BTreeMap::new(),
+                trees: Default::default(),
             };
         let applied = |deltas: Vec<ChunkDelta>| {
             ServerMsg::Applied(rmc_world::edit::EditResult {
@@ -1208,6 +1215,7 @@ mod tests {
                 eco_revision: 1,
                 layers: layers.clone(),
                 plants: plants.clone(),
+                trees: Default::default(),
             }),
             Err(ReplicaError::NotJoined("LayerSnapshot"))
         );
@@ -1226,6 +1234,7 @@ mod tests {
             storage: ChunkStorage::Uniform(MaterialId::AIR),
             layers: layers.clone(),
             plants: plants.clone(),
+            trees: Default::default(),
         })
         .unwrap();
         let chunk = r.world().unwrap().chunk(a).unwrap();
@@ -1243,6 +1252,7 @@ mod tests {
                 storage: ChunkStorage::Uniform(MaterialId::AIR),
                 layers: ChunkLayers::default(),
                 plants: bad,
+                trees: Default::default(),
             }),
             Err(ReplicaError::MalformedSnapshot(a))
         );
@@ -1282,6 +1292,7 @@ mod tests {
             eco_revision: 9,
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
+            trees: Default::default(),
         })
         .unwrap();
         assert_eq!(r.world().unwrap().chunk(a).unwrap().eco_revision, 3);
@@ -1292,6 +1303,7 @@ mod tests {
             storage: ChunkStorage::Uniform(MaterialId::AIR),
             layers: ChunkLayers::default(),
             plants: BTreeMap::new(),
+            trees: Default::default(),
         })
         .unwrap();
         assert!(!r.is_awaiting(a));
@@ -1303,6 +1315,7 @@ mod tests {
             eco_revision: 12,
             layers: layers.clone(),
             plants: plants.clone(),
+            trees: Default::default(),
         })
         .unwrap();
         let chunk = r.world().unwrap().chunk(a).unwrap();
@@ -1316,9 +1329,64 @@ mod tests {
                 eco_revision: 1,
                 layers,
                 plants,
+                trees: Default::default(),
             }),
             Err(ReplicaError::LayerSnapshot(DeltaError::NotResident(b)))
         );
+    }
+
+    #[test]
+    fn trees_replicate_by_snapshot() {
+        use rmc_world::chunk::Chunk;
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        let table = materials();
+        let a = ChunkPos::new(0, 0, 0);
+        let metamer = |parent, length_mm| Metamer {
+            parent,
+            dir: [0, Q14 as i16, 0],
+            length_mm,
+            born: 1,
+            bud: BudState::Active,
+            leaf: 3,
+            shade: 0,
+        };
+        let one = TreeGraph::try_from(vec![metamer(NO_PARENT, 200)]).unwrap();
+        let two = TreeGraph::try_from(vec![metamer(NO_PARENT, 200), metamer(0, 150)]).unwrap();
+        let mut host = Chunk::uniform(MaterialId::AIR);
+        host.eco_revision = 2;
+        host.trees.insert(40, one);
+
+        let mut r = Replica::new(Arc::clone(&table));
+        r.handle(ServerMsg::Welcome {
+            player: PlayerId(1),
+            seed: 1,
+            bounds: bounds(),
+            gen_params_hash: 2,
+        })
+        .unwrap();
+        // The join snapshot carries the trees, so the hashes match.
+        r.handle(ServerMsg::chunk_snapshot(a, &host)).unwrap();
+        let chunk = r.world().unwrap().chunk(a).unwrap();
+        assert_eq!(chunk.trees, host.trees);
+        assert_eq!(chunk.hash(), host.hash());
+        // A layer snapshot replaces them: the tree grew a metamer.
+        host.eco_revision = 3;
+        host.trees.insert(40, two);
+        r.handle(ServerMsg::layer_snapshot(a, &host)).unwrap();
+        assert_eq!(r.world().unwrap().chunk(a).unwrap().hash(), host.hash());
+        // A tree rooted outside the chunk is refused, in either snapshot.
+        let mut bad = host.clone();
+        let graph = bad.trees.remove(&40).unwrap();
+        bad.trees.insert(CHUNK_VOLUME as u16, graph);
+        assert_eq!(
+            r.handle(ServerMsg::chunk_snapshot(a, &bad)),
+            Err(ReplicaError::MalformedSnapshot(a))
+        );
+        assert!(matches!(
+            r.handle(ServerMsg::layer_snapshot(a, &bad)),
+            Err(ReplicaError::LayerSnapshot(DeltaError::BadIndex { .. }))
+        ));
     }
 
     /// Random `SetLayer` edits for the season test: temperature, moisture

@@ -135,7 +135,15 @@ These are starting numbers for the tree lab, and the balance pass (T8) owns them
 
 ## 6. Rule changes the owner must make
 
-These files are protected, so they are listed here rather than edited.
+The owner approved these on 2026-10-30 ("Make it so"). The files are protected (an edit hook and permission rules), so the owner pastes the text in. Until then, this section is the authority for tree work.
+
+Exact text to add:
+
+- CLAUDE.md rule 2, appended: "Tree graphs (`docs/TREES.md`) change only in the tree pass inside `season_tick`, through `EditOp::Chop` and root death applied by `World::apply`, in worldgen, in save migration, and through delta/snapshot application."
+- CLAUDE.md rule 14, appended: "Tree graphs follow rule 2's tree sentence. Tree math is fixed-point integer (millimeters, Q14 directions), as rule 3 requires."
+- SAD-P2, a new section "18. Trees as geometry", with this body: "Trees follow docs/TREES.md §4. It amends §6 (`Chunk.trees`, folded into `Chunk::hash`, save format 3, snapshots and `ChunkDelta::Layers` carry tree graphs, protocol 3), §7.7 (the light pass adds the derived canopy grid) and §7.8 (the tree pass replaces tree parts in the Extend slot)."
+
+The list below is the summary.
 
 - **CLAUDE.md rule 2 / rule 14:** add "tree graphs change only in the tree pass, through `EditOp::Chop` and root death applied by `World::apply`, in worldgen, and through snapshot application."
 - **SAD-P2 §5 / §6:** add `Chunk.trees` to chunk state, the hash, the save (format version 3, with a v2 → v3 migration that replaces Part-cell trees with a young graph of equal biomass) and the snapshots (protocol 3).
@@ -154,6 +162,15 @@ Each step is one session under CLAUDE.md, with a test named first.
     - the hash changes with any field;
     - positions and radii are exact for a hand-built Y fork;
     - integer rotation by 137.5° five times stays unit length within 1 Q14 step.
+  - **Status (2026-10-30): done.** Notes:
+    - The pipe exponent is fixed at 2, so radii are `isqrt(Σ r²)` (u64, micrometers) and no `x^(1/n)` table is needed.
+    - The golden angle is `GOLDEN = 1564` steps of `TURN = 4096`, which is 137.46°.
+    - The sine table is a quarter wave, built at compile time from an i64 Q30 Taylor series. It uses no floats.
+    - `normalize` shifts short vectors up before taking the integer length.
+    - Graphs are validated as they decode (`serde(try_from)`): the first metamer has no parent, every other parent comes earlier, and directions are unit within `UNIT_SLACK`. Snapshots and saves check only root indices.
+    - A chunk without trees keeps its old hash. The trees hash is folded in only when the chunk has trees.
+    - Version 2 saves load with no trees, and saving one again writes version 3. This covers T7's save conversion; T7 keeps the worldgen and garden part.
+    - Trees in `ChunkDelta::Layers` (needed for chop and per-edit growth) wait for T5. Until then trees change only by snapshot.
 - **T2. Growth.**
   - The tree pass: bud light, Borchert–Honda vigor, shoots, tropisms, phyllotaxis, collision and the metamer cap, with the `plants.ron` `form: Graph(...)` row.
   - Tests:
