@@ -20,7 +20,9 @@
 //! "14:15 · 24.5 C · Rain").
 //!
 //! Drops are thin unlit streaks spawned in a cylinder around the
-//! [`GameCamera`], none within [`RAIN_NEAR_M`] of it. Each falls until it reaches the top of its cell column
+//! [`GameCamera`], none within [`RAIN_NEAR_M`] of it; rain fades out
+//! nearer than [`RAIN_FADE_M`], so a streak by the eye does not read as a
+//! pole or a wire. Each falls until it reaches the top of its cell column
 //! in the replica (so it does not rain in caves or through roofs) or drops
 //! below the cylinder, then respawns at the top. The drops are visual only:
 //! the rain that lands is the host's season pass.
@@ -45,6 +47,12 @@ pub const RAIN_RADIUS_M: f32 = 8.0;
 /// No drop falls closer to the camera than this, in meters: a streak
 /// right in front of the eye would fill the view.
 pub const RAIN_NEAR_M: f32 = 1.5;
+/// Rain nearer the camera than this, in meters, is fainter the nearer it
+/// is, in [`RAIN_FADE_STEPS`] steps of its alpha.
+pub const RAIN_FADE_M: f32 = 4.0;
+pub const RAIN_FADE_STEPS: usize = 4;
+/// A rain streak's alpha beyond [`RAIN_FADE_M`].
+const RAIN_ALPHA: f32 = 0.6;
 /// Height of the cylinder above the camera, in meters; drops end this far
 /// below it at the latest.
 pub const RAIN_HEIGHT_M: f32 = 8.0;
@@ -288,8 +296,26 @@ pub struct RainDrop {
 /// The drop meshes and materials, made on first use.
 #[derive(Resource, Clone)]
 struct RainAssets {
-    rain: (Handle<Mesh>, Handle<StandardMaterial>),
+    /// The streak, and its materials from the faintest fade step up.
+    rain: (Handle<Mesh>, Vec<Handle<StandardMaterial>>),
     snow: (Handle<Mesh>, Handle<StandardMaterial>),
+}
+
+impl RainAssets {
+    fn material(&self, snow: bool, eye: Vec3, at: Vec3) -> &Handle<StandardMaterial> {
+        if snow {
+            &self.snow.1
+        } else {
+            &self.rain.1[fade_step(Vec2::new(at.x - eye.x, at.z - eye.z).length())]
+        }
+    }
+}
+
+/// The fade step of a rain streak this far from the camera across the
+/// ground: 0 at [`RAIN_NEAR_M`], the last from [`RAIN_FADE_M`] out.
+pub fn fade_step(r: f32) -> usize {
+    let t = (r - RAIN_NEAR_M) / (RAIN_FADE_M - RAIN_NEAR_M);
+    ((t * (RAIN_FADE_STEPS - 1) as f32).max(0.0) as usize).min(RAIN_FADE_STEPS - 1)
 }
 
 /// The drops' random positions (xorshift64*; looks only).
@@ -438,12 +464,17 @@ fn rain_assets(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMateria
             ..default()
         })
     };
-    let rain_material = unlit(Color::srgba(0.70, 0.78, 0.92, 0.6));
+    let rain_materials = (1..=RAIN_FADE_STEPS)
+        .map(|i| {
+            let alpha = RAIN_ALPHA * i as f32 / RAIN_FADE_STEPS as f32;
+            unlit(Color::srgba(0.70, 0.78, 0.92, alpha))
+        })
+        .collect();
     let snow_material = unlit(Color::srgba(0.97, 0.98, 1.0, 0.9));
     RainAssets {
         rain: (
             meshes.add(Cuboid::new(STREAK_M.0, STREAK_M.1, STREAK_M.0)),
-            rain_material,
+            rain_materials,
         ),
         snow: (
             meshes.add(Cuboid::new(FLAKE_M, FLAKE_M, FLAKE_M)),
@@ -485,7 +516,13 @@ fn run_rain(
     weather: Res<Weather>,
     replica: Option<Res<Replica>>,
     camera: Query<&Transform, (With<GameCamera>, Without<RainDrop>)>,
-    mut drops: Query<(Entity, &mut RainDrop, &mut Transform, &mut Visibility)>,
+    mut drops: Query<(
+        Entity,
+        &mut RainDrop,
+        &mut Transform,
+        &mut Visibility,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
     mut rng: ResMut<RainRng>,
     assets: Option<Res<RainAssets>>,
     meshes: Option<ResMut<Assets<Mesh>>>,
@@ -512,7 +549,7 @@ fn run_rain(
     let replica = replica.as_deref();
     let speed = if snow { SNOW_SPEED_MPS } else { RAIN_SPEED_MPS };
     let fall = speed * time.delta_secs();
-    for (_, mut drop, mut transform, mut visibility) in &mut drops {
+    for (_, mut drop, mut transform, mut visibility, mut material) in &mut drops {
         if drop.snow != snow {
             continue;
         }
@@ -524,6 +561,12 @@ fn run_rain(
             transform.translation = at;
             *visibility = visible;
             drop.ground = ground;
+        }
+        if let Some(a) = assets.as_deref() {
+            let want = a.material(snow, eye, transform.translation);
+            if material.0 != *want {
+                material.0 = want.clone();
+            }
         }
     }
     let add = target.saturating_sub(count).min(SPAWN_PER_FRAME);
@@ -541,13 +584,17 @@ fn run_rain(
             a
         }
     };
-    let (mesh, material) = if snow { handles.snow } else { handles.rain };
+    let mesh = if snow {
+        &handles.snow.0
+    } else {
+        &handles.rain.0
+    };
     for _ in 0..add {
         let (at, ground, visible) = place_drop(&mut rng, replica, eye, true);
         commands.spawn((
             RainDrop { snow, ground },
             Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
+            MeshMaterial3d(handles.material(snow, eye, at).clone()),
             Transform::from_translation(at),
             visible,
             NotShadowCaster,
@@ -744,6 +791,43 @@ mod tests {
         q.iter(app.world())
             .map(|(d, t, m)| (*d, t.translation, m.is_some()))
             .collect()
+    }
+
+    #[test]
+    fn rain_fades_out_near_the_camera() {
+        let mut app = rain_app(seasons());
+        set_season(&mut app, 2);
+        for _ in 0..MAX_DROPS / SPAWN_PER_FRAME + 2 {
+            app.update();
+        }
+        let eye = Vec3::new(10.0, 50.0, -4.0);
+        let world = app.world_mut();
+        let mut q = world.query::<(&Transform, &MeshMaterial3d<StandardMaterial>)>();
+        let alphas: Vec<(f32, f32)> = q
+            .iter(world)
+            .map(|(t, m)| {
+                let at = t.translation;
+                let material = world.resource::<Assets<StandardMaterial>>().get(&m.0);
+                let alpha = material.expect("a drop material").base_color.alpha();
+                (Vec2::new(at.x - eye.x, at.z - eye.z).length(), alpha)
+            })
+            .collect();
+        assert_eq!(alphas.len(), MAX_DROPS);
+        let near = alphas.iter().filter(|(r, _)| *r < RAIN_FADE_M).count();
+        assert!(near > 0 && near < MAX_DROPS, "{near} drops near the eye");
+        for &(r, alpha) in &alphas {
+            if r >= RAIN_FADE_M {
+                assert!((alpha - RAIN_ALPHA).abs() < 1e-4, "{r} m: full {alpha}");
+            } else {
+                assert!(alpha < RAIN_ALPHA, "{r} m: faded {alpha}");
+            }
+        }
+        // Fainter the nearer.
+        let mut sorted = alphas.clone();
+        sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!(sorted.windows(2).all(|w| w[0].1 <= w[1].1 + 1e-6));
+        assert_eq!(fade_step(RAIN_NEAR_M), 0);
+        assert_eq!(fade_step(RAIN_FADE_M), RAIN_FADE_STEPS - 1);
     }
 
     #[test]
