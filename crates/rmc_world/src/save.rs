@@ -1073,9 +1073,9 @@ mod tests {
             "plus the unedited chunk with eco state"
         );
 
-        // The header carries the tables hash at format version 2.
+        // The header carries the tables hash at the current format version.
         let read = read_header(dir.path()).unwrap();
-        assert_eq!(read.format_version, 2);
+        assert_eq!(read.format_version, SAVE_FORMAT_VERSION);
         assert_eq!(read.tables_hash, TABLES_HASH);
 
         // chunks.bin by hand: zstd around postcard of the v2 records.
