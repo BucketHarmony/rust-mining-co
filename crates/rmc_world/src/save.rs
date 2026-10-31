@@ -1228,13 +1228,16 @@ mod tests {
                     field: HeaderField::FormatVersion,
                     expected,
                     found,
-                } => assert_eq!((expected.as_str(), found.as_str()), ("2", "1")),
+                } => assert_eq!(
+                    (expected.as_str(), found.as_str()),
+                    (SAVE_FORMAT_VERSION.to_string().as_str(), "1")
+                ),
                 other => panic!("expected a format version mismatch, got {other:?}"),
             }
             let message = e.to_string();
             assert!(
                 message.contains("save format version 1 is not supported")
-                    && message.contains("version 2"),
+                    && message.contains(&format!("version {SAVE_FORMAT_VERSION}")),
                 "{message}"
             );
         };
@@ -1249,7 +1252,10 @@ mod tests {
 
         // Any other version is refused the same way; the current one parses.
         let mut text = fs::read_to_string(dir.path().join(HEADER_FILE)).unwrap();
-        text = text.replace("format_version: 1", "format_version: 3");
+        text = text.replace(
+            "format_version: 1",
+            &format!("format_version: {}", SAVE_FORMAT_VERSION + 1),
+        );
         fs::write(dir.path().join(HEADER_FILE), &text).unwrap();
         assert!(matches!(
             read_header(dir.path()),

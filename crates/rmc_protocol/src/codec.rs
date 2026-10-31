@@ -962,7 +962,10 @@ mod tests {
         for msg in &samples {
             check_roundtrip(msg, encode_server, decode_server, false);
         }
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert!(
+            PROTOCOL_VERSION >= 2,
+            "Phase 2 shapes need protocol 2 or later"
+        );
         let kinds: Vec<usize> = samples.iter().map(server_variant).collect();
         for want in [2, 3, 7, 8, 9] {
             assert!(kinds.contains(&want), "variant {want} not sampled");
