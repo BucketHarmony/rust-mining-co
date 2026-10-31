@@ -498,3 +498,7 @@ Benches: `tick_quiet`, `tick_first`, `water_sweep_world`, `chem_transport_world`
 | Steam power | Steam concentration in sealed volumes as pressure; boiler as an emitter |
 | Lantern ignition, gas harm | Player state on the host |
 | Members and councils (Phase 3) | Stocks are `query::watershed_sums` over layers; proxies are clients |
+
+## 18. Trees as geometry
+
+Trees follow docs/TREES.md §4. It amends §6 (`Chunk.trees`, folded into `Chunk::hash`, save format 3, snapshots and `ChunkDelta::Layers` carry tree graphs, protocol 3), §7.7 (the light pass adds the derived canopy grid) and §7.8 (the tree pass replaces tree parts in the Extend slot).

@@ -135,7 +135,7 @@ These are starting numbers for the tree lab, and the balance pass (T8) owns them
 
 ## 6. Rule changes the owner must make
 
-The owner approved these on 2026-10-30 ("Make it so"). The files are protected (an edit hook and permission rules), so the owner pastes the text in. Until then, this section is the authority for tree work.
+The owner approved these on 2026-10-30 ("Make it so"). **Applied 2026-10-31** with the owner's explicit permission: CLAUDE.md rules 2 and 14 and SAD-P2 §18 now carry the text below.
 
 Exact text to add:
 

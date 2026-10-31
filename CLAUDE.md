@@ -17,7 +17,7 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 ## Hard rules
 
 1. No Bevy dependency in `rmc_world`, `rmc_worldgen`, `rmc_protocol`, `rmc_host`, `rmc_eco`. `scripts/check-no-bevy.sh` enforces it.
-2. Cells change only via `World::apply`, `World::apply_delta`, `World::insert_chunk`, and (Phase 2, host only, inside `season_tick` only) `World::eco_set`. The client calls only `apply_delta` and `insert_chunk`, only inside `ServerMsg` handlers.
+2. Cells change only via `World::apply`, `World::apply_delta`, `World::insert_chunk`, and (Phase 2, host only, inside `season_tick` only) `World::eco_set`. The client calls only `apply_delta` and `insert_chunk`, only inside `ServerMsg` handlers. Tree graphs (`docs/TREES.md`) change only in the tree pass inside `season_tick`, through `EditOp::Chop` and root death applied by `World::apply`, in worldgen, in save migration, and through delta/snapshot application.
 3. Integers in `rmc_world` logic. Floats only at the raycast boundary and in worldgen noise sampling.
 4. Any iteration that affects output (hash, save, snapshot, delta) is sorted or fixed-order.
 5. Behavior comes from `assets/*.ron`. Filter on `tags` and `phase`; never branch on a specific material id or key in non-test code.
@@ -32,7 +32,7 @@ Read first, every session: `PROGRESS.md` (last 80 lines), `features.json`, `git 
 
 ## Phase 2 rules (ecology, `docs/SAD-P2.md`)
 
-14. Layers change only inside `season_tick` passes, `EditOp::SetLayer`, the SAD-P2 §7.0 displacement rules (run by `World::apply` and `World::eco_set`), worldgen, and delta/snapshot application.
+14. Layers change only inside `season_tick` passes, `EditOp::SetLayer`, the SAD-P2 §7.0 displacement rules (run by `World::apply` and `World::eco_set`), worldgen, and delta/snapshot application. Tree graphs follow rule 2's tree sentence. Tree math is fixed-point integer (millimeters, Q14 directions), as rule 3 requires.
 15. Two kinds of pass, per SAD-P2 §3. Jacobi passes (temperature, transitions, weathering, reactions, plant growth) compute from the previous state over a chunk plus a 1-cell border, in parallel, and apply in sorted chunk order; their cross-chunk fluxes are pure functions of the cell pair. Sweep passes (water, gases, chemistry transport, plant spread, light) run single-threaded in global sorted cell order and apply each move immediately after checking donor content and receiver room. Do not parallelize a sweep.
 16. Every move of water, a substance, or a gas writes a `SeasonLedger` entry. The conservation property tests are the proof; if one fails, the pass is wrong, not the test.
 17. Pass order is fixed by SAD-P2 §3. Do not reorder passes to make a test pass.
