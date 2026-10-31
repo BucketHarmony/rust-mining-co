@@ -232,6 +232,31 @@ impl TreeGraph {
             .collect()
     }
 
+    /// The graph without the subtrees of the metamers `cut` marks, and
+    /// which metamers went (a cut one and everything growing from it).
+    /// Parents are renumbered; the order is kept.
+    pub fn prune(&self, cut: &[bool]) -> (TreeGraph, Vec<bool>) {
+        let n = self.metamers.len();
+        let mut gone = vec![false; n];
+        let mut index = vec![NO_PARENT; n];
+        let mut kept = Vec::with_capacity(n);
+        for (i, m) in self.metamers.iter().enumerate() {
+            let parent_gone = m.parent != NO_PARENT && gone[usize::from(m.parent)];
+            gone[i] = cut.get(i).copied().unwrap_or(false) || parent_gone;
+            if gone[i] {
+                continue;
+            }
+            index[i] = kept.len() as u16;
+            let parent = if m.parent == NO_PARENT {
+                NO_PARENT
+            } else {
+                index[usize::from(m.parent)]
+            };
+            kept.push(Metamer { parent, ..*m });
+        }
+        (TreeGraph { metamers: kept }, gone)
+    }
+
     /// [`METAMER_BYTES`] little-endian bytes per metamer, in order.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.metamers.len() * METAMER_BYTES);
@@ -525,6 +550,25 @@ mod tests {
         assert_ne!(chunk.hash(), one, "a metamer's state");
         chunk.trees.clear();
         assert_eq!(chunk.hash(), bare);
+    }
+
+    #[test]
+    fn pruning_takes_whole_subtrees_and_renumbers_the_rest() {
+        // 0 trunk, 1 left limb, 2 right limb, 3 on the left limb, 4 trunk.
+        let mut g = y_fork();
+        g.push(m(1, UP, 100)).unwrap();
+        g.push(m(0, UP, 100)).unwrap();
+        let (pruned, gone) = g.prune(&[false, true, false, false, false]);
+        assert_eq!(gone, [false, true, false, true, false]);
+        let parents: Vec<u16> = pruned.metamers().iter().map(|m| m.parent).collect();
+        assert_eq!(parents, [NO_PARENT, 0, 0]);
+        assert_eq!(pruned.metamers()[1], g.metamers()[2]);
+        assert_eq!(g.prune(&[]).0, g, "nothing cut");
+        let (bare, gone) = g.prune(&[true]);
+        assert!(
+            bare.is_empty() && gone.iter().all(|&x| x),
+            "cutting the first fells it"
+        );
     }
 
     #[test]

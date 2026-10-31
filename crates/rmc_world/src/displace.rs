@@ -360,8 +360,9 @@ impl World {
     ///
     /// Replaces the tree graph rooted at `cell` (`None` removes it) and
     /// returns whether it changed; a change bumps the chunk's
-    /// `eco_revision`. A cell outside the bounds or in a non-resident chunk
-    /// changes nothing.
+    /// `eco_revision` and sets the light dirty flag (trees shade the light
+    /// pass). A cell outside the bounds or in a non-resident chunk changes
+    /// nothing.
     pub fn eco_put_tree(&mut self, cell: CellPos, tree: Option<TreeGraph>) -> bool {
         if !self.bounds.contains(cell) {
             return false;
@@ -379,6 +380,7 @@ impl World {
             None => chunk.trees.remove(&index),
         };
         chunk.eco_revision += 1;
+        self.light_dirty = true;
         true
     }
 

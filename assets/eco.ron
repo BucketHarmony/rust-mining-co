@@ -50,6 +50,14 @@
         // Multi-cell plants (docs/VEGETATION.md V4): organic a cut-off part
         // leaves in the anchor below it
         part_litter: Some(2),
+        // Trees as geometry (docs/TREES.md T3): organic per fallen leaf and
+        // per shed metamer; light a leafy metamer takes per leaf step, and
+        // a limb at least `solid_radius_um` thick (8 cm) takes, from the
+        // cell it ends in
+        metamer_litter: Some(1),
+        leaf_attenuation: Some(3),
+        wood_attenuation: Some(64),
+        solid_radius_um: Some(80000),
         // §7.9 activity: quiet Jacobi passes before a chunk is skipped
         quiet_skip: 2,
     ),

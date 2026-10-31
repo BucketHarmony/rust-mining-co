@@ -78,11 +78,16 @@
     // `divergence` apart about the axis (steps of 4096 per turn: 512 is
     // 45°, 1564 the golden angle); `gravitropism` and `phototropism` (256ths)
     // lean new internodes up and toward light. `tip_um`: a twig's radius;
-    // `leaf`: leaf area per metamer. The shipped trees switch to it once
-    // the client draws graphs (TREES T7), e.g. the oak:
+    // `leaf`: leaf area per metamer, kept `leaf_age` seasons (0: for good)
+    // and dropped as litter in the `shed` season; leaves shade the light
+    // pass. A lateral branch whose every metamer has had less than
+    // `shed_light` for `shed_after` flushes (0: never) is shed as litter.
+    // The shipped trees switch to it once the client draws graphs (TREES
+    // T7), e.g. the oak:
     // form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,
     //     divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
-    //     bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4),
+    //     bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4,
+    //     shed_light: 48, shed_after: 6, leaf_age: 8),
     (key: "oak", material: "acorn", anchor_tags: ["soil"],
      needs: (light: 0, moisture: 16, temp: (-100, 350),
              substance_min: [("n", 4)],

@@ -193,6 +193,14 @@ Each step is one session under CLAUDE.md, with a test named first.
     - a crown darkens the ground under it;
     - a shaded lower limb is shed after `shed_after` flushes and its mass appears as litter;
     - the ledger balances.
+  - **Status (2026-10-31): done.** Notes:
+    - Canopy: `LightPass` adds attenuation to the cell each metamer ends in. That is `eco.leaf_attenuation` (3) per leaf step, plus `eco.wood_attenuation` (64) when the pipe radius is at least `eco.solid_radius_um` (80,000 µm). The sum over all trees stays below opaque, so canopy cells still take part in the lateral step. The canopy sits at the metamer ends rather than along a 3D DDA: internodes (25 cm) are shorter than a cell (50 cm), so every cell an axis crosses holds an end. `World::eco_put_tree` sets the light dirty flag.
+    - `trees::tend` runs before a graph tree feeds, on every flush, including bare seasons:
+      - Leaves: a metamer carries the row's `leaf` while it is younger than `leaf_age` seasons (0 means any age), and none in the `shed` season. Leaves regrow after the shed season at no cost.
+      - Shade: `shade` counts flushes in a row below `shed_light`.
+      - Shedding: a lateral subtree whose least `shade` reaches `shed_after` (0 never sheds) is cut (`TreeGraph::prune`). The trunk axis is never shed.
+    - Litter: each fallen leaf, each shed metamer and each leaf on one lays `eco.metamer_litter` organic on the first anchor below its end, ledgered as `litter_in` through the same path as part litter.
+    - New `Graph` fields `shed_light`, `shed_after` and `leaf_age` default to 0, so T2 rows still load.
 - **T4. Tree lab and look.**
   - `rmc_app --tree-lab <species> --seed S --years N --out <file.json>` grows one tree headless and writes the graph per flush.
   - A browser viewer artifact draws it with the same cylinder and leaf-card rules for fast look iteration.

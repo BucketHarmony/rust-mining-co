@@ -244,6 +244,8 @@ pub struct ExtendPass {
     /// Role `organic`: what fallen leaves and rotten fruit leave.
     organic: Option<u8>,
     part_litter: i32,
+    /// `eco.metamer_litter`: what a fallen leaf or a shed metamer leaves.
+    metamer_litter: i32,
     materials: Arc<MaterialTable>,
     starts: PlantStarts,
     season: u32,
@@ -267,6 +269,7 @@ impl ExtendPass {
             water: tables.role_material("water"),
             organic: tables.role_substance("organic"),
             part_litter: i32::from(tables.params().part_litter.unwrap_or(0)),
+            metamer_litter: i32::from(tables.params().metamer_litter.unwrap_or(0)),
             materials: Arc::clone(tables.materials()),
             starts: PlantStarts::new(tables),
             season,
@@ -560,6 +563,12 @@ impl ExtendPass {
     /// Lays `eco.part_litter` organic on `landing` when it is an anchor
     /// material, up to its room (ledger `litter_in`).
     fn rot(&self, ctx: &mut SweepCtx<'_>, landing: Option<CellPos>) {
+        self.rot_by(ctx, landing, self.part_litter);
+    }
+
+    /// Lays `amount` organic on `landing` when it is an anchor material, up
+    /// to its room (ledger `litter_in`).
+    fn rot_by(&self, ctx: &mut SweepCtx<'_>, landing: Option<CellPos>, amount: i32) {
         let (Some(c), Some(landing)) = (self.organic, landing) else {
             return;
         };
@@ -573,7 +582,7 @@ impl ExtendPass {
         }
         let layer = LayerId::Substance(c);
         let have = ctx.world.layer(landing, layer);
-        let added = self.part_litter.min(i32::from(u8::MAX) - have).max(0);
+        let added = amount.min(i32::from(u8::MAX) - have).max(0);
         if added > 0 {
             ctx.world.eco_put_layer(landing, layer, have + added);
             ctx.ledger.litter_in[usize::from(c)] += i64::from(added);
@@ -660,7 +669,22 @@ impl SweepPass for ExtendPass {
             parts = parts_of(ctx.world, cell);
         }
 
-        let graph = ctx.world.tree(cell).cloned().unwrap_or_default();
+        let mut graph = ctx.world.tree(cell).cloned().unwrap_or_default();
+        if let Shape::Graph(growth) = &form.shape
+            && !graph.is_empty()
+        {
+            let born = u16::try_from(self.season).unwrap_or(u16::MAX);
+            let (tended, fallen) = {
+                let site = self.site(ctx.world, cell);
+                trees::tend(&graph, &site, growth, bare, born)
+            };
+            for at in fallen {
+                let landing = self.landing(ctx.world, trees::cell_at(cell, at));
+                self.rot_by(ctx, landing, self.metamer_litter);
+            }
+            ctx.world.eco_put_tree(cell, Some(tended.clone()));
+            graph = tended;
+        }
         let lit = parts
             .iter()
             .filter(|&&(c, kind)| {

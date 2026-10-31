@@ -342,6 +342,17 @@ pub enum FormDef {
         max_metamers: u16,
         /// Leaf area of a new metamer, in steps.
         leaf: u8,
+        /// Below this light a metamer counts a shaded flush.
+        #[serde(default)]
+        shed_light: u8,
+        /// A lateral branch every metamer of which has been shaded this
+        /// many flushes in a row is shed; 0 never sheds.
+        #[serde(default)]
+        shed_after: u8,
+        /// Seasons a metamer keeps leaves after it grew; 0 keeps them for
+        /// good (but for the `shed` season).
+        #[serde(default)]
+        leaf_age: u16,
     },
 }
 
@@ -430,6 +441,23 @@ pub struct EcoParams {
     /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_litter: Option<u8>,
+    /// Trees as geometry (docs/TREES.md): organic each fallen leaf and
+    /// each shed metamer leaves in the anchor below it. `None`: none. Not
+    /// encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metamer_litter: Option<u8>,
+    /// Light a leafy metamer takes from the cell it ends in, per leaf
+    /// step. Not encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaf_attenuation: Option<u8>,
+    /// Light a limb of at least `solid_radius_um` takes from the cell it
+    /// ends in. Not encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wood_attenuation: Option<u8>,
+    /// The radius from which a limb is solid: it blocks light and, from
+    /// TREES T5, the player. Not encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solid_radius_um: Option<u32>,
     // §7.9 activity
     pub quiet_skip: u8,
 }

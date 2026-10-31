@@ -4287,3 +4287,20 @@ Decisions:
 - Measured shapes are in docs/TREES.md T2 status.
 Next: T3, light and shedding (the canopy grid in the light pass, self-pruning, leaf drop, ledgered).
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.
+
+## 2026-10-31 — Trees as geometry T3: light and shedding (docs/TREES.md) — passed
+Done:
+- The light pass rasterizes graph trees into a canopy grid: leaf steps × `eco.leaf_attenuation`, plus `eco.wood_attenuation` for limbs of at least `eco.solid_radius_um`, at each metamer's end cell, summed and kept below opaque. `eco_put_tree` dirties the light.
+- `trees::tend`, run on every flush before feeding:
+  - leaves by age (`leaf_age`) and the `shed` season;
+  - `shade` counters against `shed_light`;
+  - lateral branches shaded `shed_after` flushes in a row are shed (`TreeGraph::prune`).
+  Fallen leaves and shed metamers leave `eco.metamer_litter` organic on the anchor below, ledgered `litter_in`.
+- `eco.ron`: `metamer_litter`, `leaf_attenuation`, `wood_attenuation`, `solid_radius_um`. Graph rows: `shed_light`, `shed_after`, `leaf_age` (default 0).
+Tests added: `trees::tests::{a_crown_darkens_the_ground_under_it, a_shaded_lower_limb_is_shed_and_its_mass_becomes_litter, leaves_fall_in_the_shed_season_and_grow_back_on_young_wood}`, `tree::tests::pruning_takes_whole_subtrees_and_renumbers_the_rest`. The ledger is checked by `InvariantChecker` in every extension sweep of the tests.
+Decisions:
+- The canopy sits at metamer ends rather than along a 3D DDA. Internodes are half a cell, so every cell an axis crosses holds an end.
+- Leaves regrow after the shed season at no biomass cost. Leaf cost belongs to T8's balance pass.
+- Shade counters also tick in the shed season, when the bare crown lets more light through.
+Next: T4, tree lab and look (`--tree-lab` export, browser viewer, client mesh).
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.

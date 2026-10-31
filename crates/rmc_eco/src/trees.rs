@@ -74,6 +74,9 @@ pub struct Growth {
     pub max_shoot: usize,
     pub max_metamers: usize,
     pub leaf: u8,
+    pub shed_light: i32,
+    pub shed_after: u8,
+    pub leaf_age: u16,
 }
 
 impl Growth {
@@ -91,6 +94,9 @@ impl Growth {
             max_shoot,
             max_metamers,
             leaf,
+            shed_light,
+            shed_after,
+            leaf_age,
         } = form
         else {
             return None;
@@ -107,6 +113,9 @@ impl Growth {
             max_shoot: usize::from(max_shoot),
             max_metamers: usize::from(max_metamers),
             leaf,
+            shed_light: i32::from(shed_light),
+            shed_after,
+            leaf_age,
         })
     }
 }
@@ -125,15 +134,7 @@ impl<L: Fn(CellPos) -> i32, P: Fn(CellPos) -> bool> Site<L, P> {
     /// The cell holding the point `at`, in millimeters from the root
     /// cell's top-face center.
     pub fn cell(&self, at: [i32; 3]) -> CellPos {
-        let r = self.root.0;
-        let half = CELL_SIZE_MM / 2;
-        let mm = [
-            r.x * CELL_SIZE_MM + half + at[0],
-            (r.y + 1) * CELL_SIZE_MM + at[1],
-            r.z * CELL_SIZE_MM + half + at[2],
-        ];
-        let [x, y, z] = mm.map(|c| c.div_euclid(CELL_SIZE_MM));
-        CellPos::new(x, y, z)
+        cell_at(self.root, at)
     }
 
     fn light_at(&self, at: [i32; 3]) -> i32 {
@@ -176,6 +177,113 @@ impl<L: Fn(CellPos) -> i32, P: Fn(CellPos) -> bool> Site<L, P> {
         }
         best.map(|(_, f)| f.map(|x| (x * Q14) as i16))
     }
+}
+
+/// The cell holding the point `at` of the tree rooted at `root`, in
+/// millimeters from the root cell's top-face center.
+pub fn cell_at(root: CellPos, at: [i32; 3]) -> CellPos {
+    let r = root.0;
+    let half = CELL_SIZE_MM / 2;
+    let mm = [
+        r.x * CELL_SIZE_MM + half + at[0],
+        (r.y + 1) * CELL_SIZE_MM + at[1],
+        r.z * CELL_SIZE_MM + half + at[2],
+    ];
+    let [x, y, z] = mm.map(|c| c.div_euclid(CELL_SIZE_MM));
+    CellPos::new(x, y, z)
+}
+
+/// How a tree shades the light pass (`eco.ron`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Canopy {
+    /// Per leaf step of a metamer.
+    pub leaf_attenuation: u32,
+    /// Per limb of at least `solid_radius_um`.
+    pub wood_attenuation: u32,
+    pub solid_radius_um: u32,
+}
+
+/// Calls `shade(cell, attenuation)` for every metamer of `graph` (rooted at
+/// `root`, twig radius `tip_um`) that takes light from the cell it ends
+/// in: its leaves, and its wood when it is solid.
+pub fn shade_cells(
+    graph: &TreeGraph,
+    root: CellPos,
+    tip_um: u32,
+    canopy: Canopy,
+    mut shade: impl FnMut(CellPos, u32),
+) {
+    let radii = graph.radii(tip_um);
+    for ((m, end), r) in graph.metamers().iter().zip(graph.ends()).zip(radii) {
+        let solid = canopy.solid_radius_um > 0 && r >= canopy.solid_radius_um;
+        let a = u32::from(m.leaf) * canopy.leaf_attenuation
+            + if solid { canopy.wood_attenuation } else { 0 };
+        if a > 0 {
+            shade(cell_at(root, end), a);
+        }
+    }
+}
+
+/// The tree's state for a flush before it feeds and grows: every metamer
+/// carries `leaf` while it is younger than `leaf_age` seasons (any age for
+/// 0), and none in a `bare` season; its `shade` counts the flushes in a
+/// row its end has had less than `shed_light`; and a lateral branch whose
+/// every metamer has counted `shed_after` (when not 0) is shed. Returns the
+/// new graph and a point for every leaf that fell, then for every metamer
+/// shed and every leaf on it, where each leaves litter.
+pub fn tend<L, P>(
+    graph: &TreeGraph,
+    site: &Site<L, P>,
+    g: &Growth,
+    bare: bool,
+    season: u16,
+) -> (TreeGraph, Vec<[i32; 3]>)
+where
+    L: Fn(CellPos) -> i32,
+    P: Fn(CellPos) -> bool,
+{
+    let ends = graph.ends();
+    let mut ms = graph.metamers().to_vec();
+    let mut fallen = Vec::new();
+    for (m, &end) in ms.iter_mut().zip(&ends) {
+        let young = g.leaf_age == 0 || season.saturating_sub(m.born) < g.leaf_age;
+        let leaf = if bare || !young { 0 } else { g.leaf };
+        if m.leaf > 0 && leaf == 0 {
+            fallen.push(end);
+        }
+        m.leaf = leaf;
+        m.shade = if site.light_at(end) < g.shed_light {
+            m.shade.saturating_add(1)
+        } else {
+            0
+        };
+    }
+    let tended = TreeGraph::try_from(ms).expect("the shape is unchanged");
+    if g.shed_after == 0 {
+        return (tended, fallen);
+    }
+    // The least shade count over each subtree.
+    let ms = tended.metamers();
+    let mut least: Vec<u8> = ms.iter().map(|m| m.shade).collect();
+    for i in (1..ms.len()).rev() {
+        let p = usize::from(ms[i].parent);
+        least[p] = least[p].min(least[i]);
+    }
+    let cut: Vec<bool> = ms
+        .iter()
+        .zip(&least)
+        .map(|(m, &l)| m.lateral && l >= g.shed_after)
+        .collect();
+    let (pruned, gone) = tended.prune(&cut);
+    for (i, m) in ms.iter().enumerate() {
+        if gone[i] {
+            fallen.push(ends[i]);
+            if m.leaf > 0 {
+                fallen.push(ends[i]);
+            }
+        }
+    }
+    (pruned, fallen)
 }
 
 /// How many of the graph's leafy metamers end in a cell with at least
@@ -734,5 +842,183 @@ mod tests {
         ] {
             assert!(tables_with(&good.replace(from, to)).is_err(), "{to}");
         }
+    }
+
+    /// The oak as a graph that sheds: `shed_light` 255, so any cell short
+    /// of open sky is shade, `shed_after` flushes; `leaf` per metamer, kept
+    /// `leaf_age` seasons.
+    fn shedding_tables(shed_after: u8, leaf: u8, leaf_age: u16) -> EcoTables {
+        tables_with(&format!(
+            "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+             divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96, \
+             bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: {leaf}, \
+             shed_light: 255, shed_after: {shed_after}, leaf_age: {leaf_age}),"
+        ))
+        .expect("the shedding oak loads")
+    }
+
+    fn metamer(parent: u16, dir: Dir, born: u16, lateral: bool, leaf: u8) -> Metamer {
+        Metamer {
+            parent,
+            dir,
+            length_mm: 250,
+            born,
+            bud: BudState::Dormant,
+            leaf,
+            shade: 0,
+            lateral,
+        }
+    }
+
+    /// One extension sweep in season `season`, checking the conservation
+    /// invariants (litter is ledgered as `litter_in`).
+    fn extend_in(w: &mut World, t: &EcoTables, season: u32) {
+        let checker = InvariantChecker::new(w);
+        let mut ledger = SeasonLedger::default();
+        ExtendPass::for_season(t, season, SEED).run(w, &mut ledger);
+        checker.check(w, &ledger).unwrap_or_else(|v| panic!("{v}"));
+    }
+
+    fn organic(t: &EcoTables) -> LayerId {
+        LayerId::Substance(t.role_substance("organic").expect("an organic role"))
+    }
+
+    fn metamer_litter(t: &EcoTables) -> i32 {
+        i32::from(t.params().metamer_litter.expect("eco.metamer_litter"))
+    }
+
+    #[test]
+    fn a_crown_darkens_the_ground_under_it() {
+        let t = tables(133, 4000);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        flushes(&mut w, &t, &[root], 14, SEED);
+        assert!(w.light_dirty(), "a growing tree dirties the light");
+        let light = LightPass::new(&t);
+        light.recompute(&mut w);
+        let ground: Vec<CellPos> = (14..=18)
+            .flat_map(|z| (14..=18).map(move |x| CellPos::new(x, 31, z)))
+            .filter(|&c| c != root)
+            .collect();
+        let shaded: Vec<i32> = ground.iter().map(|&c| w.layer(c, LayerId::Light)).collect();
+        // The same ground without the tree.
+        let tree = w.tree(root).cloned();
+        w.eco_put_tree(root, None);
+        light.recompute(&mut w);
+        let open: Vec<i32> = ground.iter().map(|&c| w.layer(c, LayerId::Light)).collect();
+        assert!(shaded.iter().zip(&open).all(|(s, o)| s <= o));
+        assert!(
+            shaded.iter().zip(&open).any(|(s, o)| s < o),
+            "shaded {shaded:?}, open {open:?}"
+        );
+        // Leaves in their cells darken them too.
+        w.eco_put_tree(root, tree.clone());
+        light.recompute(&mut w);
+        let g = tree.unwrap();
+        let top = g
+            .ends()
+            .into_iter()
+            .map(|e| cell_of(root, e))
+            .min_by_key(|c| w.layer(*c, LayerId::Light))
+            .unwrap();
+        assert!(w.layer(top, LayerId::Light) < i32::from(u8::MAX));
+    }
+
+    #[test]
+    fn a_shaded_lower_limb_is_shed_and_its_mass_becomes_litter() {
+        let shed_after = 3;
+        let t = shedding_tables(shed_after, 0, 0);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        // A trunk of six, limb A (+x) from the second metamer, limb B (−x)
+        // from the third, three metamers each.
+        let (east, west) = ([Q14 as i16, 0, 0], [-(Q14 as i16), 0, 0]);
+        let mut g = TreeGraph::default();
+        g.push(metamer(NO_PARENT, UP, 0, false, 0)).unwrap();
+        for p in 0..5 {
+            g.push(metamer(p, UP, 0, false, 0)).unwrap();
+        }
+        let a = g.push(metamer(1, east, 0, true, 0)).unwrap();
+        g.push(metamer(a, east, 0, false, 0)).unwrap();
+        g.push(metamer(a + 1, east, 0, false, 0)).unwrap();
+        let b = g.push(metamer(2, west, 0, true, 0)).unwrap();
+        g.push(metamer(b, west, 0, false, 0)).unwrap();
+        g.push(metamer(b + 1, west, 0, false, 0)).unwrap();
+        // A stone slab over limb A only.
+        let a_cells: Vec<CellPos> = g.ends()[6..9].iter().map(|&e| cell_of(root, e)).collect();
+        let slab_y = a_cells.iter().map(|c| c.0.y).max().unwrap() + 1;
+        let stone = id(&t, "stone");
+        let mut scratch = SeasonLedger::default();
+        for z in 14..=18 {
+            for x in 17..=20 {
+                w.eco_set(CellPos::new(x, slab_y, z), stone, &mut scratch);
+            }
+        }
+        w.eco_put_tree(root, Some(g.clone()));
+        let litter_under_a = |w: &World| -> i32 {
+            let mut columns: Vec<CellPos> = a_cells
+                .iter()
+                .map(|c| CellPos::new(c.0.x, 30, c.0.z))
+                .collect();
+            columns.dedup();
+            columns.iter().map(|&c| w.layer(c, organic(&t))).sum()
+        };
+        let before = litter_under_a(&w);
+        let light = LightPass::new(&t);
+        for flush in 1..=shed_after {
+            light.recompute(&mut w);
+            extend(&mut w, &t, SEED);
+            let now = graph(&w, root);
+            if flush < shed_after {
+                assert_eq!(now.len(), 12, "flush {flush}");
+                assert_eq!(now.metamers()[a as usize].shade, flush);
+                assert_eq!(now.metamers()[b as usize].shade, 0, "limb B is in the open");
+            }
+        }
+        let now = graph(&w, root);
+        assert_eq!(now.len(), 9, "limb A is shed");
+        let kept: Vec<Dir> = now.metamers().iter().map(|m| m.dir).collect();
+        assert!(!kept.contains(&east) && kept.iter().filter(|&&d| d == west).count() == 3);
+        assert_eq!(litter_under_a(&w), before + 3 * metamer_litter(&t));
+    }
+
+    #[test]
+    fn leaves_fall_in_the_shed_season_and_grow_back_on_young_wood() {
+        let t = shedding_tables(0, 4, 8);
+        let rows = &t.seasons().seasons;
+        let winter = rows.iter().position(|s| s.key == "winter").unwrap() as u32;
+        let len = rows.len() as u32;
+        // A winter three years in, and the season after it.
+        let winter = 3 * len + winter;
+        let spring = winter + 1;
+        let young = (winter - 1) as u16;
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        let mut g = TreeGraph::default();
+        g.push(metamer(NO_PARENT, UP, 0, false, 4)).unwrap();
+        g.push(metamer(0, UP, 0, false, 4)).unwrap();
+        g.push(metamer(1, UP, young, false, 4)).unwrap();
+        g.push(metamer(2, UP, young, false, 4)).unwrap();
+        w.eco_put_tree(root, Some(g));
+        let soil = CellPos::new(16, 30, 16);
+        let before = w.layer(soil, organic(&t));
+        LightPass::new(&t).recompute(&mut w);
+
+        extend_in(&mut w, &t, winter);
+        let leaves: Vec<u8> = graph(&w, root).metamers().iter().map(|m| m.leaf).collect();
+        assert_eq!(leaves, [0, 0, 0, 0], "bare in winter");
+        assert_eq!(
+            w.layer(soil, organic(&t)),
+            before + 4 * metamer_litter(&t),
+            "four leaves rot under the trunk"
+        );
+
+        extend_in(&mut w, &t, spring);
+        let leaves: Vec<u8> = graph(&w, root).metamers().iter().map(|m| m.leaf).collect();
+        assert_eq!(leaves, [0, 0, 4, 4], "only young wood leafs out");
+        assert_eq!(w.layer(soil, organic(&t)), before + 4 * metamer_litter(&t));
     }
 }

@@ -13,6 +13,13 @@
 //!    max_neighbor.saturating_sub(eco.light_falloff))` over the six face
 //!    neighbors, every value computed from the previous iteration's array.
 //!
+//! **Trees** (docs/TREES.md T3) shade the pass: before the column pass,
+//! each graph tree adds to the attenuation of the cells its metamers end in
+//! (`eco.leaf_attenuation` per leaf step, `eco.wood_attenuation` for a limb
+//! of at least `eco.solid_radius_um`), summed over all trees and kept below
+//! opaque, so a crown darkens what is under it but stays in the lateral
+//! step. The canopy is derived each pass, never stored.
+//!
 //! The lateral step visits only the cells that can change: in the first
 //! iteration the transparent cells below 255, and in each later one the
 //! transparent neighbors of the cells the previous iteration raised. A cell
@@ -25,6 +32,7 @@ use rmc_world::coords::{CHUNK_SIZE, CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, L
 use rmc_world::world::World;
 
 use crate::tables::EcoTables;
+use crate::trees::{self, Canopy, Growth};
 
 /// Light above the world.
 const FULL: u8 = u8::MAX;
@@ -38,6 +46,9 @@ pub struct LightPass {
     falloff: u8,
     /// `light_attenuation` by material id.
     attenuation: Vec<u8>,
+    /// Per `plants.ron` row: the twig radius of a graph tree.
+    tips: Vec<Option<u32>>,
+    canopy: Canopy,
 }
 
 /// The light of every cell in a box, in (y, z, x) order.
@@ -145,6 +156,19 @@ impl LightPass {
                 .iter()
                 .map(|d| d.light_attenuation())
                 .collect(),
+            tips: tables
+                .plants()
+                .iter()
+                .map(|p| {
+                    let parts = p.parts.as_ref()?;
+                    Growth::from_form(&parts.form).map(|g| g.tip_um)
+                })
+                .collect(),
+            canopy: Canopy {
+                leaf_attenuation: p.leaf_attenuation.map_or(0, u32::from),
+                wood_attenuation: p.wood_attenuation.map_or(0, u32::from),
+                solid_radius_um: p.solid_radius_um.unwrap_or(0),
+            },
         }
     }
 
@@ -194,8 +218,27 @@ impl LightPass {
         chunks: impl IntoIterator<Item = (ChunkPos, &'a Chunk)>,
     ) -> Vec<u8> {
         let mut out = vec![OPAQUE; dims.len()];
+        let mut canopy: Vec<u32> = Vec::new();
         let n = CHUNK_SIZE as u32;
         for (pos, chunk) in chunks {
+            for (&index, graph) in &chunk.trees {
+                let tip = chunk
+                    .plants
+                    .get(&index)
+                    .and_then(|p| self.tips.get(usize::from(p.species)).copied().flatten());
+                let Some(tip) = tip else {
+                    continue;
+                };
+                if canopy.is_empty() {
+                    canopy = vec![0; dims.len()];
+                }
+                let root = CellPos::from_chunk_local(pos, LocalPos::from_index(index));
+                trees::shade_cells(graph, root, tip, self.canopy, |cell, a| {
+                    if let Some(i) = dims.index(cell) {
+                        canopy[i] = canopy[i].saturating_add(a);
+                    }
+                });
+            }
             for ly in 0..n {
                 for lz in 0..n {
                     for lx in 0..n {
@@ -209,6 +252,14 @@ impl LightPass {
                                 .unwrap_or(OPAQUE);
                         }
                     }
+                }
+            }
+        }
+        if !canopy.is_empty() {
+            let below_opaque = u32::from(OPAQUE - 1);
+            for (a, &c) in out.iter_mut().zip(&canopy) {
+                if *a < OPAQUE && c > 0 {
+                    *a = (u32::from(*a) + c).min(below_opaque) as u8;
                 }
             }
         }
