@@ -981,6 +981,7 @@ mod tests {
             bud: BudState::Flower,
             leaf: 9,
             shade: 2,
+            lateral: true,
         };
         let fork = TreeGraph::try_from(vec![
             metamer(NO_PARENT, [0, Q14 as i16, 0], 1000),

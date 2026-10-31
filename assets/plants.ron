@@ -70,6 +70,19 @@
     // `tuft`: the client draws a tuft of leaves on the trunk's growing tip
     // (a look only), so a young trunk is not a bare post; it is hidden in
     // the `shed` season.
+    // Form Graph (docs/TREES.md): the tree is a metamer graph, not cells.
+    // Each flush spends the biomass on internodes of `internode_mm`, split
+    // between buds by their light (at least `bud_light`) and Borchert–Honda
+    // `lambda` (256ths to the main axis); a bud adds at most `max_shoot`, a
+    // tree holds at most `max_metamers`. Laterals leave at `branch_angle`,
+    // `divergence` apart about the axis (steps of 4096 per turn: 512 is
+    // 45°, 1564 the golden angle); `gravitropism` and `phototropism` (256ths)
+    // lean new internodes up and toward light. `tip_um`: a twig's radius;
+    // `leaf`: leaf area per metamer. The shipped trees switch to it once
+    // the client draws graphs (TREES T7), e.g. the oak:
+    // form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,
+    //     divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
+    //     bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4),
     (key: "oak", material: "acorn", anchor_tags: ["soil"],
      needs: (light: 0, moisture: 16, temp: (-100, 350),
              substance_min: [("n", 4)],

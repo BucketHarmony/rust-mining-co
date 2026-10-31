@@ -4268,3 +4268,22 @@ Decisions:
 - The commit gate hook matches `git commit` and `git -C <dir> commit` only. Commits made as `git -c user.name=... commit` skipped it, 1af6d52 included, which let a clippy lint through; 2d4004c fixes it. Commits now set identity through `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so the hook runs.
 Next: T2, growth (the tree pass and the `form: Graph(...)` row).
 Blockers: the rule amendments (docs/TREES.md §6) need pasting into CLAUDE.md and SAD-P2, which are protected.
+
+## 2026-10-31 — Trees as geometry T2: growth (docs/TREES.md) — passed
+Done:
+- `rmc_eco::trees`: the bud model.
+  - Bud light, Q summed base-ward, and Borchert–Honda vigor in Q8.
+  - Whole-metamer shoots, with the leftover budget going by largest remainder.
+  - Phyllotaxis (divergence per node along an axis, plus a seeded phase per axis), branch angle by integer Rodrigues rotation, and gravi- and phototropism (the light gradient).
+  - Collision: one turn toward the brightest passable face, else the bud goes Dormant. Growth stops at the `max_metamers` cap.
+- `FormDef::Graph { internode_mm, tip_um, branch_angle, divergence, lambda, gravitropism, phototropism, bud_light, max_shoot, max_metamers, leaf }`, with validation. `plants.ron` documents the format; the shipped rows stay `Tree` until T7.
+- `ExtendPass` grows graph trees in the Extend slot. Lit leafy metamers feed the root, and each metamer costs `cost`. An orphan graph (its root gone) is removed.
+- `rmc_world`: `Metamer.lateral` (encoding 16 bytes), `tree::step`, `World::tree`, `World::eco_put_tree`, `coords::CELL_SIZE_MM`.
+Tests added: `trees::tests::{the_same_seed_grows_the_same_graph, a_flush_pays_for_each_metamer, a_tree_across_a_chunk_border_grows_like_one_inside_a_chunk, a_tree_under_a_roof_grows_toward_the_open_side, lambda_high_grows_a_leader_and_lambda_low_a_bush, growth_stops_at_the_cap, a_graph_goes_when_its_root_does, graph_rows_are_checked}`. The T1 hash test gains the `lateral` edit.
+Decisions:
+- Tree growth runs in the extension sweep, not a new pass, so the pass order is unchanged (rule 17). It is order-independent, as docs/TREES.md T2 status explains.
+- `eco_put_tree` does not set the light dirty flag yet. Trees join the light pass in T3.
+- Rolls are keyed by seed and metamer index, never position (rule 20's border test needs that).
+- Measured shapes are in docs/TREES.md T2 status.
+Next: T3, light and shedding (the canopy grid in the light pass, self-pruning, leaf drop, ledgered).
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.

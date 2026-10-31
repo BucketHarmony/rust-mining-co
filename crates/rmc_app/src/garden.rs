@@ -205,7 +205,7 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
             .filter(|p| {
                 let f = match p.parts.as_ref().map(|d| &d.form) {
                     None => 0,
-                    Some(FormDef::Tree { .. }) => 1,
+                    Some(FormDef::Tree { .. } | FormDef::Graph { .. }) => 1,
                     Some(FormDef::Vine { .. }) => 2,
                 };
                 f == form

@@ -65,6 +65,12 @@
 //! straight below a supported or hanging vine cell needs no support, so a
 //! vine hangs over a ledge as a curtain. A vine without support stops.
 //!
+//! **Graph form** (docs/TREES.md): the tree grows no part cells. Its lit
+//! leafy metamers feed it like leaves, and step 3 grows its metamer graph
+//! by [`crate::trees::grow`] with every whole `cost` of the biomass,
+//! paying `cost` per metamer added. A graph whose root is no longer a
+//! graph tree's is removed before the sweep.
+//!
 //! **Severing** is a displacement rule (`rmc_world::displace`): a cell
 //! whose material changes stops being a part, and the parts hanging from it
 //! become air in turn, each leaving `eco.part_litter` in the anchor below
@@ -83,6 +89,7 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::plants::PlantStarts;
 use crate::runner::{SweepCtx, SweepPass, SweepReport, run_sweep};
 use crate::tables::{EcoTables, FormDef};
+use crate::trees::{self, Growth, Site};
 
 /// The divisor of `leaf_feed` (256ths of biomass per lit leaf).
 const FEED_DIV: i32 = 256;
@@ -120,6 +127,8 @@ enum Shape {
         reach: usize,
         hang: bool,
     },
+    /// A tree as geometry (docs/TREES.md): no part cells, a metamer graph.
+    Graph(Growth),
 }
 
 /// A plant's flower rule, with season rows.
@@ -168,6 +177,7 @@ impl Form {
                         reach: usize::from(*reach),
                         hang: *hang,
                     },
+                    FormDef::Graph { .. } => Shape::Graph(Growth::from_form(&parts.form)?),
                 };
                 let flower = match &parts.flower {
                     Some(f) => Some(Flower {
@@ -286,7 +296,43 @@ impl ExtendPass {
         for cell in roots {
             world.eco_activate(cell, SWEEP_EXTEND);
         }
+        // A graph whose root is no longer a graph tree's goes with it.
+        let orphans: Vec<CellPos> = world
+            .iter_chunks_sorted()
+            .flat_map(|(pos, chunk)| {
+                chunk
+                    .trees
+                    .keys()
+                    .map(move |&i| CellPos::from_chunk_local(pos, LocalPos::from_index(i)))
+            })
+            .filter(|&cell| {
+                !self
+                    .form_at(world, cell)
+                    .is_some_and(|(_, f)| matches!(f.shape, Shape::Graph(_)))
+            })
+            .collect();
+        for cell in orphans {
+            world.eco_put_tree(cell, None);
+        }
         run_sweep(world, self, ledger)
+    }
+
+    /// What the tree rooted at `root` reads of `world`: the light layer,
+    /// and where an internode may end (an open cell, a part or a plant).
+    fn site<'w>(
+        &'w self,
+        world: &'w World,
+        root: CellPos,
+    ) -> Site<impl Fn(CellPos) -> i32 + 'w, impl Fn(CellPos) -> bool + 'w> {
+        Site {
+            root,
+            light: move |c| world.layer(c, LayerId::Light),
+            passable: move |c| {
+                self.is_open(world, c)
+                    || (world.bounds().contains(c)
+                        && (world.layer(c, LayerId::Part) != 0 || world.plant(c).is_some()))
+            },
+        }
     }
 
     /// The species and part rule of the root at `cell`: a plant state of a
@@ -323,6 +369,7 @@ impl ExtendPass {
             Shape::Vine { climb, reach, hang } => {
                 self.next_vine(world, climb, *reach, *hang, root, members)
             }
+            Shape::Graph(_) => None,
         }
     }
 
@@ -613,12 +660,14 @@ impl SweepPass for ExtendPass {
             parts = parts_of(ctx.world, cell);
         }
 
+        let graph = ctx.world.tree(cell).cloned().unwrap_or_default();
         let lit = parts
             .iter()
             .filter(|&&(c, kind)| {
                 Form::feeds(kind) && ctx.world.layer(c, LayerId::Light) >= form.leaf_light
             })
-            .count();
+            .count()
+            + trees::lit_leaves(&graph, &self.site(ctx.world, cell), form.leaf_light);
         let lit = i32::try_from(lit).unwrap_or(i32::MAX);
         let fed = lit.saturating_mul(form.leaf_feed) / FEED_DIV;
         let mut biomass = (ctx.world.layer(cell, LayerId::Biomass) + fed).min(u8::MAX.into());
@@ -626,6 +675,15 @@ impl SweepPass for ExtendPass {
             if ctx.world.get_cell(cell) == Some(form.seed) {
                 ctx.world.eco_set(cell, form.wood, ctx.ledger);
                 biomass -= form.cost;
+            } else if let Shape::Graph(growth) = &form.shape {
+                let budget = usize::try_from(biomass / form.cost).unwrap_or(0);
+                let born = u16::try_from(self.season).unwrap_or(u16::MAX);
+                let (grown, added) = {
+                    let site = self.site(ctx.world, cell);
+                    trees::grow(&graph, &site, growth, budget, born, self.seed)
+                };
+                ctx.world.eco_put_tree(cell, Some(grown));
+                biomass -= i32::try_from(added).unwrap_or(i32::MAX) * form.cost;
             } else {
                 let mut members: BTreeMap<CellPos, Option<PartKind>> =
                     parts.iter().map(|&(c, k)| (c, Some(k))).collect();

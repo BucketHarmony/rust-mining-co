@@ -1337,6 +1337,7 @@ mod tests {
             bud,
             leaf: 5,
             shade: 1,
+            lateral: false,
         };
         let fork = TreeGraph::try_from(vec![
             metamer(NO_PARENT, [0, Q14 as i16, 0], 1000, BudState::Dormant),

@@ -19,6 +19,9 @@ pub const CHUNK_MASK: i32 = CHUNK_SIZE - 1;
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 /// Edge length of one cell in meters.
 pub const CELL_SIZE_M: f32 = 0.5;
+/// Edge length of one cell in millimeters, for integer world logic (tree
+/// graphs, docs/TREES.md).
+pub const CELL_SIZE_MM: i32 = 500;
 
 /// Fixed total order on integer positions: y, then z, then x. This matches the
 /// local linear index (`x + z*32 + y*1024`) and the shape iteration order.

@@ -13,6 +13,7 @@ use crate::edit::EditOp;
 use crate::layers::{LayerId, N_SUBSTANCES, Part, PlantState, SWEEP_GAS, SWEEP_WATER};
 use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialId, Phase};
+use crate::tree::TreeGraph;
 use crate::world::World;
 
 /// A cell and its 6 face neighbors, as offsets.
@@ -214,6 +215,12 @@ impl World {
         self.chunks.get(&pos)?.plants.get(&local.index())
     }
 
+    /// The tree graph rooted at `cell`, if any (docs/TREES.md).
+    pub fn tree(&self, cell: CellPos) -> Option<&TreeGraph> {
+        let (pos, local) = cell.split();
+        self.chunks.get(&pos)?.trees.get(&local.index())
+    }
+
     /// Season-pass cell write (SAD-P2 §7.0.1). Host-only, called only by
     /// `rmc_eco` inside `season_tick`.
     ///
@@ -343,6 +350,34 @@ impl World {
         if old == plant {
             return false;
         }
+        chunk.eco_revision += 1;
+        true
+    }
+
+    /// Season-pass tree write (docs/TREES.md §6, rule 14 as amended).
+    /// Host-only, called only by `rmc_eco`'s tree growth inside
+    /// `season_tick`.
+    ///
+    /// Replaces the tree graph rooted at `cell` (`None` removes it) and
+    /// returns whether it changed; a change bumps the chunk's
+    /// `eco_revision`. A cell outside the bounds or in a non-resident chunk
+    /// changes nothing.
+    pub fn eco_put_tree(&mut self, cell: CellPos, tree: Option<TreeGraph>) -> bool {
+        if !self.bounds.contains(cell) {
+            return false;
+        }
+        let (pos, local) = cell.split();
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return false;
+        };
+        let index = local.index();
+        if chunk.trees.get(&index) == tree.as_ref() {
+            return false;
+        }
+        match tree {
+            Some(t) => chunk.trees.insert(index, t),
+            None => chunk.trees.remove(&index),
+        };
         chunk.eco_revision += 1;
         true
     }

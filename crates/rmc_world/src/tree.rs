@@ -21,7 +21,7 @@ pub const TURN: u32 = 4096;
 /// The golden angle, 137.5°, in [`TURN`] steps (137.46°).
 pub const GOLDEN: u32 = 1564;
 /// Bytes per metamer in [`TreeGraph::encode`].
-pub const METAMER_BYTES: usize = 15;
+pub const METAMER_BYTES: usize = 16;
 /// How far a stored direction's length may be from [`Q14`], in Q14 steps.
 /// Rounding each component after normalizing moves the length by under one
 /// step.
@@ -82,6 +82,9 @@ pub struct Metamer {
     pub leaf: u8,
     /// Cycles in a row below the shedding light.
     pub shade: u8,
+    /// Whether it starts a lateral axis (it grew from its parent's
+    /// axillary bud); otherwise it continues its parent's axis.
+    pub lateral: bool,
 }
 
 impl Metamer {
@@ -92,7 +95,12 @@ impl Metamer {
         }
         out.extend_from_slice(&self.length_mm.to_le_bytes());
         out.extend_from_slice(&self.born.to_le_bytes());
-        out.extend_from_slice(&[self.bud.byte(), self.leaf, self.shade]);
+        out.extend_from_slice(&[
+            self.bud.byte(),
+            self.leaf,
+            self.shade,
+            u8::from(self.lateral),
+        ]);
     }
 }
 
@@ -198,8 +206,8 @@ impl TreeGraph {
             } else {
                 ends[usize::from(m.parent)]
             };
-            let step = |k: usize| q14_round(i64::from(m.dir[k]) * i64::from(m.length_mm)) as i32;
-            ends.push([start[0] + step(0), start[1] + step(1), start[2] + step(2)]);
+            let d = step(m.dir, m.length_mm);
+            ends.push([start[0] + d[0], start[1] + d[1], start[2] + d[2]]);
         }
         ends
     }
@@ -256,6 +264,11 @@ pub fn trees_hash(trees: &BTreeMap<u16, TreeGraph>) -> u64 {
         buf.extend_from_slice(&graph.hash().to_le_bytes());
     }
     xxhash_rust::xxh3::xxh3_64(&buf)
+}
+
+/// `dir · length_mm`, each component rounded: how far a metamer reaches.
+pub fn step(dir: Dir, length_mm: u16) -> [i32; 3] {
+    dir.map(|d| q14_round(i64::from(d) * i64::from(length_mm)) as i32)
 }
 
 /// `x / Q14`, rounded half up.
@@ -404,6 +417,7 @@ mod tests {
             bud: BudState::Active,
             leaf: 0,
             shade: 0,
+            lateral: false,
         }
     }
 
@@ -468,7 +482,7 @@ mod tests {
         let g = y_fork();
         assert_eq!(g.encode().len(), 3 * METAMER_BYTES);
         let base = g.hash();
-        let edits: [fn(&mut Metamer); 8] = [
+        let edits: [fn(&mut Metamer); 9] = [
             |m| m.parent = 1,
             |m| m.dir = [m.dir[2], m.dir[1], m.dir[0]],
             |m| m.length_mm += 1,
@@ -477,6 +491,7 @@ mod tests {
             |m| m.leaf += 1,
             |m| m.shade += 1,
             |m| m.dir = m.dir.map(|c| -c),
+            |m| m.lateral = !m.lateral,
         ];
         for (k, edit) in edits.iter().enumerate() {
             let mut metamers = g.metamers().to_vec();

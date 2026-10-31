@@ -1350,6 +1350,7 @@ mod tests {
             bud: BudState::Active,
             leaf: 3,
             shade: 0,
+            lateral: false,
         };
         let one = TreeGraph::try_from(vec![metamer(NO_PARENT, 200)]).unwrap();
         let two = TreeGraph::try_from(vec![metamer(NO_PARENT, 200), metamer(0, 150)]).unwrap();

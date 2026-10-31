@@ -14,6 +14,7 @@ use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
 use rmc_world::query::{PhRule, PlantLook, SubstanceTint, ToxProfile};
+use rmc_world::tree::{NO_PARENT, TURN};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -313,6 +314,34 @@ pub enum FormDef {
         climb_tags: Vec<String>,
         reach: u8,
         hang: bool,
+    },
+    /// A tree as geometry (docs/TREES.md): a metamer graph grown by the bud
+    /// model of `rmc_eco::trees`. Angles are steps of
+    /// `rmc_world::tree::TURN` per full turn; weights are in 256ths.
+    Graph {
+        /// Length of each new internode.
+        internode_mm: u16,
+        /// Radius of a twig tip; the pipe model thickens the rest.
+        tip_um: u32,
+        /// Angle between a lateral shoot and its parent axis.
+        branch_angle: u16,
+        /// Turn about the axis from one lateral bud to the next.
+        divergence: u16,
+        /// Borchert–Honda λ in 256ths: the share of vigor the main axis
+        /// gets when both sides see the same light.
+        lambda: u8,
+        /// Weight of the pull straight up on each new internode.
+        gravitropism: u16,
+        /// Weight of the pull toward the light gradient.
+        phototropism: u16,
+        /// The light a bud needs to draw any vigor.
+        bud_light: u8,
+        /// Most metamers one bud adds per flush.
+        max_shoot: u8,
+        /// Most metamers in a tree.
+        max_metamers: u16,
+        /// Leaf area of a new metamer, in steps.
+        leaf: u8,
     },
 }
 
@@ -756,6 +785,19 @@ impl EcoTables {
                     FormDef::Vine {
                         climb_tags, reach, ..
                     } => climb_tags.is_empty() || *reach == 0,
+                    FormDef::Graph {
+                        internode_mm,
+                        branch_angle,
+                        max_shoot,
+                        max_metamers,
+                        ..
+                    } => {
+                        *internode_mm == 0
+                            || u32::from(*branch_angle) > TURN / 2
+                            || *max_shoot == 0
+                            || *max_metamers == 0
+                            || *max_metamers == NO_PARENT
+                    }
                 };
                 if let Some(f) = &parts.flower {
                     material_ref(&f.material);

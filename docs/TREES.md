@@ -179,6 +179,14 @@ Each step is one session under CLAUDE.md, with a test named first.
     - a tree under a roof grows toward the open side;
     - λ high gives a leader and λ low gives a bush;
     - growth stops at the cap.
+  - **Status (2026-10-31): done.** Notes:
+    - The bud model lives in `rmc_eco::trees` and runs inside the extension sweep (`ExtendPass`, the Extend slot), per root in sorted order. A tree reads only the light layer and the cells it grows into, and writes only its own graph (`World::eco_put_tree`) and its root's biomass. So the order of trees doesn't matter, and the sweep equals a Jacobi pass. Parallel trees wait for T8.
+    - `Metamer.lateral` is new (16 bytes per metamer). A metamer's `bud` is its terminal bud while it is a tip, and its axillary bud once it has a continuation: Active until it sprouts (then Dead) or is blocked (then Dormant).
+    - Budget: a flush spends `biomass / cost` metamers. Vigor is that budget in Q8, split by Borchert–Honda. Each bud gets `floor(v)` metamers, capped by `max_shoot`, and the budget's remainder goes to the largest fractions. Without that step, a crown of many weak buds stalls with all of them under one metamer.
+    - Light enters as each bud's light-layer value, or 0 below `bud_light`. The tree does not shade the light grid until T3, so in T2 shading comes only from cells.
+    - Seeded rolls (one phase per axis) are keyed by the world seed and the metamer index, never by position, so a tree grows the same anywhere with the same light.
+    - The shipped oak, birch and pine stay `Tree` rows until T7. The tests swap the oak's form text for a `Graph` row. `plants.ron` documents the row format with the oak's starting numbers.
+    - Measured after 10 flushes (open sky, budget 31): λ 230 grows 7.0 m tall with 1.0 m reach, λ 133 grows 4.0 m and 1.3 m, λ 40 grows 2.0 m and 2.1 m. Under a roof open to +x, the mean metamer end leans 1.6 m toward the open side.
 - **T3. Light and shedding.**
   - The canopy grid in the light pass, self-pruning and seasonal leaf drop, all ledgered.
   - Tests:
