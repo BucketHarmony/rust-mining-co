@@ -4,6 +4,10 @@
 //! A flat, fed loam bed with one seed of each tree species, grown and given
 //! biomass so a season raises a crown.
 //!
+//! The shipped trees grow metamer graphs since docs/TREES.md T7 (drawn by
+//! `tree_graph_render`); this scenario puts them back on the cell-tree forms
+//! they had (`CELL_TREES`), which a `plants.ron` row may still choose.
+//!
 //! Look and feel (CLAUDE.md rule 21): the test asserts what the code set up
 //! (each tree has a wood root and leaves, the client's plant looks name the
 //! leaf materials, the mesh input recolors the deciduous leaves in autumn
@@ -11,17 +15,59 @@
 //! the frames render; the screenshots (summer, autumn, winter, and bare after winter) are for the
 //! playtester.
 
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use rmc_client::mesher::MeshInput;
 use rmc_client::{ClientEco, GameCamera, MeshQueue, MeshStats, Replica, Weather};
+use rmc_eco::EcoTables;
 use rmc_eco::parts::parts_of;
-use rmc_eco::tables::FormDef;
+use rmc_eco::tables::{EcoSources, FormDef};
 use rmc_testkit::{TestApp, TestConfig, e2e};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::EditOp;
 use rmc_world::layers::{LayerId, PartKind};
-use rmc_world::materials::MaterialId;
+use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::shape::Shape;
+
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
+
+/// The cell-tree forms (docs/VEGETATION.md V4) of the trees, by row key.
+const CELL_TREES: [(&str, &str); 3] = [
+    (
+        "oak",
+        "form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true, tuft: true,",
+    ),
+    (
+        "birch",
+        "form: Tree(trunk: (5, 7), crown: (1, 3)), branches: true, tuft: true,",
+    ),
+    (
+        "pine",
+        "form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true, tuft: true,",
+    ),
+];
+
+/// The shipped tables with each tree's `form: Graph(...),` replaced by its
+/// [`CELL_TREES`] form.
+fn cell_tree_tables() -> Arc<EcoTables> {
+    let materials =
+        Arc::new(MaterialTable::load(format!("{ASSETS}/materials.ron")).expect("materials load"));
+    let mut src = EcoSources::read(ASSETS).expect("eco sources");
+    for (key, form) in CELL_TREES {
+        let row = src
+            .plants
+            .find(&format!("(key: \"{key}\""))
+            .expect("the row");
+        let start = row
+            + src.plants[row..]
+                .find("form: Graph(")
+                .expect("a graph form");
+        let end = start + src.plants[start..].find("),").expect("the form's end") + 2;
+        src.plants.replace_range(start..end, form);
+    }
+    Arc::new(EcoTables::from_sources(materials, &src).expect("cell-tree tables"))
+}
 
 /// The cells between two trees along x, and the bed's margin around them.
 const SPACING: i32 = 8;
@@ -34,10 +80,13 @@ const FED: i32 = 200;
 #[ignore]
 fn trees_render() {
     // The weather plugin follows the season, which the leaves' colors read.
-    let mut t = TestApp::new(TestConfig {
-        weather: true,
-        ..TestConfig::default()
-    });
+    let mut t = TestApp::with_eco(
+        TestConfig {
+            weather: true,
+            ..TestConfig::default()
+        },
+        cell_tree_tables(),
+    );
     e2e::run_scenario(&mut t, "trees_render", run);
 }
 
