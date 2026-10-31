@@ -11,8 +11,14 @@
 //! 1. **Light.** An Active bud sees the light of the cell its metamer ends
 //!    in, or nothing below `bud_light`, at `max_height_mm` (when not 0)
 //!    and above, or at `max_reach_mm` (when not 0) or more from the root's
-//!    axis. `Q` sums the buds' light base-ward over every subtree, so a
-//!    tree that has reached its envelope spends its vigor inside it.
+//!    axis. With a `crown_ratio` (T9), a bud outside the crown shape sees
+//!    `crown_damp` of its light ([`Growth::inside_crown`]): the shape is
+//!    as wide as `crown_ratio` of the tree's height, widest at
+//!    `crown_peak`, and no taller than its reach carries nor than
+//!    `internode_mm · √metamers`. Buds ending in one cell share its light.
+//!    `Q` sums the buds' light base-ward over every subtree, so a tree
+//!    spends its vigor where its crown is lit and has room: out where
+//!    nothing shades it, up where neighbors do.
 //! 2. **Vigor.** The flush can pay for `budget` metamers; `budget · 256`
 //!    vigor (Q8) enters the first metamer and splits at every node by
 //!    Borchert–Honda: the main side (the continuation, or a tip's terminal
@@ -25,8 +31,12 @@
 //!    metamer order. A lateral leaves
 //!    its axis at `branch_angle`, turned about the axis by `divergence`
 //!    per node along it plus a seeded phase per axis. Every later internode
-//!    leans from the one before toward up (`gravitropism`) and up the
-//!    light gradient of the cell it starts in (`phototropism`).
+//!    leans from the one before toward its setpoint (`gravitropism`):
+//!    straight up on the trunk, `lateral_setpoint` from up on a lateral
+//!    axis; and up the light gradient of the cell it starts in
+//!    (`phototropism`). With `whorl`, an axis grows `whorl_gap` internodes,
+//!    then `whorl` nodes of `whorl_mm`, and again; only those nodes sprout
+//!    laterals.
 //! 4. **Collision.** An internode whose end cell is not passable (open,
 //!    a part, or a plant) turns once toward the brightest passable face
 //!    of the cell it starts in; still blocked, its bud goes Dormant.
@@ -42,6 +52,8 @@
 //! same in any order. Rolls are keyed by the world seed and metamer
 //! indices, never by where the tree stands, so a tree grows the same
 //! anywhere with the same light around it.
+
+use std::collections::BTreeMap;
 
 use rmc_world::coords::{CELL_SIZE_MM, CellPos};
 use rmc_world::tree::{
@@ -87,6 +99,13 @@ pub struct Growth {
     pub mature: usize,
     pub max_height_mm: i32,
     pub max_reach_mm: i64,
+    pub lateral_setpoint: u32,
+    pub crown_ratio: i64,
+    pub crown_peak: i64,
+    pub crown_damp: i64,
+    pub whorl: u32,
+    pub whorl_gap: u32,
+    pub whorl_mm: u16,
 }
 
 impl Growth {
@@ -110,6 +129,14 @@ impl Growth {
             mature,
             max_height_mm,
             max_reach_mm,
+            lateral_setpoint,
+            crown_ratio,
+            crown_peak,
+            crown_damp,
+            whorl,
+            whorl_gap,
+            whorl_mm,
+            ..
         } = form
         else {
             return None;
@@ -132,7 +159,65 @@ impl Growth {
             mature: usize::from(mature),
             max_height_mm: i32::from(max_height_mm),
             max_reach_mm: i64::from(max_reach_mm),
+            lateral_setpoint: u32::from(lateral_setpoint),
+            crown_ratio: i64::from(crown_ratio),
+            crown_peak: i64::from(crown_peak),
+            crown_damp: i64::from(crown_damp),
+            whorl: u32::from(whorl),
+            whorl_gap: u32::from(whorl_gap),
+            whorl_mm,
         })
+    }
+
+    /// The length of the metamer `rank` internodes along its axis: a
+    /// whorl node's or a plain internode's. An axis starts with its gap,
+    /// so no whorl sits at its base.
+    fn length_at(&self, rank: u32) -> u16 {
+        let period = self.whorl + self.whorl_gap;
+        if self.whorl > 0 && (rank + self.whorl) % period < self.whorl {
+            self.whorl_mm
+        } else {
+            self.internode_mm
+        }
+    }
+
+    /// Whether a metamer of `length_mm` may sprout a lateral: any, or with
+    /// whorls only a whorl node.
+    fn sprouts(&self, length_mm: u16) -> bool {
+        self.whorl == 0 || length_mm == self.whorl_mm
+    }
+
+    /// Whether a bud ending at `end` is inside the crown shape of a tree
+    /// of `metamers`, `height` tall and `reach` across from its axis (both
+    /// in mm): not taller than `crown_ratio` lets its reach carry, nor
+    /// than `internode_mm · √metamers` (so a thin young tree fills out
+    /// before it rises), and not wider at
+    /// its height than the shape, which widens from nothing at the ground
+    /// to `crown_ratio * height / 2` at `crown_peak` and narrows to
+    /// nothing at the top. Both bounds give a cell of slack, so a sapling
+    /// can start. Always inside without a `crown_ratio`.
+    fn inside_crown(&self, end: [i32; 3], metamers: usize, height: i64, reach: i64) -> bool {
+        if self.crown_ratio == 0 {
+            return true;
+        }
+        let slack = i64::from(CELL_SIZE_MM);
+        let [x, y, z] = end.map(i64::from);
+        let massive = i64::from(self.internode_mm) * (metamers as i64).isqrt();
+        if y > 2 * (reach + slack) * Q8 / self.crown_ratio || y > massive + slack {
+            return false;
+        }
+        let widest = self.crown_ratio * height / (2 * Q8);
+        let peak = self.crown_peak * height / Q8;
+        let radius = if y <= peak {
+            if peak == 0 {
+                widest
+            } else {
+                widest * y.max(0) / peak
+            }
+        } else {
+            widest * (height - y).max(0) / (height - peak).max(1)
+        } + slack;
+        x * x + z * z <= radius * radius
     }
 }
 
@@ -241,8 +326,9 @@ pub fn shade_cells(
 }
 
 /// The tree's state for a flush before it feeds and grows: every metamer
-/// carries `leaf` while it is younger than `leaf_age` seasons (any age for
-/// 0), and none in a `bare` season; its `shade` counts the flushes in a
+/// carries `leaf` while it is younger than `leaf_age` seasons, or than the
+/// tree's newest metamer by that much (any age for 0), and none in a
+/// `bare` season; its `shade` counts the flushes in a
 /// row its end has had less than `shed_light`; and a lateral branch whose
 /// every metamer has counted `shed_after` (when not 0) is shed. Returns the
 /// new graph and a point for every leaf that fell, then for every metamer
@@ -261,8 +347,13 @@ where
     let ends = graph.ends();
     let mut ms = graph.metamers().to_vec();
     let mut fallen = Vec::new();
+    // A tree that has stopped growing (at its cap, or starved) keeps the
+    // leaves of its newest wood.
+    let newest = ms.iter().map(|m| m.born).max().unwrap_or(season);
     for (m, &end) in ms.iter_mut().zip(&ends) {
-        let young = g.leaf_age == 0 || season.saturating_sub(m.born) < g.leaf_age;
+        let young = g.leaf_age == 0
+            || season.saturating_sub(m.born) < g.leaf_age
+            || newest.saturating_sub(m.born) < g.leaf_age;
         let leaf = if bare || !young { 0 } else { g.leaf };
         if m.leaf > 0 && leaf == 0 {
             fallen.push(end);
@@ -408,10 +499,10 @@ where
     if budget == 0 || room == 0 {
         return (out, 0);
     }
-    let new = |parent: u16, dir: Dir, lateral: bool| Metamer {
+    let new = |parent: u16, dir: Dir, length_mm: u16, lateral: bool| Metamer {
         parent,
         dir,
-        length_mm: g.internode_mm,
+        length_mm,
         born,
         bud: BudState::Active,
         leaf: g.leaf,
@@ -419,11 +510,12 @@ where
         lateral,
     };
     if graph.is_empty() {
-        let end = tree::step(UP, g.internode_mm);
+        let length = g.length_at(0);
+        let end = tree::step(UP, length);
         if !(site.passable)(site.cell(end)) {
             return (out, 0);
         }
-        let added = usize::from(out.push(new(NO_PARENT, UP, false)).is_ok());
+        let added = usize::from(out.push(new(NO_PARENT, UP, length, false)).is_ok());
         return (out, added);
     }
 
@@ -447,9 +539,16 @@ where
     }
 
     // 1. Light: each Active bud's, then Q base-ward.
+    let height = ends.iter().map(|e| i64::from(e[1])).max().unwrap_or(0);
+    let reach = ends
+        .iter()
+        .map(|e| i64::from(e[0]).pow(2) + i64::from(e[2]).pow(2))
+        .max()
+        .unwrap_or(0)
+        .isqrt();
     let q: Vec<i64> = (0..n)
         .map(|i| {
-            let open = cont[i].is_none() || lat[i].is_none();
+            let open = cont[i].is_none() || (lat[i].is_none() && g.sprouts(ms[i].length_mm));
             let [x, y, z] = ends[i].map(i64::from);
             let topped = g.max_height_mm > 0 && y >= i64::from(g.max_height_mm);
             let wide = g.max_reach_mm > 0 && x * x + z * z >= g.max_reach_mm * g.max_reach_mm;
@@ -457,7 +556,26 @@ where
                 return 0;
             }
             let l = site.light_at(ends[i]);
-            if l >= g.bud_light { i64::from(l) } else { 0 }
+            if l < g.bud_light {
+                0
+            } else if g.inside_crown(ends[i], n, height, reach) {
+                i64::from(l)
+            } else {
+                i64::from(l) * g.crown_damp / Q8
+            }
+        })
+        .collect();
+    // Buds ending in one cell share its light, so a crowded part of the
+    // crown draws no more than the cells it fills and growth goes out to
+    // lit open cells.
+    let mut sharing: BTreeMap<CellPos, i64> = BTreeMap::new();
+    for i in (0..n).filter(|&i| q[i] > 0) {
+        *sharing.entry(site.cell(ends[i])).or_default() += 1;
+    }
+    let q: Vec<i64> = (0..n)
+        .map(|i| match sharing.get(&site.cell(ends[i])) {
+            Some(&buds) if q[i] > 0 => q[i] * Q8 / buds,
+            _ => 0,
         })
         .collect();
     let mut big_q = q.clone();
@@ -521,8 +639,12 @@ where
             continue;
         }
         let terminal = cont[i].is_none();
+        // A shoot from a tip goes on along its axis; one from an axillary
+        // bud starts a lateral axis.
+        let lateral = !terminal || axis[i] != 0;
+        let first_rank = if terminal { rank[i] + 1 } else { 0 };
         let first = if terminal {
-            tropism(g, site, ms[i].dir, ends[i])
+            tropism(g, site, ms[i].dir, ends[i], lateral)
         } else {
             let a = ms[i].dir;
             let phase = phase(seed, axis[i]);
@@ -543,21 +665,22 @@ where
                 break;
             }
             if k > 0 {
-                dir = tropism(g, site, dir, at);
+                dir = tropism(g, site, dir, at, lateral);
             }
-            let Some(d) = clear(g, site, dir, at) else {
+            let length = g.length_at(first_rank + k as u32);
+            let Some(d) = clear(site, dir, at, length) else {
                 let m = out.metamers()[parent];
                 out.set_state(parent, BudState::Dormant, m.leaf, m.shade);
                 break;
             };
-            let Ok(index) = out.push(new(parent as u16, d, k == 0 && !terminal)) else {
+            let Ok(index) = out.push(new(parent as u16, d, length, k == 0 && !terminal)) else {
                 break;
             };
             if k == 0 && !terminal {
                 let m = out.metamers()[i];
                 out.set_state(i, BudState::Dead, m.leaf, m.shade);
             }
-            let s = tree::step(d, g.internode_mm);
+            let s = tree::step(d, length);
             at = [at[0] + s[0], at[1] + s[1], at[2] + s[2]];
             parent = usize::from(index);
             dir = d;
@@ -567,31 +690,51 @@ where
     (out, added)
 }
 
-/// `dir` leaned toward up and up the light gradient at `at`.
-fn tropism<L, P>(g: &Growth, site: &Site<L, P>, dir: Dir, at: [i32; 3]) -> Dir
+/// `dir` leaned toward its setpoint and up the light gradient at `at`:
+/// straight up on the main axis, and on a `lateral` one `lateral_setpoint`
+/// from up on `dir`'s own side (straight up for a setpoint of 0).
+fn tropism<L, P>(g: &Growth, site: &Site<L, P>, dir: Dir, at: [i32; 3], lateral: bool) -> Dir
 where
     L: Fn(CellPos) -> i32,
     P: Fn(CellPos) -> bool,
 {
     let grad = site.gradient(at).unwrap_or([0; 3]);
+    let target = if lateral && g.lateral_setpoint > 0 {
+        setpoint(dir, g.lateral_setpoint)
+    } else {
+        UP
+    };
     let v: [i64; 3] = std::array::from_fn(|k| {
         i64::from(dir[k]) * Q8
-            + i64::from(UP[k]) * g.gravitropism
+            + i64::from(target[k]) * g.gravitropism
             + i64::from(grad[k]) * g.phototropism
     });
     normalize(v).unwrap_or(dir)
 }
 
-/// `dir` if an internode from `at` along it ends in a passable cell, else
-/// `dir` turned toward the brightest passable face of `at`'s cell if that
-/// one does; `None` when both are blocked.
-fn clear<L, P>(g: &Growth, site: &Site<L, P>, dir: Dir, at: [i32; 3]) -> Option<Dir>
+/// The direction `steps` from straight up on `dir`'s side (straight up
+/// when `dir` is vertical).
+fn setpoint(dir: Dir, steps: u32) -> Dir {
+    let Some(side) = normalize([i64::from(dir[0]), 0, i64::from(dir[2])]) else {
+        return UP;
+    };
+    let (c, s) = (i64::from(tree::cos(steps)), i64::from(tree::sin(steps)));
+    normalize(std::array::from_fn(|k| {
+        i64::from(side[k]) * s + i64::from(UP[k]) * c
+    }))
+    .unwrap_or(UP)
+}
+
+/// `dir` if an internode of `length` from `at` along it ends in a passable
+/// cell, else `dir` turned toward the brightest passable face of `at`'s
+/// cell if that one does; `None` when both are blocked.
+fn clear<L, P>(site: &Site<L, P>, dir: Dir, at: [i32; 3], length: u16) -> Option<Dir>
 where
     L: Fn(CellPos) -> i32,
     P: Fn(CellPos) -> bool,
 {
     let ends_open = |d: Dir| {
-        let s = tree::step(d, g.internode_mm);
+        let s = tree::step(d, length);
         (site.passable)(site.cell([at[0] + s[0], at[1] + s[1], at[2] + s[2]]))
     };
     if ends_open(dir) {
@@ -1398,5 +1541,249 @@ mod tests {
         assert!(!graph(&w, root).is_empty(), "and grows a graph");
         flush_in(&mut w, &t, root, season_of(&t, "summer", 1));
         assert!(graph(&w, root).len() > 1);
+    }
+
+    /// The oak form of the T9 tests: `extra` Graph fields on a plain oak.
+    fn oak_form(extra: &str) -> EcoTables {
+        tables_with(&format!(
+            "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+             divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96, \
+             bud_light: 32, max_shoot: 2, max_metamers: 4000, leaf: 4{extra}),"
+        ))
+        .unwrap()
+    }
+
+    /// T9's crown shape: a crown about as wide as it is tall, widest a
+    /// little above half its height.
+    const CROWN: &str = ", lateral_setpoint: 626, crown_ratio: 280, crown_peak: 140, crown_damp: 2";
+
+    /// A plain growth rule with open-field fixtures for calling [`grow`]
+    /// directly.
+    fn growth() -> Growth {
+        Growth {
+            internode_mm: 250,
+            tip_um: 2000,
+            branch_angle: 512,
+            divergence: 1564,
+            lambda: 133,
+            gravitropism: 64,
+            phototropism: 0,
+            bud_light: 32,
+            max_shoot: 2,
+            max_metamers: 4000,
+            leaf: 4,
+            shed_light: 0,
+            shed_after: 0,
+            leaf_age: 0,
+            mature: 0,
+            max_height_mm: 0,
+            max_reach_mm: 0,
+            lateral_setpoint: 0,
+            crown_ratio: 0,
+            crown_peak: 0,
+            crown_damp: 0,
+            whorl: 0,
+            whorl_gap: 0,
+            whorl_mm: 0,
+        }
+    }
+
+    /// `flushes` flushes of `budget` metamers each under open sky over
+    /// flat ground.
+    fn grow_open(g: &Growth, budget: usize, flushes: u16) -> TreeGraph {
+        let site = Site {
+            root: CellPos::new(0, 0, 0),
+            light: |c: CellPos| if c.0.y > 0 { 255 } else { 0 },
+            passable: |c: CellPos| c.0.y > 0,
+        };
+        let mut graph = TreeGraph::default();
+        for f in 0..flushes {
+            graph = grow(&graph, &site, g, budget, f, SEED).0;
+        }
+        graph
+    }
+
+    #[test]
+    fn an_open_grown_crown_spreads_about_as_wide_as_it_is_tall() {
+        let root = CellPos::new(16, 31, 16);
+        let shape = |extra: &str| {
+            let t = oak_form(extra);
+            let mut w = world(&t);
+            oak(&mut w, &t, root);
+            flushes(&mut w, &t, &[root], 20, SEED);
+            extent(&graph(&w, root))
+        };
+        let ((top, wide), (plain_top, plain_wide)) = (shape(CROWN), shape(""));
+        // Across (twice the reach) at least four fifths of the height.
+        assert!(2 * wide * 5 >= top * 4, "{top} tall, {wide} reach");
+        // Without a crown shape the same tree grows a narrower crown.
+        assert!(
+            i64::from(wide) * i64::from(plain_top) > i64::from(plain_wide) * i64::from(top),
+            "shaped {top}/{wide}, plain {plain_top}/{plain_wide}"
+        );
+    }
+
+    #[test]
+    fn crowded_trees_grow_narrower_than_an_open_one() {
+        let t = oak_form(CROWN);
+        let center = CellPos::new(14, 31, 14);
+        let grown = |spacing: i32| {
+            let mut w = world(&t);
+            let mut roots = Vec::new();
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    if spacing > 0 || (dx, dz) == (0, 0) {
+                        let c = center.0;
+                        roots.push(CellPos::new(c.x + dx * spacing, c.y, c.z + dz * spacing));
+                    }
+                }
+            }
+            for &r in &roots {
+                oak(&mut w, &t, r);
+            }
+            flushes(&mut w, &t, &roots, 20, SEED);
+            extent(&graph(&w, center))
+        };
+        let ((top, wide), (lone_top, lone_wide)) = (grown(4), grown(0));
+        // Its neighbors shade the stand's middle tree's sides: it reaches
+        // out less and rises more for its width.
+        assert!(
+            wide < lone_wide,
+            "stand {top}/{wide}, lone {lone_top}/{lone_wide}"
+        );
+        assert!(
+            i64::from(top) * i64::from(lone_wide) > i64::from(lone_top) * i64::from(wide),
+            "stand {top}/{wide}, lone {lone_top}/{lone_wide}"
+        );
+    }
+
+    #[test]
+    fn laterals_lean_toward_their_setpoint() {
+        // The mean |up| of the lateral axes' later internodes.
+        let mean_up = |setpoint: u32| {
+            let g = grow_open(
+                &Growth {
+                    lateral_setpoint: setpoint,
+                    gravitropism: 128,
+                    ..growth()
+                },
+                8,
+                12,
+            );
+            let ms = g.metamers();
+            let mut on_lateral = vec![false; ms.len()];
+            let (mut sum, mut n) = (0i64, 0i64);
+            for (i, m) in ms.iter().enumerate().skip(1) {
+                let p = usize::from(m.parent);
+                on_lateral[i] = m.lateral || on_lateral[p];
+                if on_lateral[i] && !m.lateral {
+                    sum += i64::from(m.dir[1]).abs();
+                    n += 1;
+                }
+            }
+            assert!(n > 20, "{n} lateral internodes");
+            sum / n
+        };
+        let (up, level) = (mean_up(0), mean_up(TURN / 4));
+        // Gravitropism alone turns laterals up; a setpoint of a quarter
+        // turn holds them near level.
+        assert!(up > i64::from(Q14) * 3 / 4, "{up}");
+        assert!(level < i64::from(Q14) / 3, "{level} vs {up}");
+    }
+
+    #[test]
+    fn whorls_sprout_laterals_only_at_their_nodes() {
+        let g = Growth {
+            lambda: 128,
+            whorl: 4,
+            whorl_gap: 2,
+            whorl_mm: 30,
+            divergence: TURN / 4,
+            ..growth()
+        };
+        let tree = grow_open(&g, 12, 16);
+        let ms = tree.metamers();
+        let laterals: Vec<usize> = (0..ms.len()).filter(|&i| ms[i].lateral).collect();
+        assert!(laterals.len() > 8, "{} laterals", laterals.len());
+        for &i in &laterals {
+            assert_eq!(ms[usize::from(ms[i].parent)].length_mm, 30, "lateral {i}");
+        }
+        // The trunk: two internodes, then four whorl nodes, and again.
+        let trunk: Vec<u16> = (0..ms.len())
+            .filter(|&i| i == 0 || (!ms[i].lateral && is_trunk(ms, i)))
+            .map(|i| ms[i].length_mm)
+            .take(10)
+            .collect();
+        assert_eq!(
+            trunk,
+            [250, 250, 30, 30, 30, 30, 250, 250, 30, 30],
+            "{trunk:?}"
+        );
+    }
+
+    /// Whether metamer `i` is on the trunk: no lateral between it and the
+    /// root.
+    fn is_trunk(ms: &[Metamer], mut i: usize) -> bool {
+        loop {
+            if ms[i].lateral {
+                return false;
+            }
+            if ms[i].parent == NO_PARENT {
+                return true;
+            }
+            i = usize::from(ms[i].parent);
+        }
+    }
+
+    #[test]
+    fn a_thin_young_tree_fills_out_before_it_rises() {
+        // One metamer a flush, as a young tree in the world gets.
+        let free = grow_open(&growth(), 1, 60);
+        let shaped = grow_open(
+            &Growth {
+                lateral_setpoint: 626,
+                crown_ratio: 280,
+                crown_peak: 140,
+                crown_damp: 2,
+                ..growth()
+            },
+            1,
+            60,
+        );
+        let ((free_top, _), (top, wide)) = (extent(&free), extent(&shaped));
+        // No taller than internode · √metamers allows (and a cell more).
+        let massive = 250 * (shaped.len() as i32).isqrt() + CELL_SIZE_MM;
+        assert!(
+            top <= massive + 250,
+            "{top} mm on {} metamers",
+            shaped.len()
+        );
+        assert!(top < free_top, "{top} vs {free_top}");
+        assert!(wide > 0);
+    }
+
+    #[test]
+    fn a_tree_that_stopped_growing_keeps_the_leaves_of_its_newest_wood() {
+        let g = Growth {
+            leaf_age: 4,
+            ..growth()
+        };
+        let tree = grow_open(&g, 8, 6);
+        let site = Site {
+            root: CellPos::new(0, 0, 0),
+            light: |_| 255,
+            passable: |_| true,
+        };
+        // Ten seasons on, nothing new has grown.
+        let (tended, _) = tend(&tree, &site, &g, false, 15);
+        let newest = tree.metamers().iter().map(|m| m.born).max().unwrap();
+        for (m, t) in tree.metamers().iter().zip(tended.metamers()) {
+            let leafy = newest - m.born < 4;
+            assert_eq!(t.leaf > 0, leafy, "born {}", m.born);
+        }
+        assert!(
+            tended.metamers().iter().any(|m| m.leaf == 0),
+            "old wood is bare"
+        );
     }
 }

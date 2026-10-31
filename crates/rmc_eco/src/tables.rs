@@ -365,6 +365,38 @@ pub enum FormDef {
         /// across; 0 is no limit.
         #[serde(default)]
         max_reach_mm: u16,
+        /// The angle from straight up that a lateral axis leans toward
+        /// (its gravitropic setpoint, docs/TREES.md T9); 0 leans laterals
+        /// straight up like the main axis.
+        #[serde(default)]
+        lateral_setpoint: u16,
+        /// The crown's width over its height, in 256ths (T9): a bud past
+        /// the crown shape this sets sees `crown_damp` of its light, so
+        /// the tree spreads where its laterals are lit and rises where
+        /// they are shaded; 0 is no shape.
+        #[serde(default)]
+        crown_ratio: u16,
+        /// Where the crown is widest, as a share of its height in 256ths:
+        /// 0 is a cone, 128 a spindle.
+        #[serde(default)]
+        crown_peak: u8,
+        /// The share of its light, in 256ths, a bud past the crown shape
+        /// sees.
+        #[serde(default)]
+        crown_damp: u8,
+        /// Laterals per whorl (T9): an axis grows `whorl` nodes of
+        /// `whorl_mm`, each with a lateral bud, then `whorl_gap` internodes
+        /// whose buds never sprout; 0 sprouts a lateral at every node.
+        #[serde(default)]
+        whorl: u8,
+        #[serde(default)]
+        whorl_gap: u8,
+        #[serde(default)]
+        whorl_mm: u16,
+        /// Needles drawn around each leaf step of a twig (T9, a look
+        /// only); 0 draws leaf cards.
+        #[serde(default)]
+        needles: u8,
     },
 }
 
@@ -834,13 +866,18 @@ impl EcoTables {
                         branch_angle,
                         max_shoot,
                         max_metamers,
+                        lateral_setpoint,
+                        whorl,
+                        whorl_mm,
                         ..
                     } => {
                         *internode_mm == 0
                             || u32::from(*branch_angle) > TURN / 2
+                            || u32::from(*lateral_setpoint) > TURN / 2
                             || *max_shoot == 0
                             || *max_metamers == 0
                             || *max_metamers == NO_PARENT
+                            || (*whorl > 0 && (*whorl_mm == 0 || *whorl_mm == *internode_mm))
                     }
                 };
                 if let Some(f) = &parts.flower {
@@ -1196,11 +1233,15 @@ impl EcoTables {
                     .collect(),
                 graph: p.parts.as_ref().and_then(|d| match d.form {
                     FormDef::Graph {
-                        tip_um, divergence, ..
+                        tip_um,
+                        divergence,
+                        needles,
+                        ..
                     } => Some(GraphLook {
                         wood: self.materials.id(&d.wood)?,
                         tip_um,
                         divergence,
+                        needles,
                         fruit: self.materials.id(&p.material)?,
                         flower: d
                             .flower

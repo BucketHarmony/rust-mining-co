@@ -265,6 +265,16 @@ fn run(t: &mut TestApp) {
         first + Vec3::Y * 2.0,
         "close",
     );
+    // Close beside the evergreen: its cone and needles (TREES T9).
+    if let Some(i) = trees.iter().position(|t| !t.1) {
+        let at = Vec3::new(roots[i].0.x as f32 + 0.5, y as f32, mz as f32 + 0.5) * CELL_SIZE_M;
+        shoot(
+            t,
+            at + Vec3::new(2.0, 1.5, -3.0),
+            at + Vec3::Y * 1.5,
+            "evergreen",
+        );
+    }
 
     // On through the bare season: the deciduous trees drop their leaves,
     // the evergreen keeps them. `advance_season` ticks a season and the

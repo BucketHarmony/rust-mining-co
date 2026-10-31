@@ -21,6 +21,11 @@
 //! up. They take the leaf material's color moved toward the season color,
 //! and none are drawn in a bare season.
 //!
+//! **Needles** (docs/TREES.md T9). A species with `needles` draws, in
+//! place of leaf cards, `leaf` rings along each leafy twig of `needles`
+//! needles each: long thin cards around the twig, sweeping forward along
+//! it, so a conifer's shoots read as bottle brushes.
+//!
 //! **Flowers and fruit** (docs/TREES.md T6). A metamer whose bud is a
 //! Flower or a Fruit carries a small octahedron at its end in the flower or
 //! fruit material's color, [`FLOWER_M`] or [`FRUIT_M`] across, the fruit
@@ -65,6 +70,12 @@ pub const LEAF_CARD_WIDTH: f32 = 0.5;
 /// points out from the twig.
 pub const LEAF_CARD_LEAN: f32 = 0.5;
 pub const LEAF_CARD_LIFT: f32 = 0.3;
+/// A needle's length in meters, and its width as a share of it.
+pub const NEEDLE_M: f32 = 0.14;
+pub const NEEDLE_WIDTH: f32 = 0.12;
+/// How far a needle sweeps forward along its twig for each unit it points
+/// out from the twig.
+pub const NEEDLE_SWEEP: f32 = 0.8;
 /// Across a fruit, and a flower, in meters.
 pub const FRUIT_M: f32 = 0.08;
 pub const FLOWER_M: f32 = 0.1;
@@ -235,18 +246,56 @@ pub fn tree_mesh(
     let leaf = linear(leaf);
     let leaf_id = f32::from(look.leaf.unwrap_or(MaterialId::AIR).0);
     for (i, (m, [a, b])) in graph.metamers().iter().zip(&all).enumerate() {
+        let along = (b.center - a.center).normalize_or(Vec3::Y);
         let cards = u32::from(m.leaf);
+        if g.needles > 0 {
+            let needles = u32::from(g.needles);
+            for k in 0..cards {
+                let base = a.center.lerp(b.center, (k + 1) as f32 / (cards + 1) as f32);
+                for j in 0..needles {
+                    let turn = (i as u32 * u32::from(g.divergence)
+                        + (k * TURN / needles) / 2
+                        + j * TURN / needles)
+                        % TURN;
+                    let radial = unit(rotate(perpendicular(m.dir), m.dir, turn));
+                    let card = Card {
+                        base,
+                        point: (radial + along * NEEDLE_SWEEP).normalize_or(radial),
+                        along,
+                        length_m: NEEDLE_M,
+                        width: NEEDLE_WIDTH,
+                    };
+                    push_card(&mut out, &card, leaf, leaf_id, b.sway);
+                }
+            }
+            continue;
+        }
         for k in 0..cards {
             let turn = (i as u32 * u32::from(g.divergence) + k * TURN / cards) % TURN;
             let radial = unit(rotate(perpendicular(m.dir), m.dir, turn));
-            let along = (b.center - a.center).normalize_or(Vec3::Y);
-            let base = a.center.lerp(b.center, (k + 1) as f32 / (cards + 1) as f32);
-            let point =
-                (radial + along * LEAF_CARD_LEAN + Vec3::Y * LEAF_CARD_LIFT).normalize_or(radial);
-            push_card(&mut out, base, point, along, leaf, leaf_id, b.sway);
+            let card = Card {
+                base: a.center.lerp(b.center, (k + 1) as f32 / (cards + 1) as f32),
+                point: (radial + along * LEAF_CARD_LEAN + Vec3::Y * LEAF_CARD_LIFT)
+                    .normalize_or(radial),
+                along,
+                length_m: LEAF_CARD_M,
+                width: LEAF_CARD_WIDTH,
+            };
+            push_card(&mut out, &card, leaf, leaf_id, b.sway);
         }
     }
     out
+}
+
+/// A lens-shaped card from `base` along `point`, `length_m` long and
+/// `width` of that across, its width square to `point` and `along`: a
+/// leaf or a needle.
+struct Card {
+    base: Vec3,
+    point: Vec3,
+    along: Vec3,
+    length_m: f32,
+    width: f32,
 }
 
 /// Appends the side of the cylinder from ring `a` to ring `b`.
@@ -307,24 +356,22 @@ fn push_bud(out: &mut MeshData, center: Vec3, radius: f32, color: [f32; 4], id: 
     out.quad_count += 4;
 }
 
-/// Appends a lens-shaped leaf card from `base` along `point`, its width
-/// square to `point` and `along`, drawn from both sides.
-fn push_card(
-    out: &mut MeshData,
-    base: Vec3,
-    point: Vec3,
-    along: Vec3,
-    color: [f32; 4],
-    id: f32,
-    sway: f32,
-) {
+/// Appends `card`, drawn from both sides.
+fn push_card(out: &mut MeshData, card: &Card, color: [f32; 4], id: f32, sway: f32) {
+    let Card {
+        base,
+        point,
+        along,
+        length_m,
+        width,
+    } = *card;
     let side = point
         .cross(along)
         .normalize_or(point.any_orthonormal_vector());
     let normal = side.cross(point).normalize_or(Vec3::Y);
-    let tip = base + point * LEAF_CARD_M;
-    let middle = base + point * (LEAF_CARD_M / 2.0);
-    let half = side * (LEAF_CARD_M * LEAF_CARD_WIDTH / 2.0);
+    let tip = base + point * length_m;
+    let middle = base + point * (length_m / 2.0);
+    let half = side * (length_m * width / 2.0);
     let corners = [base, middle + half, tip, middle - half];
     for facing in [normal, -normal] {
         let first = out.positions.len() as u32;
@@ -513,6 +560,7 @@ mod tests {
                 wood,
                 tip_um: 2000,
                 divergence: 1564,
+                needles: 0,
                 fruit: t.id("acorn").unwrap(),
                 flower: t.id("clematis_flower"),
             }),
@@ -558,6 +606,37 @@ mod tests {
         let mut more = tree(3);
         more.push(metamer(4, [0, Q14 as i16, 0], false, 3)).unwrap();
         assert!(tree_mesh(&more, &look, &g, &t, 1).positions.len() > summer.positions.len());
+    }
+
+    #[test]
+    fn needles_ring_their_twigs_and_sweep_along_them() {
+        let t = materials();
+        let (look, g) = look(&t, true);
+        let g = GraphLook { needles: 6, ..g };
+        let graph = tree(2);
+        let wood: usize = rings(&graph, g.tip_um, look.sway)
+            .iter()
+            .map(|[a, _]| 2 * a.sides as usize)
+            .sum();
+        let mesh = tree_mesh(&graph, &look, &g, &t, 1);
+        // Per leaf step a ring of six needles, two sides of four corners.
+        let needles: usize = graph
+            .metamers()
+            .iter()
+            .map(|m| 6 * 8 * usize::from(m.leaf))
+            .sum();
+        assert_eq!(mesh.positions.len(), wood + needles);
+        assert_eq!(mesh.uvs[wood][0], f32::from(look.leaf.unwrap().0));
+        // The first needle of the trunk's first metamer: long and thin,
+        // pointing out and up along the upright twig.
+        let corner = |k: usize| Vec3::from(mesh.positions[wood + k]);
+        let (base, tip) = (corner(0), corner(2));
+        let point = tip - base;
+        assert!((point.length() - NEEDLE_M).abs() < 1e-4, "{point}");
+        assert!(point.normalize().y > 0.5, "{point}");
+        assert!((corner(1) - corner(3)).length() < NEEDLE_M * NEEDLE_WIDTH + 1e-4);
+        // Bare in winter like leaves (this look sheds then).
+        assert_eq!(tree_mesh(&graph, &look, &g, &t, 3).positions.len(), wood);
     }
 
     #[test]

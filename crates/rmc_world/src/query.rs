@@ -85,6 +85,8 @@ pub struct GraphLook {
     /// Leaf cards turn this far about the twig from one metamer to the
     /// next, in steps of 4096 a turn.
     pub divergence: u16,
+    /// Needles around each leaf step of a twig; 0 draws leaf cards.
+    pub needles: u8,
     /// The fruit hanging from Fruit buds (the species' seed material).
     pub fruit: MaterialId,
     /// The flower on Flower buds; `None` for a species without flowers.

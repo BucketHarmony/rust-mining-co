@@ -4421,3 +4421,22 @@ Decisions:
 - The owner gave explicit permission to edit these protected files. The edit hook blocked the Edit tool, so a patch script wrote the exact §6 text; nothing else in the files changed.
 Next: owner items: oak survival balance; the playtester judges the new tree shots.
 Blockers: none (the §6 blocker is cleared).
+
+## 2026-10-31 — Trees as geometry T9: crown shape, competition, conifers (docs/TREES.md) — passed
+Done:
+- Owner request: trees spread wide when they have room, compete for sun, and pines are conical with visible needles.
+- Buds ending in one cell share its light. New Graph fields `crown_ratio`, `crown_peak`, `crown_damp`: a crown-shape envelope plus a mass-height rule (internode · √metamers).
+- `lateral_setpoint` (gravitropic setpoint for lateral axes). `whorl`, `whorl_gap`, `whorl_mm` (whorled branching). `needles` (client needle rings, `GraphLook.needles`).
+- A tree that stopped growing keeps the leaves of its newest wood.
+- Shipped oak, birch and pine retuned in `plants.ron` and `tree_lab.ron`. `tree_graph_render` gains an `evergreen` close shot; screenshots re-shot.
+Tests added:
+- `trees::tests::{an_open_grown_crown_spreads_about_as_wide_as_it_is_tall, crowded_trees_grow_narrower_than_an_open_one, laterals_lean_toward_their_setpoint, whorls_sprout_laterals_only_at_their_nodes, a_thin_young_tree_fills_out_before_it_rises, a_tree_that_stopped_growing_keeps_the_leaves_of_its_newest_wood}`
+- `treemesh::tests::needles_ring_their_twigs_and_sweep_along_them`
+Decisions:
+- Competition goes through the existing light grid (leaves shade cells, T3). There is no separate neighbor awareness: a shaded side loses vigor.
+- `max_reach_mm` is dropped from the shipped rows. The crown shape bounds the width; the field stays as a data option.
+- Damp: 2/256 for the broadleaves, 32/256 for the pine, so its lower whorls keep filling the cone.
+- `tree_graph_render` keeps GROW at two years, so its pine is still a sapling. The lab shows the cone from about year 4 (numbers in TREES.md T9).
+- No pixel test (rule 21). The needles have a semantic mesh test; the screenshot is for the playtester.
+Next: owner items: the playtester judges the new shapes; oak survival balance; re-run the `tree_mesh` bench with a pine.
+Blockers: none.

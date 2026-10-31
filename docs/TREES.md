@@ -276,6 +276,27 @@ Each step is one session under CLAUDE.md, with a test named first.
       - Trees stay serial in the sweep. `tree_boxes` is not cached: a player's sweep touches a few trees at O(metamers) each.
     - The headless report (`VegetationStocks.trees`) gains per-species graphs, metamers, largest and tallest.
 
+- **T9. Crown shape, competition, conifers** (owner request after T8).
+  - The problem: trees grew tall and thin, like a packed stand, even alone. Pines did not read as conifers.
+  - **Status (2026-10-31): done.** Notes:
+    - Why trees were thin: a game tree gets `biomass / cost` metamers per flush, a handful while it is young. Borchert–Honda gave them all to the best-lit bud, which is the leader, so a young tree was a pole before it had a crown.
+    - Light sharing: buds that end in the same cell share its light (Q = light / buds in the cell). A dense crown no longer out-competes its own lit edge, and the vigor goes to buds with room.
+    - Crown shape: `crown_ratio` (width over height, 256ths), `crown_peak` (where it is widest, 256ths of the height, 0 = a cone) and `crown_damp` (256ths). A bud outside that shape for the tree's current height sees `crown_damp` of its light.
+    - The tree may only rise as high as two things allow, plus one cell of slack:
+      - what its reach supports (`2 · reach / ratio`);
+      - what its mass carries (`internode_mm · √metamers`).
+      So a thin young tree fills out before it rises. Once its laterals reach out, it climbs again.
+    - `max_reach_mm` is dropped from the shipped rows. The shape bounds the width, and `max_height_mm` still caps the height.
+    - Lateral setpoint: lateral axes bend toward `lateral_setpoint` from straight up (gravitropism toward that angle, not toward up). Oak 55°, birch 40°, pine 88° (level branches).
+    - Whorls: `whorl` short nodes (`whorl_mm` long) every `whorl_gap` long internodes, and only whorl nodes sprout laterals. Pine: 5 nodes, gap 2, 30 mm.
+    - Needles: with `needles` above 0, the client draws `leaf` rings of that many long, thin cards per leafy metamer, staggered by half a step and swept forward along the twig, instead of leaf cards. Pine draws 6.
+    - A tree that has stopped growing (at its cap or envelope) keeps the leaves of its newest wood (within `leaf_age` flushes of its newest metamer). Before this, a capped birch shed its whole crown.
+    - Competition needs no new mechanism. Leaves already shade the light grid (T3), so a neighbor's crown darkens a tree's side buds. Those buds lose vigor, and the tree reaches out less and rises more. The test grows a 3 × 3 stand at 4-cell spacing against a lone tree.
+    - Shipped shapes: oak ratio 300 peak 140 damp 2, birch 150 / 110 / 2, pine 180 / 0 / 32. The pine's damp is higher so its lower whorls keep growing into the cone. Pine λ is 128.
+    - Lab, seed 1, 10 years, full budget: oak about 6.5 m tall and 9 m across, irregular and broad; birch an oval, 10.3 m by 7.5 m; pine a cone, 6.9 m tall and 6.4 m across its base.
+    - At the shipped pine cost (10), the pine is a round bush of 3.3 m at year 2, a cone of 5.8 m by 5.6 m at year 5, and 6.8 m by 6.2 m at year 7. The `tree_graph_render` scenario grows two years, so its pine (new `evergreen` close shot) is still a sapling. The cone shows from about year 4.
+    - Open: some pine laterals end half a cell below the root's level (the crown base reads −0.5 m). Needle cards add 6× the quads of leaf cards per leafy metamer; the mesh bench was not re-run.
+
 ## 8. Defaults chosen (the owner can overrule)
 
 - Pace is accelerated with realistic proportions (§5), not real time.

@@ -1706,6 +1706,7 @@ mod tests {
                 wood: t.id("oak_wood").unwrap(),
                 tip_um: 2000,
                 divergence: 1564,
+                needles: 0,
             }),
         };
         f.app.insert_resource(ClientEco {
