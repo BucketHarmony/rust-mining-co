@@ -71,6 +71,10 @@
 //! paying `cost` per metamer added. A graph whose root is no longer a
 //! graph tree's is removed before the sweep.
 //!
+//! Before its other steps, a graph tree with `root_cells` tops its anchor
+//! up from the soil beside it (`ExtendPass::draw_roots`, docs/TREES.md
+//! T10).
+//!
 //! A graph tree's root that still carries part cells (a save from before
 //! the row grew graphs, docs/TREES.md T7) drops them first, children
 //! before parents, each rotting as `eco.part_litter` on its landing like a
@@ -94,7 +98,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use rmc_world::coords::{CellPos, LocalPos};
+use rmc_world::coords::{CELL_SIZE_MM, CellPos, LocalPos};
 use rmc_world::layers::{LayerId, PART_DIRS, Part, PartKind, PlantState, SWEEP_EXTEND};
 use rmc_world::ledger::SeasonLedger;
 use rmc_world::materials::{MaterialId, MaterialTable};
@@ -125,6 +129,9 @@ struct Form {
     shed: Option<usize>,
     fruit: Option<Fruit>,
     flower: Option<Flower>,
+    /// Per substance of the row's `substance_min` or `uptake`: the minimum
+    /// plus the uptake, what a graph tree's root zone tops its anchor up to.
+    draw: Vec<(u8, i32)>,
 }
 
 /// What a multi-cell plant grows toward.
@@ -212,6 +219,10 @@ impl Form {
                     }),
                     None => None,
                 };
+                let mut draw: BTreeMap<u8, i32> = BTreeMap::new();
+                for (key, amt) in p.needs.substance_min.iter().chain(&p.uptake) {
+                    *draw.entry(tables.substance_index(key)?).or_default() += i32::from(*amt);
+                }
                 Some(Form {
                     seed: m.id(&p.material)?,
                     wood: m.id(&parts.wood)?,
@@ -223,6 +234,7 @@ impl Form {
                     shed: parts.shed.as_deref().and_then(row),
                     fruit,
                     flower,
+                    draw: draw.into_iter().collect(),
                 })
             })
             .collect()
@@ -605,6 +617,62 @@ impl ExtendPass {
         }
     }
 
+    /// The root zone (docs/TREES.md T10): tops the anchor below `root` up
+    /// to `form.draw` from the anchor-material cells beside it on its level,
+    /// out to the crown's reach in whole cells and at most `root_cells`,
+    /// nearest first, then in cell order. Each move is checked against the
+    /// donor's content and applied at once; it moves substance between
+    /// cells, so the ledger books nothing.
+    fn draw_roots(&self, ctx: &mut SweepCtx<'_>, form: &Form, growth: &Growth, root: CellPos) {
+        let Some(graph) = ctx.world.tree(root) else {
+            return;
+        };
+        let reach = graph
+            .ends()
+            .iter()
+            .map(|e| i64::from(e[0]).pow(2) + i64::from(e[2]).pow(2))
+            .max()
+            .unwrap_or(0);
+        let r = (reach.isqrt() / i64::from(CELL_SIZE_MM)).min(growth.root_cells);
+        let r = i32::try_from(r).unwrap_or(0);
+        let anchor = below(root);
+        let soil = |world: &World, c: CellPos| {
+            world
+                .get_cell(c)
+                .and_then(|id| self.materials.get(id))
+                .is_some_and(|d| d.anchor)
+        };
+        if r == 0 || !soil(ctx.world, anchor) {
+            return;
+        }
+        let a = anchor.0;
+        let mut zone: Vec<(i32, CellPos)> = (-r..=r)
+            .flat_map(|dz| (-r..=r).map(move |dx| (dx, dz)))
+            .map(|(dx, dz)| (dx * dx + dz * dz, CellPos::new(a.x + dx, a.y, a.z + dz)))
+            .filter(|&(d, _)| d > 0 && d <= r * r)
+            .collect();
+        zone.sort_unstable();
+        for &(x, target) in &form.draw {
+            let layer = LayerId::Substance(x);
+            let mut want = target.min(i32::from(u8::MAX)) - ctx.world.layer(anchor, layer);
+            for &(_, c) in &zone {
+                if want <= 0 {
+                    break;
+                }
+                if !soil(ctx.world, c) {
+                    continue;
+                }
+                let give = ctx.world.layer(c, layer).min(want);
+                if give > 0 {
+                    let (have, held) = (ctx.world.layer(c, layer), ctx.world.layer(anchor, layer));
+                    ctx.world.eco_put_layer(c, layer, have - give);
+                    ctx.world.eco_put_layer(anchor, layer, held + give);
+                    want -= give;
+                }
+            }
+        }
+    }
+
     /// Drops the fruit at `cell` of a plant of `species` (step 1): a part
     /// cell, which becomes air, when `part`; else a graph tree's fruit bud
     /// hanging in `cell`.
@@ -667,6 +735,9 @@ impl SweepPass for ExtendPass {
             .flower
             .as_ref()
             .is_some_and(|f| f.rows.contains(&self.row));
+        if let Shape::Graph(growth) = &form.shape {
+            self.draw_roots(ctx, &form, growth, cell);
+        }
         let mut parts = parts_of(ctx.world, cell);
 
         // Falling fruit, wilting flowers, then a bare plant's leaves,

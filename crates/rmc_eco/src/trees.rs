@@ -106,6 +106,7 @@ pub struct Growth {
     pub whorl: u32,
     pub whorl_gap: u32,
     pub whorl_mm: u16,
+    pub root_cells: i64,
 }
 
 impl Growth {
@@ -136,6 +137,7 @@ impl Growth {
             whorl,
             whorl_gap,
             whorl_mm,
+            root_cells,
             ..
         } = form
         else {
@@ -166,6 +168,7 @@ impl Growth {
             whorl: u32::from(whorl),
             whorl_gap: u32::from(whorl_gap),
             whorl_mm,
+            root_cells: i64::from(root_cells),
         })
     }
 
@@ -1106,6 +1109,145 @@ mod tests {
         assert_eq!(w.layer(root, LayerId::Biomass), i32::from(u8::MAX));
     }
 
+    /// The oak of `tables(133, 4000)` with a root zone of `cells`.
+    fn rooted(cells: u8) -> EcoTables {
+        tables_with(&format!(
+            "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,              divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,              bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4, root_cells: {cells}),"
+        ))
+        .expect("the rooted oak loads")
+    }
+
+    /// What the oak keeps its anchor topped up to: its `substance_min` of
+    /// nitrogen plus its `uptake` of it.
+    fn n_target(t: &EcoTables) -> i32 {
+        let oak = t.plants().iter().find(|p| p.key == "oak").unwrap();
+        let of = |rows: &[(String, u8)]| {
+            rows.iter()
+                .filter(|r| r.0 == "n")
+                .map(|r| i32::from(r.1))
+                .sum::<i32>()
+        };
+        of(&oak.needs.substance_min) + of(&oak.uptake)
+    }
+
+    /// Puts `per` nitrogen in every soil cell of the 13 × 13 square under
+    /// `root` but its anchor, which gets none.
+    fn soil_n(w: &mut World, t: &EcoTables, root: CellPos, per: i32) -> LayerId {
+        let n = LayerId::Substance(t.substance_index("n").unwrap());
+        let r = root.0;
+        for z in r.z - 6..=r.z + 6 {
+            for x in r.x - 6..=r.x + 6 {
+                w.eco_put_layer(CellPos::new(x, r.y - 1, z), n, per);
+            }
+        }
+        w.eco_put_layer(CellPos::new(r.x, r.y - 1, r.z), n, 0);
+        n
+    }
+
+    fn soil_layer(w: &World, root: CellPos, layer: LayerId) -> BTreeMap<(i32, i32), i32> {
+        let r = root.0;
+        let mut out = BTreeMap::new();
+        for z in r.z - 6..=r.z + 6 {
+            for x in r.x - 6..=r.x + 6 {
+                out.insert(
+                    (x - r.x, z - r.z),
+                    w.layer(CellPos::new(x, r.y - 1, z), layer),
+                );
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_grown_tree_tops_its_anchor_up_from_the_soil_around_its_root() {
+        let t = rooted(2);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        flushes(&mut w, &t, &[root], 10, SEED);
+        let (_, wide) = extent(&graph(&w, root));
+        assert!(wide >= 500, "the crown reaches a cell out: {wide} mm");
+        let n = soil_n(&mut w, &t, root, 2);
+        let before = soil_layer(&w, root, n);
+        extend(&mut w, &t, SEED);
+        let after = soil_layer(&w, root, n);
+        let target = n_target(&t);
+        assert!(target > 2, "more than one neighbor holds");
+        assert_eq!(after[&(0, 0)], target, "the anchor is topped up");
+        assert_eq!(
+            after.values().sum::<i32>(),
+            before.values().sum::<i32>(),
+            "a move, nothing made or lost"
+        );
+        // The nearest cells give first: the four face neighbors, in order.
+        let gave: Vec<_> = after
+            .iter()
+            .filter(|(k, v)| **k != (0, 0) && before[k] != **v)
+            .map(|(k, _)| *k)
+            .collect();
+        assert!(!gave.is_empty());
+        for (x, z) in &gave {
+            assert_eq!(x * x + z * z, 1, "{gave:?} are face neighbors");
+        }
+        // A full anchor draws nothing more.
+        extend(&mut w, &t, SEED);
+        assert_eq!(soil_layer(&w, root, n), after);
+    }
+
+    #[test]
+    fn a_seedling_or_a_rootless_row_draws_only_from_its_anchor() {
+        // An oak with no graph yet: no crown, no zone.
+        let t = rooted(2);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        let n = soil_n(&mut w, &t, root, 2);
+        let before = soil_layer(&w, root, n);
+        extend(&mut w, &t, SEED);
+        assert!(graph(&w, root).is_empty());
+        assert_eq!(soil_layer(&w, root, n), before);
+        // A grown oak of a row without `root_cells`.
+        let t = tables(133, 4000);
+        let mut w = world(&t);
+        oak(&mut w, &t, root);
+        flushes(&mut w, &t, &[root], 10, SEED);
+        let n = soil_n(&mut w, &t, root, 2);
+        let before = soil_layer(&w, root, n);
+        extend(&mut w, &t, SEED);
+        assert_eq!(soil_layer(&w, root, n), before);
+    }
+
+    #[test]
+    fn the_root_zone_widens_with_the_crown() {
+        // Nitrogen only three cells out: the oak reaches it once its crown
+        // does, and not before.
+        let t = rooted(8);
+        let light = LightPass::new(&t);
+        let mut w = world(&t);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &t, root);
+        let n = soil_n(&mut w, &t, root, 0);
+        let far = CellPos::new(19, 30, 16);
+        w.eco_put_layer(far, n, 50);
+        let anchor = CellPos::new(16, 30, 16);
+        let mut drew = false;
+        for _ in 0..30 {
+            let (_, wide) = extent(&graph(&w, root));
+            w.eco_put_layer(root, LayerId::Biomass, i32::from(u8::MAX));
+            light.recompute(&mut w);
+            extend(&mut w, &t, SEED);
+            if wide < 3 * 500 {
+                assert_eq!(w.layer(anchor, n), 0, "out of reach at {wide} mm");
+            } else {
+                assert_eq!(w.layer(anchor, n), n_target(&t));
+                assert_eq!(w.layer(far, n), 50 - n_target(&t));
+                drew = true;
+                break;
+            }
+        }
+        assert!(drew, "the crown reached three cells out");
+    }
+
     #[test]
     fn a_graph_goes_when_its_root_does() {
         let t = tables(133, 4000);
@@ -1587,6 +1729,7 @@ mod tests {
             whorl: 0,
             whorl_gap: 0,
             whorl_mm: 0,
+            root_cells: 0,
         }
     }
 

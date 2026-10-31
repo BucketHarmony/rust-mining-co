@@ -397,6 +397,12 @@ pub enum FormDef {
         /// only); 0 draws leaf cards.
         #[serde(default)]
         needles: u8,
+        /// The widest root zone, in cells (docs/TREES.md T10): a grown
+        /// tree tops its anchor up from the soil cells beside it, out to
+        /// its crown's reach and at most this far; 0 draws from the anchor
+        /// alone.
+        #[serde(default)]
+        root_cells: u8,
     },
 }
 

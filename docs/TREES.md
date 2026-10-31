@@ -300,6 +300,14 @@ Each step is one session under CLAUDE.md, with a test named first.
       - `tree_graph_render` grows four years (17 seasons, into the fifth summer), so its pine shows its cone. The scenario now takes about 20 minutes on lavapipe instead of about 5.
       - Bench `tree_mesh_pine`: a ten-year pine (3 000 metamers) took 7.0 ms and 39 931 quads with 6 needles a ring, against the oak's 1.24 ms and 15 748 quads. Building each twig's frame once in floats saved 5 %. 4 needles a ring (2 rings, staggered: 8 directions) bring it to 4.1 ms and 31 115 quads. About 13 500 of those are bark, so the rest of the gap is wood, not needles.
 
+- **T10 — Root zone (owner pick, 2026-10-31).** Oaks died out over ten years: each one emptied the nitrogen of its single anchor cell, fell below its `substance_min` of 4, and starved. The owner picked a root zone and kept the floor.
+    - New Graph field `root_cells` (default 0, no zone). On every extension sweep, before the tree's other steps, a grown tree tops its anchor up to its `substance_min` plus its `uptake` of each substance in those rows.
+    - The draw comes from the anchor-material cells on the anchor's level within the crown's reach, rounded down to whole cells and capped at `root_cells`. Nearer cells give first, ties in cell order. Each move is checked against what the donor holds and applied at once.
+    - It runs in the extension sweep (single-threaded, sorted), not the growth pass. Neighboring zones overlap, and the Jacobi growth pass relies on one plant per anchor. A move between cells books no ledger term: the substance total is unchanged, so the conservation checks still hold.
+    - A seedling's crown reaches no cell, so it draws only from its anchor. The zone widens as the crown does.
+    - Shipped: oak 4, birch 3, pine 3 (also in `tree_lab.ron`).
+    - Headless, seed 1, 128 × 64 × 128, 40 seasons: oaks 62 → 53 (were 62 → 0). Birch (100 → 99), pine (61 → 63) and the other plants barely change.
+
 ## 8. Defaults chosen (the owner can overrule)
 
 - Pace is accelerated with realistic proportions (§5), not real time.

@@ -4464,3 +4464,17 @@ Tests added: none (diagnosis only; no code or data changed).
 Decisions: none. The fix is a balance choice, put to the owner on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): drop the oak's n floor, give grown trees a root zone, or leave it.
 Next: apply the owner's pick.
 Blockers: waiting on the owner's pick.
+
+## 2026-10-31 — Oak survival: root zone (docs/TREES.md T10) — passed
+Done:
+- New Graph field `root_cells`. On each extension sweep, a grown graph tree first tops its anchor up to its `substance_min` plus its `uptake` of each of those substances. The draw comes from the anchor-material soil on the anchor's level within its crown's reach in whole cells, capped at `root_cells`. Nearest cells give first, ties in cell order.
+- Shipped oak 4, birch 3, pine 3 (plants.ron and tree_lab.ron). The oak keeps its n 4 floor.
+- Headless, seed 1, 128 × 64 × 128, 40 seasons: oaks 62 → 53 (were 62 → 0). Birch 100 → 99, pine 61 → 63; the other plants barely change.
+Tests added: `trees::tests::{a_grown_tree_tops_its_anchor_up_from_the_soil_around_its_root, a_seedling_or_a_rootless_row_draws_only_from_its_anchor, the_root_zone_widens_with_the_crown}`
+Decisions:
+- The owner picked "root-zone" on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA).
+- The draw runs in the extension sweep, not the Jacobi growth pass. Zones overlap, and the growth pass's queued deltas assume one plant per anchor (rules 2, 14, 15).
+- A move between soil cells books no ledger term, as water's cell-to-cell moves don't (rule 16). The conservation checks pass.
+- `tree_graph_render` was not re-shot: the root zone changes what the trees draw on, not how they look.
+Next: owner items: the playtester judges the tree shots.
+Blockers: none.
