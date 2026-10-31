@@ -340,3 +340,44 @@ Top 3 fixes within Phase 2 scope
 1. Give water somewhere to go (A1): runoff or a sink at the world edge or bottom, rain that lands on or melts ice, and a ledger term for it. Add a soak or invariant check that mean standing-liquid depth stays bounded over 20 seasons on the default world. Then re-shoot the E5 scenes.
 2. Put plants into the shipped game (A2, B1): seed moisture and nitrogen (or loam) at worldgen so F168 plants exist, give the editor a way to add nutrients (SetLayer in the brush), and make plants legible (scale with growth, tint on stress, brown loam).
 3. Fix the report and legibility (A3-A5, A7, B2-B4): refresh the stale magma shot, add units and "what this proves / does not prove" for the soak, put the perf misses in the headline, de-duplicate the gallery, add captions and before/after pairs, show the active overlay's name on the HUD, add a one-line season summary after F6, and make the testkit capture the egui panel.
+
+
+## 2026-10-31 — Trees (graph trees T1–T10)
+
+Commit 63866f9. Method: I did not re-run `tree_graph_render`. The six committed `tree_graph_render-*` PNGs are byte-identical to the fresh ones in `target/e2e/` (made at 13:21-13:26 today by the T9 follow-up commit). T10 (root zone) changes what the trees draw on, not how they look, so a re-run would show the same frames. I read all six, the four old `trees_render-*` shots, and 2x/3x crops of the summer, evergreen, winter and spring shots. I also ran `cargo run --release -q -p rmc_app -- --headless --seasons 40 --seed 1 --world-size 128x64x128 --save target/playtest-trees/s1`. It took 2 m 45 s, `invariants_ok` is true, and its `report.json` has no violations. I could not walk among the trees: no committed shot shows graph trees in the generated world, and there are no tree-lab shots.
+
+What works
+- `tree_graph_render-close-375.png` (under the oak): a real branching tree. Limbs fork, taper and zig-zag, with warm brown bark and dark leaf cards at varied angles and shades. It is the best frame of the set and reads as a tree, not a model.
+- The three species differ in silhouette and color in `-summer-360.png`: a tall oval birch with white bark and light green leaves, a round dome oak, and a narrow dark pine on the left. You can tell them apart at 30 cells.
+- `-autumn-478.png`: the birch goes gold and the oak rust-orange while the pine stays dark green. This is the strongest "seasons are happening" cue in the game so far.
+- Fog and the terraced terrain sit well behind the crowns. The crowns are see-through, so the water and terraces show between the leaves.
+- Bare winter works: the oak keeps its red-brown twigs and the birch keeps its pale limbs, and the pine keeps its needles (`-winter-565.png`).
+- Headless 40 seasons (seed 1): oaks 62 → 53 (they were 62 → 0 before T10), birch 61 → 96 and pine 58 → 63 (births). Tallest after ten years: birch 10.3 m, oak 9.2 m, pine 9.2 m. The sizes are sensible and the species order is right.
+
+What looks wrong
+1. The pine is a see-through skeleton (`-evergreen-390.png`, crop of the pine). The dark needle clumps float on hairline branches that are thinner than a pixel, and the single trunk is a 1-2 px line. The cone shape and the whorl layering are readable. It does not read as a dense conifer, more like a bare tree with green puffs. At the far distance of `-summer-360.png` it is a faint dark smudge.
+2. Every tree stands in a visible one-cell block (`-close-375.png` a brown cube under the oak, `-evergreen-390.png` the same under the pine, `-summer-360.png` a white cube under the birch). The cube is much wider than the trunk and the trunk is planted in its top face, like a flower pot. The anchor cell is still drawn as a voxel under the graph tree.
+3. The season names and the visuals are off by one. The shot named `winter` (`-winter-565.png`) is green ground with no snow and bare trees. The shot named `spring` (`-spring-651.png`) is snow-covered ground with the same bare trees. A player would see snow and bare trees under a "spring" label. The client shows the next season's weather after the host ticks, so the leaves drop one label before the snow arrives. The label is confusing, and the snow-covered ground never shows leaves returning.
+4. The birch carries white specks. In summer they are white flecks among the leaves (`-summer-360.png`). In winter (`-winter-565.png`) the whole bare crown is outlined in pale dots, because the twigs are too thin to show at range. It reads like frost or dust, not like twigs.
+5. The oak winter silhouette (`-winter-565.png`, right) is a flat-topped, wide umbrella of twigs. It reads as an acacia. In summer it is a compact dome, and it is half the height of the birch (the same age, four years), so the "oak" is the smallest thing in the frame.
+6. Rain streaks look like white poles or wires. A long vertical streak at x≈570 in `-summer-360.png` reads as a lamp-post. Several streaks pass through the crown in `-close-375.png`, and they look like hanging threads. They are not a tree fault, but they hurt every tree shot.
+7. `-evergreen-390.png` has a straight horizontal blue-white band across the whole frame behind the pine, and floating dark green slabs at left and right. They are the water sheet edge-on and the cut walls of the bed's hole in the terrain. The backdrop distracts from the subject.
+8. `docs/screens/trees_render-*` (summer, autumn, winter, bare) are still the old block trees: a 1x1 trunk with a cube canopy. They sit next to the graph-tree shots with no note that they are the old look.
+
+Headless run, 128x64x128, seed 1, 40 seasons (ten years), from `report.json`:
+- Trees stop growing. Birch reaches 10 287 mm and exactly 2 500 metamers (the largest graph) by season 20, and then does not change for 20 seasons. Oak stalls at 8.4-9.2 m, and pine at 9.2 m from season 26. After year 5-7 the world's trees are frozen in shape.
+- Oaks still die: 62 until season 20, then 60, 59, 58, 56, 53 at seasons 22, 24, 30, 32, 36. T10 slowed the loss but did not stop it, and the decline is still going at season 40.
+- The understory collapses. Grass goes from 3 579 (season 5) to 1-3 from season 30 on, and moss covers about 5 800 of 6 250 columns. Clematis goes 62 → 0 and grape 52 → 3. So the ground under and around the trees ends up as green moss. This is a world-ecology finding, not a mesh finding, but it decides what the forest looks like at year 10.
+
+What feels broken as a player
+- I could not walk to a tree and judge it from player height. The only shots from the ground (`-close-375.png`) are scenario cameras. Whether the trunk collision, chopping and the crown against the first-person camera work well is untested by me.
+- Trees stand still after year 5-7 (see above). A player who plants a tree and waits sees a plateau, not an old tree.
+- The pickaxe or any chop hit zone cannot be judged from the shots: the base block (item 2) is a different hit target than the trunk. A player would hit the cube first.
+
+Ranked fixes (the owner picks)
+1. Give the pine body. Put a floor on the bark pipe radius for all graphs so twigs stay at least about a pixel wide at 30 cells (this also fixes the birch winter dots, item 4). Make pine needle clumps bigger or add one more ring, and darken the pine bark. Alternative: keep the pine as is and tell the owner it is a sapling look.
+2. Do not mesh the anchor cell of a graph tree, or draw it as a small flared stump. This removes the flower-pot look in every close shot.
+3. Fix the season labels: name each shot by the season the player sees and the season the host ticked, and show the snow with the bare leaf drop or one label later on purpose. A HUD season name would help a player the same way.
+4. Fade rain streaks within a few cells of the camera, or shorten them, so they stop reading as poles in tree shots.
+5. Add a worldgen forest shot (walk up to a stand of ten trees, eye height) and a tree-lab contact sheet to `scripts/screens.sh`. Then the next playtest can judge what a player sees, and the old `trees_render-*` shots can be retired or captioned.
+6. Look at why birch freezes at 2 500 metamers and 10 287 mm and oaks keep dying after season 20 (the nitrogen floor of 4 may still bite at the anchor despite the root zone). Alternative: let a tree that is at its cap still thicken or re-sprout.
