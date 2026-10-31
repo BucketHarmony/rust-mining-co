@@ -4488,3 +4488,14 @@ Tests added: none (test-fix of `e2e:tailings_kill_moss`, passes locally in 64 s)
 Decisions: the check is fixed, not the scenario. Adding dry seasons to give late-stressed moss time to die would tune the scenario to the test.
 Next: watch CI on the push.
 Blockers: none.
+
+## 2026-10-31 — Owner approvals: push, playtest, tiles cleanup — passed
+Done:
+- The owner's picks on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): verify then push, run the playtester, accept the oaks at 53 of 62, remove the tiles worktree.
+- Removed the merged `tiles` worktree (E:\ai\RustCollective-tiles) and branch.
+- `e2e:tree_graph_render` passed locally (955 s). Pushed main to 63866f9, including the `tailings_kill_moss` test-fix.
+- The playtester's report is in docs/PLAYTEST.md ("2026-10-31 — Trees"), committed locally as 4443cd2 and not pushed, so it doesn't cancel the running CI. Its findings are on the update artifact as options for the owner.
+Tests added: none.
+Decisions: none beyond the owner's picks.
+Next: push the local commits once CI run 41225298661 finishes. Apply the owner's picks on the playtest findings.
+Blockers: CI run 41225298661 (63866f9). Green: linux, linux-features, windows, windows-release. linux-e2e was still running when the 60-minute wait cap ran out (rule 22); it usually takes 1–2 h. Check its result in the next session.
