@@ -4245,3 +4245,10 @@ Tests added: `mesher::tests::a_growing_trunk_carries_a_leaf_tuft_until_its_crown
 Decisions: the tuft is a look only (no sim, save or ledger change). The mesher test's `PlantLook` literals gain the two new fields in this commit, as with V5's `leaf`.
 Next: owner playtest.
 Blockers: none.
+
+## 2026-10-30 — Trees as geometry: plan (docs/TREES.md) — planned
+Done: `docs/TREES.md`. Trees leave the cell grid: a fixed-point metamer graph per tree (`Chunk.trees`), grown by a light-driven bud model (Palubicki 2009, Borchert–Honda vigor, phyllotaxis, tropisms), radii by the pipe model, coupled back through a derived canopy grid in the light pass, capsule collision and `EditOp::Chop`; client draws cylinders and leaf cards. Steps T1–T8; a tree lab (`--tree-lab`) exports graphs for a browser viewer.
+Tests added: none (plan only).
+Decisions: vines and one-cell plants stay on the grid; pace accelerated with realistic proportions; limbs over 8 cm block the player.
+Next: owner signs off §6 (CLAUDE.md rules 2/14, SAD-P2 §5–§7.8 are protected), then T1.
+Blockers: rule amendments in protected files.
