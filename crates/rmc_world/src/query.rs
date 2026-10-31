@@ -87,6 +87,10 @@ pub struct GraphLook {
     pub divergence: u16,
     /// Needles around each leaf step of a twig; 0 draws leaf cards.
     pub needles: u8,
+    /// The thinnest wood drawn, as a radius in micrometers: thinner twigs
+    /// are drawn this thick so they stay visible at a distance; 0 draws
+    /// every pipe radius as it is.
+    pub bark_min_um: u32,
     /// The fruit hanging from Fruit buds (the species' seed material).
     pub fruit: MaterialId,
     /// The flower on Flower buds; `None` for a species without flowers.

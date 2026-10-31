@@ -178,7 +178,7 @@
      hardness: 2, diggable: true, yield_count: 1, color: (98, 116, 56, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8),
     (id: 38, key: "pine_wood", phase: Solid, tags: ["wood"],
-     hardness: 22, diggable: true, yield_count: 1, color: (92, 64, 42, 255), emissive: 0.0,
+     hardness: 22, diggable: true, yield_count: 1, color: (66, 46, 34, 255), emissive: 0.0,
      conductivity: 32, heat_capacity: 16),
     (id: 39, key: "pine_needles", phase: Solid, tags: ["leaf"],
      hardness: 2, diggable: true, yield_count: 1, color: (40, 86, 54, 255), emissive: 0.0,

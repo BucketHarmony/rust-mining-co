@@ -14,6 +14,10 @@
 //! [`TREE_SIDES_MIN`] for a twig to [`TREE_SIDES_MAX`] for a trunk. The
 //! bark is the wood material's color, and its tile through the chunk
 //! shader, which looks tiles up by the material id in `uv.x`.
+//! No wood is drawn thinner than the species' `bark_min_um`, so twigs
+//! stay visible at a distance, and the trunk's first cylinder reaches
+//! down through the root cell (which the chunk mesh leaves out) to a
+//! flared foot on the ground ([`wood_rings`]).
 //!
 //! **Leaves.** A leafy metamer carries `leaf` leaf cards, lens-shaped
 //! quads drawn from both sides, spaced along the internode and turned
@@ -70,9 +74,11 @@ pub const LEAF_CARD_WIDTH: f32 = 0.5;
 /// points out from the twig.
 pub const LEAF_CARD_LEAN: f32 = 0.5;
 pub const LEAF_CARD_LIFT: f32 = 0.3;
+/// How much wider than the trunk the stump is at the ground.
+pub const STUMP_FLARE: f32 = 1.6;
 /// A needle's length in meters, and its width as a share of it.
-pub const NEEDLE_M: f32 = 0.14;
-pub const NEEDLE_WIDTH: f32 = 0.12;
+pub const NEEDLE_M: f32 = 0.2;
+pub const NEEDLE_WIDTH: f32 = 0.16;
 /// How far a needle sweeps forward along its twig for each unit it points
 /// out from the twig.
 pub const NEEDLE_SWEEP: f32 = 0.8;
@@ -109,6 +115,26 @@ pub struct Ring {
 /// A Q14 direction as a unit vector.
 fn unit(d: [i16; 3]) -> Vec3 {
     Vec3::new(f32::from(d[0]), f32::from(d[1]), f32::from(d[2])) / Q14 as f32
+}
+
+/// The rings the bark is drawn on: [`rings`] with no radius under the
+/// species' `bark_min_um`, and the trunk's first cylinder reaching down
+/// through the root cell to the ground, its foot [`STUMP_FLARE`] times the
+/// trunk's radius there (docs/TREES.md T10 follow-ups). Leaves and buds
+/// keep to [`rings`].
+pub fn wood_rings(graph: &TreeGraph, g: &GraphLook, sway: u8) -> Vec<[Ring; 2]> {
+    let floor = g.bark_min_um as f32 * M_PER_UM;
+    let mut out = rings(graph, g.tip_um, sway);
+    for ring in out.iter_mut().flatten() {
+        ring.radius_m = ring.radius_m.max(floor);
+    }
+    if let Some([foot, _]) = out.first_mut() {
+        foot.center = -Vec3::Y * CELL_SIZE_M;
+        foot.normal = Vec3::Y;
+        foot.radius_m *= STUMP_FLARE;
+        foot.sway = 0.0;
+    }
+    out
 }
 
 /// The start and end ring of every metamer of `graph`, in its order, for a
@@ -215,10 +241,10 @@ pub fn tree_mesh(
         .map_or([0; 3], |d| [d.color[0], d.color[1], d.color[2]]);
     let bark = linear(bark);
     let wood_id = f32::from(g.wood.0);
-    let all = rings(graph, g.tip_um, look.sway);
-    for [a, b] in &all {
+    for [a, b] in &wood_rings(graph, g, look.sway) {
         push_cylinder(&mut out, a, b, bark, wood_id);
     }
+    let all = rings(graph, g.tip_um, look.sway);
     let color = |id: MaterialId| {
         materials
             .get(id)
@@ -566,6 +592,7 @@ mod tests {
                 tip_um: 2000,
                 divergence: 1564,
                 needles: 0,
+                bark_min_um: 0,
                 fruit: t.id("acorn").unwrap(),
                 flower: t.id("clematis_flower"),
             }),
@@ -611,6 +638,61 @@ mod tests {
         let mut more = tree(3);
         more.push(metamer(4, [0, Q14 as i16, 0], false, 3)).unwrap();
         assert!(tree_mesh(&more, &look, &g, &t, 1).positions.len() > summer.positions.len());
+    }
+
+    #[test]
+    fn wood_has_a_floor_radius_and_a_flared_stump_through_the_root_cell() {
+        let t = materials();
+        let (look, g) = look(&t, false);
+        let graph = tree(3);
+        let plain = rings(&graph, g.tip_um, look.sway);
+        let floor = g.tip_um * 3 / 2;
+        let g = GraphLook {
+            bark_min_um: floor,
+            ..g
+        };
+        let wood = wood_rings(&graph, &g, look.sway);
+        assert_eq!(wood.len(), plain.len());
+        let floor_m = floor as f32 * M_PER_UM;
+        let trunk = plain[0][0].radius_m.max(floor_m);
+        for (i, (w, p)) in wood.iter().zip(&plain).enumerate() {
+            for (k, (w, p)) in w.iter().zip(p).enumerate() {
+                if i == 0 && k == 0 {
+                    continue;
+                }
+                assert_eq!(w.radius_m, p.radius_m.max(floor_m), "metamer {i} ring {k}");
+                assert_eq!((w.center, w.sides), (p.center, p.sides));
+            }
+        }
+        assert!(plain.iter().flatten().any(|r| r.radius_m < floor_m));
+        assert!(plain.iter().flatten().any(|r| r.radius_m > floor_m));
+        // The trunk's foot: down through the root cell to the ground,
+        // flaring out.
+        let foot = wood[0][0];
+        assert_eq!(foot.center, -Vec3::Y * CELL_SIZE_M);
+        assert_eq!(foot.radius_m, trunk * STUMP_FLARE);
+        assert_eq!(foot.sides, plain[0][0].sides);
+        // The mesh draws these rings: same vertex count, the stump's foot
+        // ring at the ground.
+        let mesh = tree_mesh(&graph, &look, &g, &t, 1);
+        let unfloored = tree_mesh(
+            &graph,
+            &look,
+            &GraphLook {
+                bark_min_um: 0,
+                ..g
+            },
+            &t,
+            1,
+        );
+        assert_eq!(mesh.positions.len(), unfloored.positions.len());
+        assert!(
+            mesh.positions
+                .iter()
+                .any(|p| (p[1] + CELL_SIZE_M).abs() < 1e-6),
+            "a vertex at the ground"
+        );
+        assert!(mesh.positions.iter().all(|p| p[1] >= -CELL_SIZE_M - 1e-6));
     }
 
     #[test]

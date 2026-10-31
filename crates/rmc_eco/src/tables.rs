@@ -397,6 +397,10 @@ pub enum FormDef {
         /// only); 0 draws leaf cards.
         #[serde(default)]
         needles: u8,
+        /// The thinnest wood the client draws, as a radius (a look only,
+        /// docs/TREES.md T10 follow-ups); 0 draws every pipe radius.
+        #[serde(default)]
+        bark_min_um: u32,
         /// The widest root zone, in cells (docs/TREES.md T10): a grown
         /// tree tops its anchor up from the soil cells beside it, out to
         /// its crown's reach and at most this far; 0 draws from the anchor
@@ -1242,12 +1246,14 @@ impl EcoTables {
                         tip_um,
                         divergence,
                         needles,
+                        bark_min_um,
                         ..
                     } => Some(GraphLook {
                         wood: self.materials.id(&d.wood)?,
                         tip_um,
                         divergence,
                         needles,
+                        bark_min_um,
                         fruit: self.materials.id(&p.material)?,
                         flower: d
                             .flower

@@ -67,7 +67,7 @@ use std::sync::Arc;
 use bevy::color::Color;
 use bevy::prelude::{IVec3, Vec3};
 use rmc_world::columns::NO_SURFACE;
-use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos};
+use rmc_world::coords::{CELL_SIZE_M, CHUNK_SIZE, CellAabb, CellPos, ChunkPos, LocalPos};
 use rmc_world::layers::{LayerId, Part, PartKind};
 use std::collections::BTreeMap;
 
@@ -552,6 +552,26 @@ impl MeshInput {
                     for y in -1..=CHUNK_SIZE {
                         values[Self::index(x, y, z)] = value;
                     }
+                }
+            }
+        }
+        // Graph tree roots: their tree mesh draws the stump (crate::treemesh).
+        for (i, chunk) in near.iter().enumerate() {
+            let Some(chunk) = chunk else {
+                continue;
+            };
+            let offset = IVec3::new(i as i32 % 3, i as i32 / 9, (i as i32 / 3) % 3) - IVec3::ONE;
+            for (&local, graph) in &chunk.trees {
+                let cell = CellPos::from_chunk_local(
+                    ChunkPos(pos.0 + offset),
+                    LocalPos::from_index(local),
+                );
+                let p = cell.0 - origin;
+                let inside = (-1..=CHUNK_SIZE).contains(&p.x)
+                    && (-1..=CHUNK_SIZE).contains(&p.y)
+                    && (-1..=CHUNK_SIZE).contains(&p.z);
+                if inside && !graph.is_empty() {
+                    input.set(p.x, p.y, p.z, MaterialId::AIR);
                 }
             }
         }
@@ -2290,6 +2310,53 @@ mod tests {
             chunk.storage.set(local, id);
         }
         chunk
+    }
+
+    #[test]
+    fn graph_tree_roots_are_left_to_their_tree_mesh() {
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+        let t = table();
+        let wood = id(&t, "oak_wood");
+        let mut world = world_3x3x3(&t);
+        let mut graph = TreeGraph::default();
+        graph
+            .push(Metamer {
+                parent: NO_PARENT,
+                dir: [0, Q14 as i16, 0],
+                length_mm: 250,
+                born: 0,
+                bud: BudState::Dormant,
+                leaf: 1,
+                shade: 0,
+                lateral: false,
+            })
+            .unwrap();
+        // A grown root inside the chunk, one with an empty graph, one with
+        // none, and a grown root in the neighbor chunk at the box's border.
+        let (grown, empty, plain) = (
+            IVec3::new(5, 5, 5),
+            IVec3::new(8, 5, 5),
+            IVec3::new(11, 5, 5),
+        );
+        let center = ChunkPos::new(0, 0, 0);
+        let mut chunk = chunk_with(center, &[grown, empty, plain], wood);
+        for (c, g) in [(grown, graph.clone()), (empty, TreeGraph::default())] {
+            chunk.trees.insert(CellPos(c).split().1.index(), g);
+        }
+        insert(&mut world, center, chunk);
+        let east = ChunkPos::new(1, 0, 0);
+        let border = IVec3::new(32, 5, 5);
+        let mut chunk = chunk_with(east, &[border], wood);
+        chunk.trees.insert(CellPos(border).split().1.index(), graph);
+        insert(&mut world, east, chunk);
+        let input = MeshInput::from_world(&world, center).unwrap();
+        let at = |c: IVec3| input.get(c.x, c.y, c.z);
+        assert_eq!(at(grown), MaterialId::AIR, "drawn by the tree mesh");
+        assert_eq!(at(border), MaterialId::AIR, "across the chunk face too");
+        assert_eq!(at(empty), wood, "an empty graph has no stump yet");
+        assert_eq!(at(plain), wood);
+        // Only the mesh input changes.
+        assert_eq!(world.get_cell(CellPos(grown)), Some(wood));
     }
 
     #[test]
