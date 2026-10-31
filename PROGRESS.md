@@ -4499,3 +4499,59 @@ Tests added: none.
 Decisions: none beyond the owner's picks.
 Next: push the local commits once CI run 41225298661 finishes. Apply the owner's picks on the playtest findings.
 Blockers: CI run 41225298661 (63866f9). Green: linux, linux-features, windows, windows-release. linux-e2e was still running when the 60-minute wait cap ran out (rule 22); it usually takes 1–2 h. Check its result in the next session.
+
+## 2026-10-31 — Playtest follow-ups on the graph trees (owner picks) — passed
+Done:
+- Wood floor: graph-tree wood is never thinner than the row's `bark_min_um` (oak and pine 12 mm, birch 8 mm). Needle clumps are bigger (`NEEDLE_M` 0.2, `NEEDLE_WIDTH` 0.16). Pine bark is darker.
+- Root cell: the chunk mesh leaves a graph tree's root cell out. The tree mesh flares the trunk (`STUMP_FLARE` 1.6) down to the cell's floor. The cell is still solid.
+- Oak retuned in the tree lab: `crown_ratio` 220, `crown_peak` 128, `lateral_setpoint` 512, `max_height_mm` 12000. At year 10 it is 10.0 m × 9.3 m (was 6.5 m × 9 m).
+- Rain drops fade out within `RAIN_FADE_M` (4 m) of the camera, in 4 alpha steps.
+- `tree_graph_render`:
+  - Season shots are named `<ticked>-to-<shown>`.
+  - It clears 12 cells of air (`SCENE`) over a loam floor around the bed, in x-slabs within `MAX_EDIT_CELLS`.
+  - The evergreen shot looks down from above.
+  - A new `forest` shot stands at eye height before a 3 × 3 stand of the lab species. The stand is planted on the cleared floor past the bed's +x edge (4 cells apart) and fed as the bed is.
+- `docs/screens/README.md` captions the old `trees_render-*` block-tree shots.
+- TREES.md records the follow-ups under T10.
+Tests added: `mesher::tests::graph_tree_roots_are_left_to_their_tree_mesh`, `weather::tests::rain_fades_out_near_the_camera`; `e2e:tree_graph_render` gained the forest shot: at least 3 of the stand grow past 8 metamers. It passes locally in 1,857 s.
+Decisions:
+- The owner's picks on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): floor, stump, retune, thicken, label, all shots, diagnose the understory.
+- The season labels name the season the host ticked and the season the client shows. The test was relabeled; the client's weather timing was not changed.
+- The forest shot was first written against worldgen's own trees. In the test world those are not fed and were still seedlings at the shot: 1 tree past 8 metamers. It now plants and feeds its own stand, and the scenario takes about 31 min instead of 16, against the linux-e2e 150-minute timeout.
+- Seen in the shots, not fixed: rain pools on the flat cleared floor, and the root cells show as holes in that water. The forest stand is tight for the grown crowns. Both are on the update artifact.
+- The first re-shoot failed with `Rejected(TooManyCells)`: the cleared box held 57,750 cells against the 32,768 cap. It is now split into x-slabs.
+Next: T11 below, then the understory.
+Blockers: none.
+
+## 2026-10-31 — Trees as geometry T11: capped trees age — passed
+Done:
+- `TreeGraph::wood_radii(tip_um, ring_um)`: the pipe radius plus `ring_um` for each cycle a metamer is older than the graph's newest. The host's light pass, chopping, collision and the client mesh all use it. The save format is unchanged.
+- `trees::renew`: a tree whose flush would pass `max_metamers` first sheds up to `renew` metamers of whole twigs, darkest first, and those rot as `metamer_litter`. It runs in the extension sweep before `grow`.
+- New Graph fields, shipped values: `ring_um` oak 600, birch 500, pine 500; `renew` 16 for all three. 0 keeps the old behavior.
+- Tree lab: the capped birch's trunk goes 70 → 78 mm over years 6–10 (it was fixed at 59 mm). It renews about 60 metamers a year.
+- Headless, seed 1, 128 × 64 × 128, 40 seasons: oaks 62 → 58; tallest oak 10.5 m, birch 10.3 m, pine 9.1 m. Invariants held.
+Tests added: `tree::tests::wood_gains_a_ring_for_each_cycle_older_than_the_newest_metamer`, `trees::tests::{renewal_sheds_the_darkest_twigs_first_and_never_the_trunk, a_capped_tree_renews_and_keeps_thickening}`
+Decisions:
+- Rings are counted from the graph's newest metamer, not from the season clock, so the radius depends only on the graph (rule 2).
+- Renewal sheds whole twigs only (lateral axes with no lateral of their own), never the trunk or a branch's base. Ties go to the oldest base, then the lowest index.
+Next: understory diagnosis.
+Blockers: none.
+
+## 2026-10-31 — Understory: diagnosis — blocked (owner choice)
+Done: read the T11 headless report (seed 1, 40 seasons), with no code changes.
+- Counts at seasons 0 / 8 / 20 / 39:
+  - clover 735 / 0 / 0 / 0;
+  - grass 1,778 / 1,790 / 52 / 0;
+  - clematis 62 / 35 / 3 / 0;
+  - grape 52 / 14 / 9 / 3;
+  - moss 3,135 / 5,147 / 5,988 / 5,770;
+  - ivy about 62 throughout.
+- Clover, the only nitrogen fixer (`fix` n 2), has `demand` p 2. Its "p" limit counts 613–724 in seasons 1–2, and it is gone after season 4.
+- Uptake takes about 40–54k n a season, and mineralization (`react_delta`) returns about 1–7k. Soil n falls from 1.68 M to 1.02 M by season 20.
+- Grass (n ≥ 2) and clematis (n ≥ 3) are then held by their n floors: the "n >= 2" limit counts 240–680 from season 4 to 12. Grass's 6-season lifespan makes whole cohorts die at once on depleted cells.
+- Moss has no n floor, needs light 16, and anchors on stone or soil, so it takes the open cells. Tree shade adds a "light" limit of about 60 by season 20.
+- Grape is held by `demand` k 2: the "k" limit count tracks the grape count.
+Tests added: none.
+Decisions: none. Options are on the update artifact: trial runs, keep clover alive (p demand 1), faster rot, moss takes no n, grape k demand 1.
+Next: apply the owner's pick.
+Blockers: waiting on the owner's pick.

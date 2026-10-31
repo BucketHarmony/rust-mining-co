@@ -18,8 +18,9 @@
 //! as the last ticked season left them (its snow, its leaf drop) under the
 //! client's weather and leaf colors for the next. Each season shot is
 //! named `<ticked>-to-<shown>` for that. The `forest` shot stands at a
-//! player's eye height before the densest stand of the trees worldgen
-//! seeded around the bed, grown over the same seasons.
+//! player's eye height before a stand of the lab species planted beside
+//! the bed and fed as it is. Worldgen's own seeds don't serve: unfed, they
+//! are still seedlings when the shots are taken.
 
 use std::sync::Arc;
 
@@ -31,11 +32,26 @@ use rmc_eco::EcoTables;
 use rmc_eco::tables::{EcoSources, FormDef};
 use rmc_eco::tree_lab;
 use rmc_testkit::{TestApp, TestConfig, e2e};
-use rmc_world::coords::{CELL_SIZE_M, CellPos, LocalPos};
-use rmc_world::edit::EditOp;
+use rmc_world::coords::{CELL_SIZE_M, CellPos};
+use rmc_world::edit::{EditOp, MAX_EDIT_CELLS};
 use rmc_world::layers::LayerId;
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::shape::Shape;
+
+/// One edit per x-slab of the box `min..=max`, each within the host's
+/// [`MAX_EDIT_CELLS`].
+fn slabs(op: EditOp, min: CellPos, max: CellPos) -> Vec<(EditOp, Shape)> {
+    let layer = i64::from(max.0.y - min.0.y + 1) * i64::from(max.0.z - min.0.z + 1);
+    let width = (i64::try_from(MAX_EDIT_CELLS).expect("a small cap") / layer).max(1) as i32;
+    (min.0.x..=max.0.x)
+        .step_by(width as usize)
+        .map(|x| {
+            let lo = CellPos::new(x, min.0.y, min.0.z);
+            let hi = CellPos::new((x + width - 1).min(max.0.x), max.0.y, max.0.z);
+            (op, Shape::Box { min: lo, max: hi })
+        })
+        .collect()
+}
 
 const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
 
@@ -48,9 +64,12 @@ const FED: i32 = 200;
 /// Cleared ground around the bed, in cells, so close shots see a floor
 /// and not the cut walls of the terrain.
 const SCENE: i32 = 12;
-/// A forest shot: trees within this many cells of a root count as its
-/// stand, and the eye stands this far from it.
-const STAND: i32 = 12;
+/// The forest stand: `STAND` × `STAND` trees, `STAND_SPACING` cells
+/// apart, starting `STAND_GAP` cells past the bed's +x edge. The eye
+/// stands `FOREST_BACK` cells from its middle.
+const STAND: i32 = 3;
+const STAND_SPACING: i32 = 4;
+const STAND_GAP: i32 = 3;
 const FOREST_BACK: i32 = 10;
 /// Open air kept above the bed.
 const HEADROOM: i32 = 30;
@@ -178,49 +197,9 @@ fn meshes(t: &mut TestApp, roots: &[CellPos]) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// The roots of grown graph trees in the host world, but for `skip`.
-fn wild_trees(t: &TestApp, skip: &[CellPos]) -> Vec<CellPos> {
-    let world = t.host_world();
-    let mut out = Vec::new();
-    for pos in world.bounds().chunks() {
-        let Some(chunk) = world.chunk(pos) else {
-            continue;
-        };
-        for (&local, graph) in &chunk.trees {
-            let root = CellPos::from_chunk_local(pos, LocalPos::from_index(local));
-            if graph.len() > 8 && !skip.contains(&root) {
-                out.push(root);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// A player's view of the densest wild stand: from [`FOREST_BACK`] cells
-/// off its middle, on the side whose ground is nearest the stand's, at
-/// eye height.
-fn forest(t: &mut TestApp, bed: &[CellPos]) {
-    let wild = wild_trees(t, bed);
-    assert!(
-        wild.len() >= 3,
-        "worldgen's seeds grew {} trees",
-        wild.len()
-    );
-    let near = |a: CellPos, b: CellPos| {
-        let d = a.0 - b.0;
-        d.x * d.x + d.z * d.z <= STAND * STAND
-    };
-    let heart = *wild
-        .iter()
-        .max_by_key(|&&a| {
-            (
-                wild.iter().filter(|&&b| near(a, b)).count(),
-                std::cmp::Reverse(a),
-            )
-        })
-        .expect("a wild tree");
-    let stand: Vec<CellPos> = wild.iter().copied().filter(|&b| near(heart, b)).collect();
+/// A player's view of the stand: from [`FOREST_BACK`] cells off its
+/// middle, on the side whose ground is nearest the stand's, at eye height.
+fn forest(t: &mut TestApp, stand: &[CellPos]) {
     let n = stand.len() as i32;
     let mid = stand.iter().fold(IVec3::ZERO, |s, c| s + c.0) / n;
     let bounds = t.host_world().bounds();
@@ -246,7 +225,7 @@ fn forest(t: &mut TestApp, bed: &[CellPos]) {
         mid.y as f32 * CELL_SIZE_M + 2.0,
         (gz as f32 + 0.5) * CELL_SIZE_M,
     );
-    eprintln!("forest: {n} trees around {heart:?}, eye {eye}");
+    eprintln!("forest: {n} trees around {mid}, eye {eye}");
     shoot(t, eye, at, "forest");
 }
 
@@ -296,21 +275,26 @@ fn run(t: &mut TestApp) {
             clamp(hi.0.z + SCENE, min.z, max.z),
         ),
     );
-    let mut bed = vec![
-        (
-            EditOp::Set(MaterialId::AIR),
-            Shape::Box {
-                min: CellPos::new(s_lo.0, ground + 1, s_lo.1),
-                max: CellPos::new(s_hi.0, top, s_hi.1),
-            },
+    // The forest stand, on the cleared floor past the bed's +x edge.
+    let (st_lo, st_hi) = (
+        CellPos::new(hi.0.x + STAND_GAP, lo.0.y, mz - STAND_SPACING),
+        CellPos::new(
+            hi.0.x + STAND_GAP + STAND_SPACING * (STAND - 1),
+            ground,
+            mz + STAND_SPACING,
         ),
-        (
-            EditOp::Set(loam),
-            Shape::Box {
-                min: CellPos::new(s_lo.0, lo.0.y, s_lo.1),
-                max: CellPos::new(s_hi.0, ground, s_hi.1),
-            },
-        ),
+    );
+    let mut bed = slabs(
+        EditOp::Set(MaterialId::AIR),
+        CellPos::new(s_lo.0, ground + 1, s_lo.1),
+        CellPos::new(s_hi.0, top, s_hi.1),
+    );
+    bed.extend(slabs(
+        EditOp::Set(loam),
+        CellPos::new(s_lo.0, lo.0.y, s_lo.1),
+        CellPos::new(s_hi.0, ground, s_hi.1),
+    ));
+    bed.extend([
         (
             EditOp::Set(MaterialId::AIR),
             Shape::Box {
@@ -326,16 +310,28 @@ fn run(t: &mut TestApp) {
             },
             Shape::Box { min: lo, max: hi },
         ),
-    ];
+        (
+            EditOp::SetLayer {
+                layer: LayerId::Moisture,
+                value: 48,
+            },
+            Shape::Box {
+                min: st_lo,
+                max: st_hi,
+            },
+        ),
+    ]);
     for key in ["n", "p", "k"] {
         let x = eco.substance_index(key).expect("a plant nutrient");
-        bed.push((
-            EditOp::SetLayer {
-                layer: LayerId::Substance(x),
-                value: FED,
-            },
-            Shape::Box { min: lo, max: hi },
-        ));
+        for (min, max) in [(lo, hi), (st_lo, st_hi)] {
+            bed.push((
+                EditOp::SetLayer {
+                    layer: LayerId::Substance(x),
+                    value: FED,
+                },
+                Shape::Box { min, max },
+            ));
+        }
     }
     t.apply_edits(&bed);
 
@@ -343,13 +339,26 @@ fn run(t: &mut TestApp) {
     let roots: Vec<CellPos> = (0..trees.len())
         .map(|i| CellPos::new(x0 + SPACING * i as i32, y, mz))
         .collect();
+    let stand: Vec<CellPos> = (0..STAND * STAND)
+        .map(|i| {
+            CellPos::new(
+                st_lo.0.x + STAND_SPACING * (i % STAND),
+                y,
+                st_lo.0.z + STAND_SPACING * (i / STAND),
+            )
+        })
+        .collect();
     let feed = |t: &mut TestApp| {
-        for &root in &roots {
+        for &root in roots.iter().chain(&stand) {
             set_layer(t, root, LayerId::Growth, i32::from(u8::MAX));
             set_layer(t, root, LayerId::Biomass, i32::from(u8::MAX));
         }
     };
-    for (&root, tree) in roots.iter().zip(&trees) {
+    let seeds = roots
+        .iter()
+        .zip(trees.iter().cycle())
+        .chain(stand.iter().zip(trees.iter().cycle()));
+    for (&root, tree) in seeds {
         t.apply_edits(&[(
             EditOp::Set(tree.0),
             Shape::Box {
@@ -397,7 +406,13 @@ fn run(t: &mut TestApp) {
             "evergreen",
         );
     }
-    forest(t, &roots);
+    let grown: Vec<CellPos> = stand
+        .iter()
+        .copied()
+        .filter(|&r| t.host_world().tree(r).is_some_and(|g| g.len() > 8))
+        .collect();
+    assert!(grown.len() >= 3, "{} of the stand grew", grown.len());
+    forest(t, &grown);
 
     // On through the bare season: the deciduous trees drop their leaves,
     // the evergreen keeps them. `advance_season` ticks a season and the
