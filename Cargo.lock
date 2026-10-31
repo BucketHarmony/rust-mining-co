@@ -5905,6 +5905,7 @@ dependencies = [
  "crossbeam-channel",
  "image",
  "proptest",
+ "rmc_eco",
  "rmc_protocol",
  "rmc_world",
  "rmc_worldgen",

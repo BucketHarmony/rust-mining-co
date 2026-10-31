@@ -357,6 +357,14 @@ pub enum FormDef {
         /// T6); 0 bears at once.
         #[serde(default)]
         mature: u16,
+        /// A bud whose metamer ends this high above the root's top face,
+        /// or higher, grows no shoot (docs/TREES.md T8); 0 is no limit.
+        #[serde(default)]
+        max_height_mm: u16,
+        /// Likewise for a metamer ending this far from the root's axis,
+        /// across; 0 is no limit.
+        #[serde(default)]
+        max_reach_mm: u16,
     },
 }
 

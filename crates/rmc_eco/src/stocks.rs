@@ -7,7 +7,9 @@
 //! plant the factor that holds it back: the first of its needs that fails
 //! (`moisture`, `light`, `temp`, `n >= 4`, `cu <= 24`, ...), else its
 //! limiting demanded substance (V2 [`sufficiency`]) when short, else
-//! `fed`. Every map is keyed and sorted, so the report is deterministic.
+//! `fed`. Graph trees (docs/TREES.md T8) are summed per species: graphs,
+//! metamers, the largest graph and the tallest. Every map is keyed and
+//! sorted, so the report is deterministic.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,6 +40,22 @@ pub struct VegetationStocks {
     pub soil: BTreeMap<String, i64>,
     /// Plants per limiting factor (see the module docs).
     pub limits: BTreeMap<String, u32>,
+    /// Graph trees per species key.
+    #[serde(default)]
+    pub trees: BTreeMap<String, TreeStocks>,
+}
+
+/// One species' graph trees (docs/TREES.md T8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeStocks {
+    /// Tree graphs.
+    pub graphs: u32,
+    /// Metamers in all of them.
+    pub metamers: u64,
+    /// Metamers in the largest.
+    pub largest: u32,
+    /// The highest metamer end above its root's top face, in millimeters.
+    pub tallest_mm: i32,
 }
 
 impl VegetationStocks {
@@ -75,6 +93,22 @@ impl VegetationStocks {
                 let needs = looks.get(usize::from(p.species)).map(|l| &l.needs[..]);
                 let limit = limit(world, t, def, needs.unwrap_or(&[]), root);
                 *s.limits.entry(limit).or_default() += 1;
+            }
+            for (i, graph) in &chunk.trees {
+                let Some(def) = chunk
+                    .plants
+                    .get(i)
+                    .and_then(|p| t.plants().get(usize::from(p.species)))
+                else {
+                    continue;
+                };
+                let s = s.trees.entry(def.key.clone()).or_default();
+                let n = u32::try_from(graph.len()).unwrap_or(u32::MAX);
+                s.graphs += 1;
+                s.metamers += u64::from(n);
+                s.largest = s.largest.max(n);
+                let top = graph.ends().iter().map(|e| e[1]).max().unwrap_or(0);
+                s.tallest_mm = s.tallest_mm.max(top);
             }
             if let Some(LayerData::U8(v)) = chunk.layers.data(LayerId::Part) {
                 for (i, &value) in v.iter().enumerate() {
@@ -173,6 +207,7 @@ mod tests {
     use rmc_world::coords::{CellAabb, ChunkPos};
     use rmc_world::layers::{PartKind, PlantState};
     use rmc_world::materials::MaterialId;
+    use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
 
     use crate::ledger::SeasonLedger;
 
@@ -226,6 +261,45 @@ mod tests {
             w.eco_put_layer(anchor, LayerId::Substance(s), n);
         }
         cell
+    }
+
+    #[test]
+    fn stocks_sum_graph_trees_per_species() {
+        let t = EcoTables::load(ASSETS).unwrap();
+        let mut w = world(&t);
+        assert!(VegetationStocks::measure(&w, &t).trees.is_empty());
+        // Two oaks: a straight trunk of `n` internodes of `len` each.
+        for (x, n, len) in [(4, 3, 250u16), (8, 5, 100)] {
+            let root = plant(&mut w, &t, "oak", (x, x), 100, &[]);
+            let mut g = TreeGraph::default();
+            for k in 0..n {
+                g.push(Metamer {
+                    parent: if k == 0 { NO_PARENT } else { k - 1 },
+                    dir: [0, Q14 as i16, 0],
+                    length_mm: len,
+                    born: 0,
+                    bud: BudState::Active,
+                    leaf: 0,
+                    shade: 0,
+                    lateral: false,
+                })
+                .unwrap();
+            }
+            w.eco_put_tree(root, Some(g));
+        }
+        let s = VegetationStocks::measure(&w, &t);
+        assert_eq!(
+            s.trees,
+            BTreeMap::from([(
+                "oak".to_string(),
+                TreeStocks {
+                    graphs: 2,
+                    metamers: 8,
+                    largest: 5,
+                    tallest_mm: 750,
+                }
+            )])
+        );
     }
 
     #[test]

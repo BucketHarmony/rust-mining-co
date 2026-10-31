@@ -251,6 +251,30 @@ Each step is one session under CLAUDE.md, with a test named first.
 - **T8. Balance and performance.**
   - The ten-year headless run with trees, Extend-pass and mesher benches, and the metamer caps tuned.
   - Numbers go in this file.
+  - **Status (2026-10-31): done.** Notes:
+    - The T4 forms grew without limit. The leader gets `max_shoot` in every flush once λ is above about 0.51, and the crown collapses to a bush below that. Oak reached 10.5 m in three lab years, pine 21 m, and reach stalled near 2 m. λ has no setting in between: 128 stalls at 5 m and 130 runs to 14 m.
+    - Two Graph fields bound the crown: `max_height_mm` and `max_reach_mm` (0 = no limit). A bud ending at or past either collects no light (Q = 0), so Borchert–Honda routes its vigor to the rest of the crown. A grown tree then fills and spreads inside its envelope, and its trunk keeps thickening by the pipe model, much as real trees do once they reach their height.
+    - Shipped numbers:
+      - Oak: `max_shoot` 2, `tip_um` 2500, envelope 7 m by 4.5 m.
+      - Birch: `tip_um` 1800, envelope 8 m by 2.5 m.
+      - Pine: `max_shoot` 1, envelope 6.5 m by 2.5 m.
+    - Lab, seed 1, 4 flushes (height, reach, trunk radius, height over trunk diameter):
+
+      | Species | Year 3 | Year 10 |
+      |---|---|---|
+      | Oak | 7.2 m, 3.1 m, 47 mm, 77 | 7.2 m, 4.7 m, 100 mm, 36 |
+      | Birch | 8.3 m, 2.8 m, 40 mm, 104 | 8.3 m, 2.8 m, 58 mm, 72 (at its 2 500 cap) |
+      | Pine | 6.8 m, 2.8 m, 49 mm, 70 | 6.8 m, 2.8 m, 85 mm, 40 (at its 3 000 cap) |
+
+    - The caps stay (4 000 / 2 500 / 3 000). They bound a graph at 64 kB (4 000 metamers of 16 bytes) and the per-tree costs below.
+    - Ten-year headless world (seed 1, 128 × 64 × 128, `--seasons 40`):
+      - At the end: 86 birch graphs (203 704 metamers, the largest at the cap, tallest 8.3 m) and 62 pine graphs (165 667, tallest 6.8 m). Invariants held every season.
+      - The oaks die out over the ten years (62 → 0). The nitrogen and stress limits kill them. The cell-tree run before T7 lost them on the same curve (54 → 1), so this is an ecology balance item, not a graph one. It is left to the owner.
+    - Performance (docs/perf-p2.md):
+      - One flush of a ten-year oak takes 194 µs and its mesh 1.32 ms.
+      - A season of the ten-year world takes 1.78 s in release, of which Extend is 218 ms and Light 201 ms.
+      - Trees stay serial in the sweep. `tree_boxes` is not cached: a player's sweep touches a few trees at O(metamers) each.
+    - The headless report (`VegetationStocks.trees`) gains per-species graphs, metamers, largest and tallest.
 
 ## 8. Defaults chosen (the owner can overrule)
 

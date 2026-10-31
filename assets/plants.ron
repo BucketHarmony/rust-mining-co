@@ -80,7 +80,10 @@
     // `shed_light` for `shed_after` flushes (0: never) is shed as litter.
     // Flowers and fruit hang on tips as bud states once the tree has
     // `mature` metamers (0: at once), paid before growth; they fall from
-    // the tip's cell by the same `flower` and `fruit` rules. Part cells left
+    // the tip's cell by the same `flower` and `fruit` rules. A bud ending
+    // `max_height_mm` or more above the root, or `max_reach_mm` or more from
+    // its axis (0: no limit), grows no shoot, so a grown tree fills its
+    // crown and thickens instead of rising. Part cells left
     // on a graph tree's root by an older save rot as litter.
     // Form Tree (docs/VEGETATION.md V4), the older cell tree, still allowed:
     // each part costing `cost` is a cell, the trunk straight up to a seeded
@@ -98,10 +101,11 @@
      season_colors: [("autumn", (176, 96, 40))],
      parts: Some((cost: 8, leaf_feed: 32, leaf_light: 32,
              wood: "oak_wood", leaf: "oak_leaves",
-             form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512,
+             form: Graph(internode_mm: 250, tip_um: 2500, branch_angle: 512,
                  divergence: 1564, lambda: 133, gravitropism: 64, phototropism: 96,
-                 bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4,
-                 shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200),
+                 bud_light: 32, max_shoot: 2, max_metamers: 4000, leaf: 4,
+                 shed_light: 48, shed_after: 6, leaf_age: 8, mature: 200,
+                 max_height_mm: 7000, max_reach_mm: 4500),
              shed: Some("winter"),
              fruit: Some((grow: "autumn", fall: "winter", count: 6, take: 48))))),
     // Birch: a pioneer of poor soil, quick, narrow and deciduous.
@@ -113,10 +117,11 @@
      season_colors: [("autumn", (220, 180, 60))],
      parts: Some((cost: 6, leaf_feed: 32, leaf_light: 24,
              wood: "birch_wood", leaf: "birch_leaves",
-             form: Graph(internode_mm: 300, tip_um: 1500, branch_angle: 398,
+             form: Graph(internode_mm: 300, tip_um: 1800, branch_angle: 398,
                  divergence: 1564, lambda: 148, gravitropism: 32, phototropism: 128,
                  bud_light: 24, max_shoot: 3, max_metamers: 2500, leaf: 3,
-                 shed_light: 40, shed_after: 4, leaf_age: 8, mature: 150),
+                 shed_light: 40, shed_after: 4, leaf_age: 8, mature: 150,
+                 max_height_mm: 8000, max_reach_mm: 2500),
              shed: Some("winter"),
              fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 64))))),
     // Pine: evergreen, slow, tolerant of acid soil, with a tall crown.
@@ -129,8 +134,9 @@
              wood: "pine_wood", leaf: "pine_needles",
              form: Graph(internode_mm: 350, tip_um: 2500, branch_angle: 910,
                  divergence: 819, lambda: 166, gravitropism: 96, phototropism: 48,
-                 bud_light: 24, max_shoot: 2, max_metamers: 3000, leaf: 2,
-                 shed_light: 32, shed_after: 8, leaf_age: 12, mature: 250),
+                 bud_light: 24, max_shoot: 1, max_metamers: 3000, leaf: 2,
+                 shed_light: 32, shed_after: 8, leaf_age: 12, mature: 250,
+                 max_height_mm: 6500, max_reach_mm: 2500),
              fruit: Some((grow: "summer", fall: "autumn", count: 4, take: 40))))),
     // Vines (docs/VEGETATION.md V6). The seed ripens into vine_stem, the root.
     // Form Vine: vine cells (the `leaf` material) grow into open cells that

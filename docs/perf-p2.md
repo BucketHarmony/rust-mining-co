@@ -59,3 +59,17 @@ Measured 2026-10-22 (F173) with a throwaway release probe, not a bench.
 | Snapshots + remesh after a season | < 1.5 s to no dirty chunks | Not measured (host and client side). |
 | Layer memory after 20 seasons | < 48 MB | Met: 5.8 MB of layers (6 127 616 bytes; `World::memory_bytes` 7 170 752) after 20 shipped seasons on the default world. |
 | Dev-profile budget, one quiet season | < 60000 ms | Met: 337 ms for `tick::tests::quiet_world_tick_under_dev_budget` (a 4 × 2 × 4-chunk layered world built inside `rmc_eco`, since unit tests cannot use worldgen). It took 5015 ms before F173. |
+
+## Trees as geometry (docs/TREES.md T8)
+
+Measured 2026-10-31, release (`bench` profile), same machine.
+
+| Bench | What one iteration does | Time | Target | Status |
+|---|---|---|---|---|
+| `tree_flush` | `trees::grow`: one flush of the shipped oak after ten lab years (3 559 metamers) in open light, paying for a full root (`u8::MAX / cost` metamers) | 194 µs [192, 196] | none | recorded |
+| `tree_mesh` | `treemesh::tree_mesh` of that oak in summer leaf | 1.32 ms [1.31, 1.33] | none | recorded |
+
+The ten-year headless run, measured with a throwaway release probe (`season_tick_observed`, timed per pass):
+- The world: `rmc_app --headless --seasons 40` on seed 1, a 128 × 64 × 128 world. After it, 86 birch graphs (203 704 metamers), 62 pine graphs (165 667) and no oak (see TREES.md T8).
+- One more season (41) took 1.78 s in all. Flow took 622 ms, Extend 218 ms (tree growth, tending, bearing) and Light 201 ms (tree shading included); every other pass took under 200 ms.
+- In the dev profile, seasons went from about 1.4 s with cell trees to 4–6 s with the graphs.

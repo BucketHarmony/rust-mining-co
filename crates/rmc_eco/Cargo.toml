@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "chem_transport_world"
 harness = false
+
+[[bench]]
+name = "tree_flush"
+harness = false

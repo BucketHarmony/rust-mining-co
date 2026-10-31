@@ -35,7 +35,7 @@ pub use plants::{GrowthPass, PlantStarts, SpreadPass, age_plants, spread_roll};
 pub use runner::{
     ChunkView, Exec, JacobiOut, JacobiPass, JacobiReport, SweepCtx, SweepPass, SweepReport,
 };
-pub use stocks::VegetationStocks;
+pub use stocks::{TreeStocks, VegetationStocks};
 pub use tables::{EcoTableError, EcoTables, SeasonOverride, ToxKind};
 pub use temperature::{Profile, TemperaturePass};
 pub use tick::{Observer, PassId, SeasonRun, TickReport, season_tick, season_tick_observed};

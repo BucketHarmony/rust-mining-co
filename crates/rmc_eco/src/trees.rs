@@ -9,8 +9,10 @@
 //!
 //! **One flush**, from the previous state:
 //! 1. **Light.** An Active bud sees the light of the cell its metamer ends
-//!    in, or nothing below `bud_light`. `Q` sums the buds' light base-ward
-//!    over every subtree.
+//!    in, or nothing below `bud_light`, at `max_height_mm` (when not 0)
+//!    and above, or at `max_reach_mm` (when not 0) or more from the root's
+//!    axis. `Q` sums the buds' light base-ward over every subtree, so a
+//!    tree that has reached its envelope spends its vigor inside it.
 //! 2. **Vigor.** The flush can pay for `budget` metamers; `budget · 256`
 //!    vigor (Q8) enters the first metamer and splits at every node by
 //!    Borchert–Honda: the main side (the continuation, or a tip's terminal
@@ -83,6 +85,8 @@ pub struct Growth {
     pub shed_after: u8,
     pub leaf_age: u16,
     pub mature: usize,
+    pub max_height_mm: i32,
+    pub max_reach_mm: i64,
 }
 
 impl Growth {
@@ -104,6 +108,8 @@ impl Growth {
             shed_after,
             leaf_age,
             mature,
+            max_height_mm,
+            max_reach_mm,
         } = form
         else {
             return None;
@@ -124,6 +130,8 @@ impl Growth {
             shed_after,
             leaf_age,
             mature: usize::from(mature),
+            max_height_mm: i32::from(max_height_mm),
+            max_reach_mm: i64::from(max_reach_mm),
         })
     }
 }
@@ -442,7 +450,10 @@ where
     let q: Vec<i64> = (0..n)
         .map(|i| {
             let open = cont[i].is_none() || lat[i].is_none();
-            if ms[i].bud != BudState::Active || !open {
+            let [x, y, z] = ends[i].map(i64::from);
+            let topped = g.max_height_mm > 0 && y >= i64::from(g.max_height_mm);
+            let wide = g.max_reach_mm > 0 && x * x + z * z >= g.max_reach_mm * g.max_reach_mm;
+            if ms[i].bud != BudState::Active || !open || topped || wide {
                 return 0;
             }
             let l = site.light_at(ends[i]);
@@ -872,6 +883,66 @@ mod tests {
         assert!(
             i64::from(leader.0) * i64::from(bush.1) > i64::from(bush.0) * i64::from(leader.1),
             "{leader:?} vs {bush:?}"
+        );
+    }
+
+    #[test]
+    fn a_tree_stops_rising_at_its_max_height_and_spreads() {
+        let root = CellPos::new(16, 31, 16);
+        let grown = |height: u16| {
+            let t = tables_with(&format!(
+                "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+                 divergence: 1564, lambda: 160, gravitropism: 64, phototropism: 96, \
+                 bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4, \
+                 max_height_mm: {height}),"
+            ))
+            .unwrap();
+            let mut w = world(&t);
+            oak(&mut w, &t, root);
+            flushes(&mut w, &t, &[root], 16, SEED);
+            graph(&w, root)
+        };
+        let (free, capped) = (grown(0), grown(2000));
+        let ((free_top, free_wide), (top, wide)) = (extent(&free), extent(&capped));
+        assert!(free_top > 4000, "0 is no limit: {free_top}");
+        // A bud at the height grows no more; one below it may still finish
+        // its shoot.
+        assert!(top < 2000 + 3 * 250, "{top}");
+        // Its vigor goes to the rest of the crown.
+        assert!(wide > free_wide, "{wide} vs {free_wide}");
+        assert!(
+            capped.len() * 10 >= free.len() * 9,
+            "{} vs {}",
+            capped.len(),
+            free.len()
+        );
+    }
+
+    #[test]
+    fn a_crown_stays_inside_its_reach() {
+        let root = CellPos::new(16, 31, 16);
+        let grown = |reach: u16| {
+            let t = tables_with(&format!(
+                "form: Graph(internode_mm: 250, tip_um: 2000, branch_angle: 512, \
+                 divergence: 1564, lambda: 120, gravitropism: 64, phototropism: 96, \
+                 bud_light: 32, max_shoot: 3, max_metamers: 4000, leaf: 4, \
+                 max_reach_mm: {reach}),"
+            ))
+            .unwrap();
+            let mut w = world(&t);
+            oak(&mut w, &t, root);
+            flushes(&mut w, &t, &[root], 16, SEED);
+            graph(&w, root)
+        };
+        let (free, capped) = (grown(0), grown(1000));
+        let ((_, free_wide), (_, wide)) = (extent(&free), extent(&capped));
+        assert!(free_wide > 1800, "0 is no limit: {free_wide}");
+        assert!(wide < 1000 + 3 * 250, "{wide}");
+        assert!(
+            capped.len() * 10 >= free.len() * 9,
+            "{} vs {}",
+            capped.len(),
+            free.len()
         );
     }
 

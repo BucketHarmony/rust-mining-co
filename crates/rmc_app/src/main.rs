@@ -45,6 +45,12 @@ fn main() -> anyhow::Result<()> {
                 v.parts
             );
             println!("  plants {:?}", v.plants);
+            for (key, t) in &v.trees {
+                println!(
+                    "  {key} trees: {} graphs, {} metamers, largest {}, tallest {} mm",
+                    t.graphs, t.metamers, t.largest, t.tallest_mm
+                );
+            }
             println!("  soil {:?}, limits {:?}", v.soil, v.limits);
         })?;
         println!(

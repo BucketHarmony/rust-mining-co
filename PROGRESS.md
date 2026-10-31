@@ -4392,3 +4392,23 @@ Decisions:
 - `trees_render` is not re-shot as graph trees. It stays the cell-tree scenario (passes, screenshots unchanged), and `tree_graph_render` covers the shipped look (rule 21).
 Next: T8, balance and performance (ten-year headless run, Extend and mesher benches, caps, thicker trunks).
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.
+
+## 2026-10-31 — Trees as geometry T8: balance and performance (docs/TREES.md) — passed
+Done:
+- New Graph fields `max_height_mm` and `max_reach_mm` (0 = no limit): a bud ending at or past either collects no light, so the vigor goes to the rest of the crown.
+- Shipped oak, birch and pine retuned in `plants.ron` and `tree_lab.ron`: envelopes, oak `max_shoot` 2 and `tip_um` 2500, birch `tip_um` 1800, pine `max_shoot` 1.
+- `VegetationStocks.trees` (`TreeStocks` per species: graphs, metamers, largest, tallest). The headless run prints it.
+- Benches `rmc_eco` `tree_flush` (194 µs) and `rmc_client` `tree_mesh` (1.32 ms). `rmc_client` gains `rmc_eco` as a dev-dependency, for the lab oak.
+- Ten-year headless run and a per-pass release profile. Numbers are in TREES.md T8 and docs/perf-p2.md.
+- `tree_graph_render` screenshots re-shot.
+Tests added:
+- `trees::tests::{a_tree_stops_rising_at_its_max_height_and_spreads, a_crown_stays_inside_its_reach}`
+- `stocks::tests::stocks_sum_graph_trees_per_species`
+Decisions:
+- An envelope instead of λ tuning. λ is bistable in this model: the leader either saturates at `max_shoot` every flush or the tree turns into a bush. No λ gives a tree that rises and then spreads.
+- The metamer caps stay (4 000 / 2 500 / 3 000).
+- Trees stay serial in the sweep. `tree_boxes` is not cached. Both measured costs are small next to Flow.
+- The oaks dying out over ten years is left alone. It is pre-existing: the cell-tree run lost them on the same curve, so it is an ecology balance item for the owner.
+- The pass-time probe was a throwaway example, not committed.
+Next: the trees-as-geometry plan (T1–T8) is complete. Owner items: paste the docs/TREES.md §6 rule text into CLAUDE.md and SAD-P2; oak survival balance; the playtester judges the new tree shots.
+Blockers: the §6 rule amendments (protected files).

@@ -22,10 +22,16 @@ tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+# The `tree_mesh` bench grows its oak in the tree lab.
+rmc_eco.workspace = true
 rmc_worldgen.workspace = true
 proptest.workspace = true
 wesl.workspace = true
 
 [[bench]]
 name = "mesh_chunk"
+harness = false
+
+[[bench]]
+name = "tree_mesh"
 harness = false
