@@ -1439,6 +1439,80 @@ fn tables_hash(materials_hash: u64, tables: &impl Serialize) -> u64 {
     xxhash_rust::xxh3::xxh3_64(&buf)
 }
 
+/// Fixtures the crate's tests share.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use std::path::Path;
+
+    use super::EcoSources;
+
+    /// The cell-tree forms (docs/VEGETATION.md V4) the shipped trees grew
+    /// before they grew graphs (docs/TREES.md T7). The cell-tree tests put
+    /// them back.
+    pub const CELL_TREES: [(&str, &str); 3] = [
+        (
+            "oak",
+            "form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true, tuft: true,",
+        ),
+        (
+            "birch",
+            "form: Tree(trunk: (5, 7), crown: (1, 3)), branches: true, tuft: true,",
+        ),
+        (
+            "pine",
+            "form: Tree(trunk: (6, 9), crown: (2, 4)), branches: true, tuft: true,",
+        ),
+    ];
+
+    /// Where the `form: ...(...),` of plant `key`'s row sits in `src`.
+    fn form_span(src: &EcoSources, key: &str) -> std::ops::Range<usize> {
+        let row = src
+            .plants
+            .find(&format!("(key: \"{key}\""))
+            .expect("the row");
+        let start = row + src.plants[row..].find("form: ").expect("a form");
+        let open = start + src.plants[start..].find('(').expect("the form's fields");
+        let mut depth = 0;
+        let close = src.plants[open..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(open + i);
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            })
+            .expect("the form's end");
+        start..close + ",".len() + 1
+    }
+
+    /// Replaces the `form: ...(...),` of plant `key`'s row in `src` with
+    /// `form`.
+    pub fn set_form(src: &mut EcoSources, key: &str, form: &str) {
+        let span = form_span(src, key);
+        src.plants.replace_range(span, form);
+    }
+
+    /// The sources in `dir` with the trees back on [`CELL_TREES`] (rows
+    /// still on a cell form are left as they are).
+    pub fn cell_tree_sources(dir: impl AsRef<Path>) -> EcoSources {
+        let mut src = EcoSources::read(dir).expect("the sources read");
+        for (key, form) in CELL_TREES {
+            let span = form_span(&src, key);
+            if !src.plants[span.clone()].starts_with("form: Tree(") {
+                src.plants.replace_range(span, form);
+            }
+        }
+        src
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1686,8 +1760,10 @@ mod tests {
 
     #[test]
     fn tree_looks_carry_a_tuft_and_stand_bare_in_their_shed_season() {
-        // docs/VEGETATION.md "Leaf tuft".
-        let t = shipped();
+        // docs/VEGETATION.md "Leaf tuft", on the cell trees (the shipped
+        // trees grow graphs since docs/TREES.md T7).
+        let (materials, _) = shipped_parts();
+        let t = EcoTables::from_sources(materials, &fixtures::cell_tree_sources(ASSETS)).unwrap();
         let looks = t.plant_looks();
         let mut tufted = 0;
         for (p, look) in t.plants().iter().zip(&looks) {

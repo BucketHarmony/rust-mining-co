@@ -618,11 +618,11 @@ mod tests {
     use crate::invariants::InvariantChecker;
     use crate::light::LightPass;
     use crate::parts::ExtendPass;
+    use crate::tables::fixtures::set_form;
     use crate::tables::{EcoSources, EcoTableError, EcoTables, PartsDef};
 
     const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
     const SEED: u64 = 7;
-    const OAK_FORM: &str = "form: Tree(trunk: (4, 6), crown: (2, 3)), branches: true, tuft: true,";
 
     /// The shipped tables with the oak grown as a graph of `lambda` and
     /// `cap`.
@@ -638,8 +638,7 @@ mod tests {
     fn tables_with(form: &str) -> Result<EcoTables, EcoTableError> {
         let shipped = EcoTables::load(ASSETS).expect("Phase 2 tables load");
         let mut src = EcoSources::read(ASSETS).unwrap();
-        assert!(src.plants.contains(OAK_FORM));
-        src.plants = src.plants.replace(OAK_FORM, form);
+        set_form(&mut src, "oak", form);
         EcoTables::from_sources(Arc::clone(shipped.materials()), &src)
     }
 
@@ -1112,13 +1111,14 @@ mod tests {
              mature: {mature}),"
         );
         let fruit = "fruit: Some((grow: \"autumn\", fall: \"winter\", count: 6, take: 48))";
-        assert!(src.plants.contains(OAK_FORM) && src.plants.contains(fruit));
+        assert!(src.plants.contains(fruit));
+        set_form(&mut src, "oak", &form);
         let flowers = if flower {
             ", flower: Some((material: \"clematis_flower\", seasons: [\"spring\"], count: 3))"
         } else {
             ""
         };
-        src.plants = src.plants.replace(OAK_FORM, &form).replace(
+        src.plants = src.plants.replace(
             fruit,
             &format!(
                 "fruit: Some((grow: \"autumn\", fall: \"winter\", count: 6, take: {take})){flowers}"

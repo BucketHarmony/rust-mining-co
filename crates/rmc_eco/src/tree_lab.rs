@@ -233,7 +233,14 @@ mod tests {
 
     #[test]
     fn the_lab_refuses_a_tree_that_is_not_a_graph() {
-        let t = EcoTables::load(ASSETS).unwrap();
+        // The shipped trees grow graphs (docs/TREES.md T7): put them back
+        // on their cell forms.
+        let shipped = EcoTables::load(ASSETS).unwrap();
+        let t = EcoTables::from_sources(
+            Arc::clone(shipped.materials()),
+            &crate::tables::fixtures::cell_tree_sources(ASSETS),
+        )
+        .unwrap();
         let tree = t
             .plants()
             .iter()

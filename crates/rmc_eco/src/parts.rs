@@ -925,6 +925,8 @@ fn roll(seed: u64, tag: &[u8], v: [i32; 3]) -> u8 {
 mod tests {
     use super::*;
 
+    use crate::tables::fixtures::cell_tree_sources;
+
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -938,7 +940,6 @@ mod tests {
     use crate::invariants::InvariantChecker;
     use crate::plants::GrowthPass;
     use crate::runner::{Exec, activate_holders, run_jacobi};
-    use crate::tables::EcoSources;
     use crate::tick::season_tick_observed;
     use crate::water::WaterPass;
 
@@ -946,14 +947,18 @@ mod tests {
     const FED: [(&str, i32); 3] = [("n", 50), ("p", 50), ("k", 50)];
     const SEED: u64 = 7;
 
+    /// The shipped tables with the trees back on their cell forms
+    /// (docs/TREES.md T7: the shipped trees grow graphs).
     fn tables() -> EcoTables {
-        EcoTables::load(ASSETS).expect("Phase 2 tables load")
+        let shipped = EcoTables::load(ASSETS).expect("Phase 2 tables load");
+        EcoTables::from_sources(Arc::clone(shipped.materials()), &cell_tree_sources(ASSETS))
+            .expect("the cell trees load")
     }
 
     /// The shipped tables with the oak's trunk height fixed at `h`.
     fn tables_with_trunk(h: u8) -> EcoTables {
         let shipped = tables();
-        let mut src = EcoSources::read(ASSETS).unwrap();
+        let mut src = cell_tree_sources(ASSETS);
         let from = "trunk: (4, 6)";
         assert!(src.plants.contains(from));
         src.plants = src.plants.replace(from, &format!("trunk: ({h}, {h})"));
@@ -1363,7 +1368,7 @@ mod tests {
     /// (once: `from` must name one row's text).
     fn tables_with(from: &str, to: &str) -> EcoTables {
         let shipped = tables();
-        let mut src = EcoSources::read(ASSETS).unwrap();
+        let mut src = cell_tree_sources(ASSETS);
         assert_eq!(src.plants.matches(from).count(), 1, "{from}");
         src.plants = src.plants.replace(from, to);
         EcoTables::from_sources(Arc::clone(shipped.materials()), &src).expect("edited rows load")
@@ -1623,7 +1628,7 @@ mod tests {
     fn tree_rows_name_known_seasons_and_bear_fruit() {
         let shipped = tables();
         let try_load = |from: &str, to: &str| {
-            let mut src = EcoSources::read(ASSETS).unwrap();
+            let mut src = cell_tree_sources(ASSETS);
             assert_eq!(src.plants.matches(from).count(), 1, "{from}");
             src.plants = src.plants.replace(from, to);
             EcoTables::from_sources(Arc::clone(shipped.materials()), &src)
@@ -1637,7 +1642,7 @@ mod tests {
             assert!(try_load(from, to).is_err(), "{to}");
         }
         let unknown_shed = {
-            let mut src = EcoSources::read(ASSETS).unwrap();
+            let mut src = cell_tree_sources(ASSETS);
             src.plants = src
                 .plants
                 .replacen("shed: Some(\"winter\")", "shed: Some(\"dusk\")", 1);
@@ -1861,7 +1866,7 @@ mod tests {
     fn vine_rows_reject_empty_rules_and_unknown_flower_seasons() {
         let shipped = tables();
         let try_load = |from: &str, to: &str| {
-            let mut src = EcoSources::read(ASSETS).unwrap();
+            let mut src = cell_tree_sources(ASSETS);
             assert_eq!(src.plants.matches(from).count(), 1, "{from}");
             src.plants = src.plants.replace(from, to);
             EcoTables::from_sources(Arc::clone(shipped.materials()), &src)
