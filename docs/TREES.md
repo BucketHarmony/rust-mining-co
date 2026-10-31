@@ -218,6 +218,14 @@ Each step is one session under CLAUDE.md, with a test named first.
     - the player cannot walk through a trunk but walks through leaves;
     - chopping a limb drops wood by volume and leaves as litter;
     - a felled tree's chunk hash matches host and replica.
+  - **Status (2026-10-31): done.** Notes:
+    - Solid limbs: a metamer whose pipe radius is at least `eco.solid_radius_um` is solid. Its collision shape is the axis-aligned box around the internode (from the parent's end, or the root's top face, to its own end) grown by the radius on every axis (`World::limb_boxes`, `tree_boxes(region)`). That is an AABB stand-in for the capsule: exact for upright trunks, a little generous for slanted limbs. Twigs and leaves are never solid.
+    - The controller stops at limb boxes as it does at cell layers. A box the player already overlaps (a tree grew into it) neither stops nor pushes the player.
+    - `raycast_tree` slab-tests the limb boxes along the ray. The pickaxe chops the nearest solid limb when it is closer than the target cell, and otherwise damages the cell as before. `PickTarget` and the HUD still show the cell.
+    - `EditOp::Chop { metamer, dmg }` acts on `Shape::Cell(root)`. Damage builds up host-side per (root, metamer), and the limb breaks at wood hardness × max(1, r / solid_radius). A thick trunk takes several hits. The cut subtree (`prune`) yields wood items: Σ π r² L / (`eco.wood_per_item_dm3` = 5 dm³). Its leaves fall as ledgered litter on the first anchor below each leaf's end. Chopping metamer 0 fells the whole graph, and the root cell and plant stay as a stump.
+    - Digging the root cell (Damage) fells the graph as a chop would. Any other removal (`Remove`, displacement, a season pass) turns the graph to litter: `metamer_litter` per metamer plus the leaves, ledgered.
+    - `Place` into a cell a solid limb overlaps is refused (`PlaceInTree`).
+    - Tree changes ride `ChunkDelta::Layers { trees }`. The protocol stays at 3 because 3 already carries trees. Chop damage is host-only and resets whenever the graph changes, growth included.
 - **T6. Fruit and seed.**
   - Flower and fruit buds, seed fall and planting, on the graph.
   - Tests ported from V5's fruit tests.

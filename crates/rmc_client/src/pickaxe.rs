@@ -22,6 +22,10 @@
 //!   in fixed-step time.
 //! - A swing needs a target. Holding the button at the sky or at a cell
 //!   beyond reach sends nothing and does not restart the interval.
+//! - A solid tree limb nearer than the target cell is chopped instead
+//!   (docs/TREES.md T5): the swing sends `Chop { metamer, dmg }` on the
+//!   tree's root cell, `dmg` the held tool's damage for the root's tags.
+//!   [`PickTarget`] keeps the cell for the HUD.
 //! - Releasing the button does not reset the interval.
 //! - While the fly camera is on, or the editor is open (the left button
 //!   then applies the brush), the pickaxe does not swing. Nor while a
@@ -45,7 +49,7 @@ use rmc_world::coords::CellPos;
 use rmc_world::edit::{EditCommand, EditOp};
 use rmc_world::shape::Shape;
 use rmc_world::world::World;
-use rmc_world::{Hit, ToolProfile, raycast_solid};
+use rmc_world::{Hit, ToolProfile, TreeHit, raycast_solid, raycast_tree};
 
 use crate::controller::{ControllerSystems, Player};
 use crate::cursor::{CursorGrab, look_allowed, swing_allowed};
@@ -124,6 +128,19 @@ pub fn target(world: &World, player: &Player, reach_m: f32) -> Option<Hit> {
         player.rotation() * Vec3::NEG_Z,
         reach_m,
     )
+}
+
+/// The solid tree limb along `player`'s view ray within `reach_m`, if it
+/// is nearer than `cell` (the [`target`] hit).
+pub fn limb_target(
+    world: &World,
+    player: &Player,
+    reach_m: f32,
+    cell: Option<&Hit>,
+) -> Option<TreeHit> {
+    let reach = cell.map_or(reach_m, |h| h.distance);
+    raycast_tree(world, player.eye(), player.rotation() * Vec3::NEG_Z, reach)
+        .filter(|t| cell.is_none_or(|h| t.distance < h.distance))
 }
 
 /// Targeting and swinging. Needs the [`Pickaxe`] resource to do anything.
@@ -208,25 +225,39 @@ fn swing(
     let Some(player) = players.iter().next() else {
         return;
     };
-    let Some(hit) = target(replica.world(), player, profile.reach_m) else {
-        return;
-    };
     let world = replica.world();
+    let hit = target(world, player, profile.reach_m);
+    let limb = limb_target(world, player, profile.reach_m, hit.as_ref());
+    let cell = match (limb, hit) {
+        (Some(limb), _) => limb.root,
+        (None, Some(hit)) => hit.cell,
+        (None, None) => return,
+    };
     let tags = world
-        .get_cell(hit.cell)
+        .get_cell(cell)
         .and_then(|id| world.materials().get(id))
         .map_or(&[][..], |def| &def.tags[..]);
     let damage = held_tool.map_or(profile.damage, |h| h.speed.damage(profile.damage, tags));
+    let (op, shape) = match limb {
+        Some(limb) => (
+            EditOp::Chop {
+                metamer: limb.metamer,
+                dmg: damage,
+            },
+            Shape::Cell(cell),
+        ),
+        None => (EditOp::Damage(damage), profile.shape.at(cell)),
+    };
     let issuer = replica.player();
     out.write(ToHost(ClientMsg::Edit(EditCommand {
         id: seq.next_id(issuer),
         issuer,
-        op: EditOp::Damage(damage),
-        shape: profile.shape.at(hit.cell),
+        op,
+        shape,
     })));
     state.since_swing = Some(Duration::ZERO);
     state.swings += 1;
-    debug!(cell = ?hit.cell, "pickaxe swing");
+    debug!(?cell, ?op, "pickaxe swing");
 }
 
 /// One fixed step of placing: advances the interval clock, then places
@@ -578,6 +609,68 @@ mod tests {
         let edits = rig.edits();
         assert_eq!(edits.len(), 11, "{edits:?}");
         assert_eq!(gaps(&edits), vec![6; 10]);
+    }
+
+    #[test]
+    fn a_trunk_before_the_wall_is_chopped() {
+        use rmc_world::TreeRules;
+        use rmc_world::layers::PlantState;
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        // A 20 cm trunk rooted in the floor at z = 14.75 m, 1.05 m in
+        // front of the eye; the wall is 2 m away.
+        let mut w = world(Some(27));
+        let oak = w.materials().id("oak_wood").unwrap();
+        let root = CellPos::new(32, 3, 29);
+        let set = EditCommand {
+            id: CommandId::default(),
+            issuer: PlayerId(0),
+            op: EditOp::Set(oak),
+            shape: Shape::Cell(root),
+        };
+        assert_eq!(w.apply(&set).status, EditStatus::Applied);
+        w.set_tree_rules(TreeRules {
+            tip_um: vec![200_000],
+            solid_radius_um: 80_000,
+            metamer_litter: 1,
+            wood_per_item_dm3: 5,
+        });
+        let up = |parent| Metamer {
+            parent,
+            dir: [0, Q14 as i16, 0],
+            length_mm: 500,
+            born: 0,
+            bud: BudState::Active,
+            leaf: 0,
+            shade: 0,
+            lateral: false,
+        };
+        let (pos, local) = root.split();
+        let mut chunk = w.chunk(pos).unwrap().clone();
+        chunk.plants.insert(local.index(), PlantState::default());
+        chunk.trees.insert(
+            local.index(),
+            TreeGraph::try_from(vec![up(NO_PARENT), up(0), up(1), up(2)]).unwrap(),
+        );
+        w.insert_chunk(pos, chunk).unwrap();
+
+        let p = profile();
+        let mut rig = Rig::new(w, feet_at_z(16.0), p);
+        let hit = rig.expected_hit().expect("the wall");
+        assert_eq!(hit.cell.0.z, 27, "the cell target is still the wall");
+        rig.hold(true);
+        rig.frames(1);
+        let edits = rig.edits();
+        assert_eq!(edits.len(), 1);
+        // The eye (3.55 m) is level with metamers 2 and 3; the first wins.
+        assert_eq!(
+            edits[0].1.op,
+            EditOp::Chop {
+                metamer: 2,
+                dmg: p.damage
+            }
+        );
+        assert_eq!(edits[0].1.shape, Shape::Cell(root));
     }
 
     #[test]

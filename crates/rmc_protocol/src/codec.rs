@@ -701,12 +701,14 @@ mod tests {
                         (32_767, LayerId::Growth, 1),
                     ],
                     plants: vec![(5, None), (6, Some(sample_plants()[&1234]))],
+                    trees: Vec::new(),
                 },
                 ChunkDelta::Layers {
                     pos: ChunkPos(IVec3::X),
                     eco_revision: u64::MAX,
                     changes: Vec::new(),
                     plants: Vec::new(),
+                    trees: Vec::new(),
                 },
             ],
             yields: vec![(MaterialId(8), 5)],
@@ -999,6 +1001,21 @@ mod tests {
         ] {
             check_roundtrip(&msg, encode_server, decode_server, false);
         }
+        // Chops and felled trees travel in Layers deltas (docs/TREES.md T5).
+        let delta = ServerMsg::Applied(EditResult {
+            command: command(3),
+            status: EditStatus::Applied,
+            deltas: vec![ChunkDelta::Layers {
+                pos,
+                eco_revision: 7,
+                changes: Vec::new(),
+                plants: Vec::new(),
+                trees: vec![(17, chunk.trees.get(&17).cloned()), (900, None)],
+            }],
+            yields: Vec::new(),
+            ledger: Box::default(),
+        });
+        check_roundtrip(&delta, encode_server, decode_server, false);
         // A tree rooted outside the chunk is refused.
         let graph = chunk.trees.remove(&900).unwrap();
         chunk.trees.insert(CHUNK_VOLUME as u16, graph);

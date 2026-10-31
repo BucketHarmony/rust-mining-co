@@ -79,6 +79,7 @@ impl Seasons {
             "the Phase 2 tables are built on another material table"
         );
         world.set_eco_rules(self.tables.displacement_rules());
+        world.set_tree_rules(self.tables.tree_rules());
         activate_holders(world, &WaterPass::new(&self.tables));
         for gas in GasPass::all(&self.tables) {
             activate_holders(world, &gas);
@@ -127,6 +128,7 @@ impl Host {
             "the Phase 2 tables are built on another material table"
         );
         self.world.set_eco_rules(tables.displacement_rules());
+        self.world.set_tree_rules(tables.tree_rules());
         eco.tables = tables;
         true
     }

@@ -90,8 +90,13 @@ pub(crate) enum Cause {
 
 impl Cause {
     /// The pickaxe harvests a plant it breaks (§7.8).
-    fn harvests(self) -> bool {
+    pub(crate) fn harvests(self) -> bool {
         matches!(self, Cause::Edit(EditOp::Damage(_)))
+    }
+
+    /// The axe cuts a limb (docs/TREES.md T5): its wood yields items.
+    pub(crate) fn chops(self) -> bool {
+        matches!(self, Cause::Edit(EditOp::Chop { .. }))
     }
 
     /// Brush `Set` (and `Paint`, and a placed cell) of a plant material
@@ -140,6 +145,8 @@ pub(crate) struct Effects {
     pub touched: BTreeSet<CellPos>,
     /// Harvest yields.
     pub yields: BTreeMap<MaterialId, u32>,
+    /// Tree graph changes as final graphs (`None`: removed), by root.
+    pub trees: BTreeMap<ChunkPos, BTreeMap<u16, Option<TreeGraph>>>,
 }
 
 /// The six face neighbors in sorted (y, z, x) order: below first.
@@ -381,6 +388,7 @@ impl World {
         };
         chunk.eco_revision += 1;
         self.light_dirty = true;
+        self.chop_damage.retain(|&(root, _), _| root != cell);
         true
     }
 
@@ -567,7 +575,13 @@ impl World {
 
     /// Adds up to `amount` to layer `id` at `cell`, capped by the layer's
     /// maximum; returns what was added. A non-resident cell takes nothing.
-    fn deposit(&mut self, cell: CellPos, id: LayerId, amount: i32, fx: &mut Effects) -> i32 {
+    pub(crate) fn deposit(
+        &mut self,
+        cell: CellPos,
+        id: LayerId,
+        amount: i32,
+        fx: &mut Effects,
+    ) -> i32 {
         if amount <= 0 || !self.bounds.contains(cell) || self.chunk(cell.chunk()).is_none() {
             return 0;
         }
@@ -625,6 +639,11 @@ impl World {
         let ripens = self
             .plant(cell)
             .is_some_and(|p| self.rules.ripens(p.species, from, to));
+
+        // A graph tree rooted here falls with its plant (docs/TREES.md T5).
+        if !ripens {
+            self.fell(cell, cause, ledger, fx);
+        }
 
         // Plant removal: dig harvests, anything else returns `held` to the
         // anchor below.
@@ -994,7 +1013,13 @@ impl World {
             chunk.revision += 1;
             chunk.modified = true;
         }
-        let eco: BTreeSet<ChunkPos> = fx.layers.keys().chain(fx.plants.keys()).copied().collect();
+        let eco: BTreeSet<ChunkPos> = fx
+            .layers
+            .keys()
+            .chain(fx.plants.keys())
+            .chain(fx.trees.keys())
+            .copied()
+            .collect();
         for pos in &eco {
             let chunk = self.chunks.get_mut(pos).expect("changed chunk is resident");
             chunk.eco_revision += 1;

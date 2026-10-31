@@ -680,6 +680,7 @@ pub(crate) fn client_eco(eco: &EcoTables) -> ClientEco {
         plants: eco.plants().iter().map(|p| p.key.clone()).collect(),
         plant_looks: eco.plant_looks(),
         deficiency: eco.deficiency_colors(),
+        trees: eco.tree_rules(),
     }
 }
 

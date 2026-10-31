@@ -14,6 +14,7 @@
 
 use bevy::prelude::*;
 use rmc_protocol::SeasonReport;
+use rmc_world::TreeRules;
 use rmc_world::coords::CellPos;
 use rmc_world::layers::{LayerId, N_GASES, N_SUBSTANCES, SubstanceLayers};
 use rmc_world::ledger::SeasonLedger;
@@ -53,6 +54,9 @@ pub struct ClientEco {
     pub plant_looks: Vec<PlantLook>,
     /// The leaf color of each substance that can limit a plant.
     pub deficiency: Vec<(LayerId, [u8; 3])>,
+    /// What graph trees are solid, for collision and the tool ray
+    /// (docs/TREES.md T5); the replica's world carries them.
+    pub trees: TreeRules,
 }
 
 impl ClientEco {
@@ -386,6 +390,7 @@ mod tests {
             plants: vec!["moss".into(), "fireweed".into()],
             plant_looks: Vec::new(),
             deficiency: Vec::new(),
+            trees: Default::default(),
         }
     }
 

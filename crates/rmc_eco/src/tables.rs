@@ -10,11 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use rmc_world::EcoRules;
 use rmc_world::layers::{LayerId, SubstanceLayers};
 use rmc_world::materials::{MaterialError, MaterialId, MaterialTable, Phase};
 use rmc_world::query::{GraphLook, PhRule, PlantLook, SubstanceTint, ToxProfile};
 use rmc_world::tree::{NO_PARENT, TURN};
+use rmc_world::{EcoRules, TreeRules};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -458,6 +458,10 @@ pub struct EcoParams {
     /// TREES T5, the player. Not encoded when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solid_radius_um: Option<u32>,
+    /// Wood volume per item a chopped or dug limb yields (TREES T5).
+    /// `None`: wood yields none. Not encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wood_per_item_dm3: Option<u32>,
     // §7.9 activity
     pub quiet_skip: u8,
 }
@@ -1298,6 +1302,25 @@ impl EcoTables {
             harvest_shift: self.params.harvest_shift,
             substance_yields,
             soft_regolith: Some(self.params.soft_regolith),
+        }
+    }
+
+    /// What the world needs to collide with, chop and fell graph trees
+    /// (docs/TREES.md T5): each species' twig radius (0 for species not
+    /// grown as graphs) and the `eco` tree params.
+    pub fn tree_rules(&self) -> TreeRules {
+        TreeRules {
+            tip_um: self
+                .plants
+                .iter()
+                .map(|p| match p.parts.as_ref().map(|d| &d.form) {
+                    Some(FormDef::Graph { tip_um, .. }) => *tip_um,
+                    _ => 0,
+                })
+                .collect(),
+            solid_radius_um: self.params.solid_radius_um.unwrap_or(0),
+            metamer_litter: self.params.metamer_litter.unwrap_or(0),
+            wood_per_item_dm3: self.params.wood_per_item_dm3.unwrap_or(0),
         }
     }
 }

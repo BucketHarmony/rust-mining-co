@@ -194,6 +194,7 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
     let mut world = generate_world(assets, seed)?;
     // Placing a plant material starts a plant only under the eco rules.
     world.set_eco_rules(t.displacement_rules());
+    world.set_tree_rules(t.tree_rules());
     let m = &assets.materials;
     let id = |k: &str| m.id(k).with_context(|| format!("materials.ron has no {k}"));
     let loam = id("loam")?;

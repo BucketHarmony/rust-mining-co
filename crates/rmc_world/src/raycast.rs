@@ -5,7 +5,7 @@
 
 use glam::{DVec3, I64Vec3, IVec3, Vec3};
 
-use crate::coords::{CELL_SIZE_M, CellPos};
+use crate::coords::{CELL_SIZE_M, CELL_SIZE_MM, CellAabb, CellPos};
 use crate::world::World;
 
 /// The first solid cell a ray enters.
@@ -40,6 +40,71 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
 /// passes through liquids, as the pickaxe's does.
 pub fn raycast_solid(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Hit> {
     raycast_where(world, origin, dir, max_dist, World::is_solid)
+}
+
+/// The first solid tree limb a ray enters (docs/TREES.md T5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TreeHit {
+    pub root: CellPos,
+    pub metamer: u16,
+    /// Meters from `origin` to the entry point along the ray.
+    pub distance: f32,
+}
+
+/// Casts a ray like [`raycast`] against the solid limb boxes of
+/// [`World::tree_boxes`] and returns the nearest entered within `max_dist`
+/// meters; a ray starting inside a box hits it at 0. Ties go to the box
+/// listed first. The same inputs as [`raycast`] hit nothing.
+pub fn raycast_tree(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<TreeHit> {
+    let o = origin.as_dvec3();
+    let d = dir.as_dvec3().try_normalize()?;
+    let max_dist = f64::from(max_dist);
+    if !o.is_finite() || max_dist.is_nan() || max_dist < 0.0 {
+        return None;
+    }
+    let bounds = world.bounds();
+    let lo = bounds.min.min_corner_m().as_dvec3();
+    let hi = (bounds.max.min_corner_m() + Vec3::splat(CELL_SIZE_M)).as_dvec3();
+    // Where the ray ends, per axis (an axis it does not move on stays put).
+    let end = DVec3::from_array([0, 1, 2].map(|a| {
+        if d[a] == 0.0 {
+            o[a]
+        } else {
+            o[a] + d[a] * max_dist
+        }
+    }));
+    let (a, b) = (o.clamp(lo, hi), end.clamp(lo, hi));
+    let (a, b) = (
+        CellPos::from_meters(a.as_vec3()),
+        CellPos::from_meters(b.as_vec3()),
+    );
+    let region = CellAabb::new(CellPos(a.0.min(b.0)), CellPos(a.0.max(b.0)));
+    let mm = f64::from(CELL_SIZE_M) / f64::from(CELL_SIZE_MM);
+    let mut best: Option<(f64, TreeHit)> = None;
+    for b in world.tree_boxes(region) {
+        let (mut enter, mut exit) = (0.0f64, max_dist);
+        for a in 0..3 {
+            let (min, max) = (f64::from(b.min_mm[a]) * mm, f64::from(b.max_mm[a]) * mm);
+            if d[a] == 0.0 {
+                if o[a] < min || o[a] > max {
+                    exit = -1.0;
+                }
+                continue;
+            }
+            let (t0, t1) = ((min - o[a]) / d[a], (max - o[a]) / d[a]);
+            enter = enter.max(t0.min(t1));
+            exit = exit.min(t0.max(t1));
+        }
+        if enter <= exit && best.is_none_or(|(t, _)| enter < t) {
+            let hit = TreeHit {
+                root: b.root,
+                metamer: b.metamer,
+                distance: enter as f32,
+            };
+            best = Some((enter, hit));
+        }
+    }
+    best.map(|(_, hit)| hit)
 }
 
 /// [`raycast`] with the cells it stops at chosen by `hits`.
@@ -159,7 +224,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::chunk::Chunk;
-    use crate::coords::CellAabb;
     use crate::materials::{MaterialId, MaterialTable};
 
     const PHASE1_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/materials.ron");

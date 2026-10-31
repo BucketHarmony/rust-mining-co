@@ -13,6 +13,7 @@ use crate::layers::{LayerId, PlantState};
 use crate::ledger::SeasonLedger;
 use crate::materials::{MaterialDef, MaterialId, MaterialTable};
 use crate::shape::Shape;
+use crate::tree::TreeGraph;
 
 /// A chunk whose change count exceeds this gets a [`ChunkDelta::Full`].
 pub const FULL_DELTA_THRESHOLD: usize = 4096;
@@ -56,6 +57,11 @@ pub enum EditOp {
     /// rejects anything else. Like `Set`, it skips a cell inside a player's
     /// box. The host spends one from the issuer's inventory per placed cell.
     Place(MaterialId),
+    /// The axe adds `dmg` to limb `metamer` of the graph tree rooted at
+    /// the shape's cell (docs/TREES.md T5). Only with [`Shape::Cell`], and
+    /// only on a solid limb. A limb that breaks falls with everything
+    /// growing from it; metamer 0 fells the tree.
+    Chop { metamer: u16, dmg: u16 },
 }
 
 impl EditOp {
@@ -80,7 +86,8 @@ impl EditOp {
             | EditOp::Place(_)
             | EditOp::Remove
             | EditOp::Damage(_)
-            | EditOp::SetLayer { .. } => Ok(()),
+            | EditOp::SetLayer { .. }
+            | EditOp::Chop { .. } => Ok(()),
         }
     }
 
@@ -95,7 +102,7 @@ impl EditOp {
             EditOp::Place(id) => old.is_none_or(|d| !d.is_solid()).then_some(id),
             EditOp::Remove => old.is_some_and(|d| d.diggable).then_some(MaterialId::AIR),
             EditOp::Paint(id) => old.is_some_and(|d| d.is_solid()).then_some(id),
-            EditOp::Damage(_) | EditOp::SetLayer { .. } => None,
+            EditOp::Damage(_) | EditOp::SetLayer { .. } | EditOp::Chop { .. } => None,
         }
     }
 }
@@ -128,6 +135,12 @@ pub enum RejectReason {
     PlaceOnSolid(CellPos),
     #[error("the issuer's inventory holds no {0:?}")]
     NotInInventory(MaterialId),
+    #[error("chop takes a single cell, the tree's root")]
+    ChopNeedsCell,
+    #[error("no solid limb {metamer} on a tree rooted at {root:?}")]
+    NoLimb { root: CellPos, metamer: u16 },
+    #[error("cell {0:?} is inside a tree's limb")]
+    PlaceInTree(CellPos),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,12 +172,15 @@ pub enum ChunkDelta {
     /// rules of material edits (SAD-P2 §6, §7.0). `eco_revision` is the
     /// chunk's eco revision after the change. `changes` are (local index,
     /// layer, new value) ascending by (index, layer); `plants` are (local
-    /// index, new state or `None` when removed) ascending by index.
+    /// index, new state or `None` when removed) ascending by index;
+    /// `trees` are (root's local index, new graph or `None` when removed)
+    /// ascending by index (docs/TREES.md T5).
     Layers {
         pos: ChunkPos,
         eco_revision: u64,
         changes: Vec<(u16, LayerId, i32)>,
         plants: Vec<(u16, Option<PlantState>)>,
+        trees: Vec<(u16, Option<TreeGraph>)>,
     },
 }
 
@@ -1432,6 +1448,7 @@ mod tests {
                 eco_revision,
                 changes,
                 plants,
+                ..
             } = d
             else {
                 panic!("expected a Layers delta, got {d:?}");
@@ -1561,6 +1578,7 @@ mod tests {
             eco_revision: eco + 2,
             changes: vec![(0, LayerId::Moisture, 1)],
             plants: Vec::new(),
+            trees: Vec::new(),
         };
         assert_eq!(
             replica.apply_delta(&gap),
@@ -1575,6 +1593,7 @@ mod tests {
             eco_revision: eco + 1,
             changes: vec![(0, LayerId::Moisture, 1), (1, LayerId::Moisture, 300)],
             plants: Vec::new(),
+            trees: Vec::new(),
         };
         assert_eq!(
             replica.apply_delta(&bad),
@@ -1590,6 +1609,7 @@ mod tests {
             eco_revision: eco + 1,
             changes: Vec::new(),
             plants: vec![(CHUNK_VOLUME as u16, None)],
+            trees: Vec::new(),
         };
         assert_eq!(
             replica.apply_delta(&bad_plant),

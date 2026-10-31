@@ -22,6 +22,12 @@
 //! the world bounds below or beside the world, and cells in chunks the
 //! replica does not hold yet. Above the top of the world is open sky.
 //!
+//! Graph trees' solid limbs block too (docs/TREES.md T5): the box of each
+//! limb at least `solid_radius_um` thick ([`World::tree_boxes`]) stops a
+//! move like a cell layer does. Twigs and leaves are walked through. A
+//! limb box the player already overlaps (a tree grew into it) does not
+//! stop it and does not push it out: it walks free.
+//!
 //! [`ControllerPlugin`] moves every [`Player`] in `FixedUpdate`, reading only
 //! the [`Replica`] and `ButtonInput<KeyCode>`. Mouse look reads
 //! `AccumulatedMouseMotion` in `Update` (it accumulates per frame, not per
@@ -64,7 +70,7 @@
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use rmc_protocol::ClientMsg;
-use rmc_world::coords::{CELL_SIZE_M, CellPos};
+use rmc_world::coords::{CELL_SIZE_M, CELL_SIZE_MM, CellAabb, CellPos};
 use rmc_world::materials::Phase;
 use rmc_world::world::World;
 
@@ -449,18 +455,45 @@ fn has_ground(world: &World, aabb: Aabb) -> bool {
     sweep(world, aabb, 1, -2.0 * SKIN_M).is_some()
 }
 
-/// Whether `aabb` shares volume with a cell that [`blocks`].
+/// Whether `aabb` shares volume with a cell that [`blocks`] or a solid
+/// tree limb.
 fn overlaps_blocking(world: &World, aabb: Aabb) -> bool {
     let lo = (aabb.min / CELL_SIZE_M).floor().as_ivec3();
     let hi = (aabb.max / CELL_SIZE_M).ceil().as_ivec3() - IVec3::ONE;
-    (lo.y..=hi.y).any(|y| {
+    let cells = (lo.y..=hi.y).any(|y| {
         (lo.z..=hi.z).any(|z| {
             (lo.x..=hi.x).any(|x| {
                 let cell = CellPos::new(x, y, z);
                 blocks(world, cell) && aabb.overlaps_cell(cell)
             })
         })
-    })
+    });
+    cells
+        || limbs(world, aabb, 0, 0.0)
+            .iter()
+            .any(|b| b.min.cmplt(aabb.max).all() && b.max.cmpgt(aabb.min).all())
+}
+
+/// The solid tree limbs ([`World::tree_boxes`]) near `aabb` moved `d`
+/// meters along `axis`, as boxes in meters.
+fn limbs(world: &World, aabb: Aabb, axis: usize, d: f32) -> Vec<Aabb> {
+    if world.tree_rules().solid_radius_um == 0 {
+        return Vec::new();
+    }
+    let mut lo = aabb.min;
+    let mut hi = aabb.max;
+    lo[axis] += d.min(0.0);
+    hi[axis] += d.max(0.0);
+    let region = CellAabb::new(CellPos::from_meters(lo), CellPos::from_meters(hi));
+    let m = CELL_SIZE_M / CELL_SIZE_MM as f32;
+    world
+        .tree_boxes(region)
+        .iter()
+        .map(|b| Aabb {
+            min: IVec3::from_array(b.min_mm).as_vec3() * m,
+            max: IVec3::from_array(b.max_mm).as_vec3() * m,
+        })
+        .collect()
 }
 
 /// Moves a player whose box overlaps a `Solid` cell to the nearest spot
@@ -562,19 +595,46 @@ fn sweep(world: &World, aabb: Aabb, axis: usize, d: f32) -> Option<f32> {
     } else {
         PLAYER_WIDTH_M / 2.0
     };
+    // Limbs across the box's path on the other two axes, ahead of it.
+    let across = |b: &Aabb| {
+        [u, v]
+            .iter()
+            .all(|&a| b.min[a] < aabb.max[a] && b.max[a] > aabb.min[a])
+    };
+    let limbs = limbs(world, aabb, axis, d);
     if d > 0.0 {
         let from = (aabb.max[axis] / s).ceil() as i32;
         let to = ((aabb.max[axis] + d) / s).ceil() as i32 - 1;
-        (from..=to)
-            .find(|&c| layer_blocks(c))
-            .map(|c| c as f32 * s - SKIN_M - feet_below_max)
+        let cell = (from..=to).find(|&c| layer_blocks(c)).map(|c| c as f32 * s);
+        let limb = limbs
+            .iter()
+            .filter(|b| across(b) && b.min[axis] >= aabb.max[axis])
+            .map(|b| b.min[axis])
+            .filter(|&at| at < aabb.max[axis] + d)
+            .reduce(f32::min);
+        let at = match (cell, limb) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        at.map(|at| at - SKIN_M - feet_below_max)
     } else {
         let from = (aabb.min[axis] / s).floor() as i32 - 1;
         let to = ((aabb.min[axis] + d) / s).floor() as i32;
-        (to..=from)
+        let cell = (to..=from)
             .rev()
             .find(|&c| layer_blocks(c))
-            .map(|c| (c + 1) as f32 * s + SKIN_M + feet_above_min)
+            .map(|c| (c + 1) as f32 * s);
+        let limb = limbs
+            .iter()
+            .filter(|b| across(b) && b.max[axis] <= aabb.min[axis])
+            .map(|b| b.max[axis])
+            .filter(|&at| at > aabb.min[axis] + d)
+            .reduce(f32::max);
+        let at = match (cell, limb) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        at.map(|at| at + SKIN_M + feet_above_min)
     }
 }
 
@@ -1382,6 +1442,78 @@ mod tests {
                 player.feet.y
             );
         }
+    }
+
+    /// `floor_world` with a straight 2 m trunk of four metamers rooted in
+    /// the floor's top cell (20, 3, 32), its twig `tip_um` thick, solid
+    /// from 8 cm.
+    fn trunk_world(tip_um: u32) -> World {
+        use rmc_world::TreeRules;
+        use rmc_world::layers::PlantState;
+        use rmc_world::tree::{BudState, Metamer, NO_PARENT, Q14, TreeGraph};
+
+        let mut world = floor_world();
+        let oak = world.materials().id("oak_wood").unwrap();
+        let root = CellPos::new(20, 3, 32);
+        fill(&mut world, (20, 3, 32), (20, 3, 32), oak);
+        world.set_tree_rules(TreeRules {
+            tip_um: vec![tip_um],
+            solid_radius_um: 80_000,
+            metamer_litter: 1,
+            wood_per_item_dm3: 5,
+        });
+        let up = |parent| Metamer {
+            parent,
+            dir: [0, Q14 as i16, 0],
+            length_mm: 500,
+            born: 0,
+            bud: BudState::Active,
+            leaf: 4,
+            shade: 0,
+            lateral: false,
+        };
+        let graph = TreeGraph::try_from(vec![up(NO_PARENT), up(0), up(1), up(2)]).unwrap();
+        let (pos, local) = root.split();
+        let mut chunk = world.chunk(pos).unwrap().clone();
+        chunk.plants.insert(local.index(), PlantState::default());
+        chunk.trees.insert(local.index(), graph);
+        world.insert_chunk(pos, chunk).unwrap();
+        world
+    }
+
+    #[test]
+    fn cannot_walk_through_a_trunk_but_walks_through_leaves() {
+        // A 20 cm trunk at x = 10.25 m: its box starts at x = 10.05 m.
+        let world = trunk_world(200_000);
+        let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2; // +X
+        run(&world, &mut player, MoveInput::default(), 5);
+        let rose = walk_up(&world, &mut player, FORWARD, 120);
+        assert!(rose.is_empty(), "climbed the trunk at steps {rose:?}");
+        let front = player.aabb().max.x;
+        assert!(
+            front <= 10.05 && front > 10.05 - 4.0 * SKIN_M,
+            "stopped at the bark, {front}"
+        );
+        assert!(player.grounded);
+        // Walking the other way is free.
+        let mut back = FORWARD;
+        back.forward = -1.0;
+        run(&world, &mut player, back, 10);
+        assert!(player.aabb().max.x < front - 0.1);
+
+        // A 6 cm sapling (leaves and all) is walked through.
+        let world = trunk_world(60_000);
+        assert!(world.tree_boxes(world.bounds()).is_empty());
+        let mut player = Player::at(Vec3::new(8.0, 2.0, 16.0));
+        player.yaw = -std::f32::consts::FRAC_PI_2;
+        run(&world, &mut player, MoveInput::default(), 5);
+        walk_up(&world, &mut player, FORWARD, 120);
+        assert!(
+            player.aabb().min.x > 11.0,
+            "walked through the sapling, {}",
+            player.aabb().min.x
+        );
     }
 
     #[test]

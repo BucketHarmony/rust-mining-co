@@ -42,6 +42,7 @@ use rmc_world::edit::{ChunkDelta, PlayerId};
 use rmc_world::materials::{MaterialId, MaterialTable};
 use rmc_world::world::{DeltaError, World};
 
+use crate::eco::ClientEco;
 use crate::mesher::{is_liquid_pass, is_shell, shell_interior};
 use crate::net::{ClientMaterials, FromHost, NetSystems, ToHost};
 
@@ -447,7 +448,19 @@ pub struct ReplicaPlugin;
 
 impl Plugin for ReplicaPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreUpdate, apply_host_messages.after(NetSystems::Receive));
+        app.add_systems(PreUpdate, apply_host_messages.after(NetSystems::Receive))
+            .add_systems(PreUpdate, sync_tree_rules.after(apply_host_messages));
+    }
+}
+
+/// Gives the replica's world the tree rules of [`ClientEco`]: which limbs
+/// are solid to the player and the tool ray (docs/TREES.md T5).
+fn sync_tree_rules(eco: Option<Res<ClientEco>>, replica: Option<ResMut<Replica>>) {
+    let (Some(eco), Some(mut replica)) = (eco, replica) else {
+        return;
+    };
+    if replica.world.tree_rules() != &eco.trees {
+        replica.world.set_tree_rules(eco.trees.clone());
     }
 }
 
@@ -911,6 +924,7 @@ mod tests {
             eco_revision: rev + 1,
             changes: vec![(LocalPos::new(8, 10, 8).index(), LayerId::Moisture, 200)],
             plants: vec![],
+            trees: vec![],
         }];
         f.deliver(vec![ServerMsg::Applied(r)]);
         // (2,1,1) is (1,0,1)'s edge neighbour.

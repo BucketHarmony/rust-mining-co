@@ -521,6 +521,9 @@ mod tests {
                         RejectReason::PlaceNotSolid(_) => "place_not_solid",
                         RejectReason::PlaceOnSolid(_) => "place_on_solid",
                         RejectReason::NotInInventory(_) => "not_in_inventory",
+                        RejectReason::ChopNeedsCell => "chop_needs_cell",
+                        RejectReason::NoLimb { .. } => "no_limb",
+                        RejectReason::PlaceInTree(_) => "place_in_tree",
                     };
                     *self.rejected.entry(key).or_default() += 1;
                 }
@@ -1267,6 +1270,7 @@ mod tests {
                     eco_revision,
                     changes: vec![(7, LayerId::Moisture, value)],
                     plants: vec![(7, None)],
+                    trees: Vec::new(),
                 }],
                 yields: Vec::new(),
                 ledger: Default::default(),

@@ -1718,6 +1718,7 @@ mod tests {
             plants: vec!["oak".to_string()],
             plant_looks: vec![oak],
             deficiency: Vec::new(),
+            trees: Default::default(),
         });
         f.join();
         f.drain();
@@ -1812,6 +1813,7 @@ mod tests {
             plants: Vec::new(),
             plant_looks: Vec::new(),
             deficiency: Vec::new(),
+            trees: Default::default(),
         });
         f.join();
         f.drain();

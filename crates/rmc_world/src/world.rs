@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::chop::TreeRules;
 use crate::chunk::{Chunk, ChunkStorage};
 use crate::columns::{Columns, NO_SURFACE};
 use crate::coords::{CHUNK_VOLUME, CellAabb, CellPos, ChunkPos, LocalPos};
@@ -67,6 +68,11 @@ pub struct World {
     /// The water-pass constants the settled water cells hold for
     /// ([`World::eco_clear_water_settled`]).
     pub(crate) water_settle_key: u64,
+    /// What graph trees need from the tables (docs/TREES.md T5).
+    pub(crate) tree_rules: Arc<TreeRules>,
+    /// Chop damage per (root, metamer). Host-only, like `damage`: not
+    /// hashed, saved or sent.
+    pub(crate) chop_damage: BTreeMap<(CellPos, u16), u16>,
 }
 
 impl World {
@@ -90,6 +96,8 @@ impl World {
             rules: Arc::default(),
             light_dirty: true,
             water_settle_key: 0,
+            tree_rules: Arc::default(),
+            chop_damage: BTreeMap::new(),
         }
     }
 
@@ -224,6 +232,17 @@ impl World {
             if solid {
                 return Err(RejectReason::PlaceOnSolid(cell));
             }
+            if self.in_tree(cell) {
+                return Err(RejectReason::PlaceInTree(cell));
+            }
+        }
+        if let EditOp::Chop { metamer, .. } = cmd.op {
+            let Shape::Cell(root) = cmd.shape else {
+                return Err(RejectReason::ChopNeedsCell);
+            };
+            if !self.is_solid_limb(root, metamer) {
+                return Err(RejectReason::NoLimb { root, metamer });
+            }
         }
         Ok(())
     }
@@ -287,6 +306,10 @@ impl World {
                     self.set_layer_by_edit(cell, layer, value, &mut ledger, &mut fx);
                     continue;
                 }
+                EditOp::Chop { metamer, dmg } => {
+                    self.chop(cell, metamer, dmg, cause, &mut ledger, &mut fx);
+                    continue;
+                }
                 EditOp::Damage(dmg) => {
                     let Some(def) = def.filter(|d| d.diggable) else {
                         continue;
@@ -332,6 +355,7 @@ impl World {
             .keys()
             .chain(fx.layers.keys())
             .chain(fx.plants.keys())
+            .chain(fx.trees.keys())
             .copied()
             .collect();
         let mut deltas = Vec::new();
@@ -359,7 +383,8 @@ impl World {
             }
             let layers = fx.layers.get(&pos);
             let plants = fx.plants.get(&pos);
-            if layers.is_some() || plants.is_some() {
+            let trees = fx.trees.get(&pos);
+            if layers.is_some() || plants.is_some() || trees.is_some() {
                 deltas.push(ChunkDelta::Layers {
                     pos,
                     eco_revision: chunk.eco_revision,
@@ -372,6 +397,11 @@ impl World {
                         .into_iter()
                         .flatten()
                         .map(|(&i, p)| (i, *p))
+                        .collect(),
+                    trees: trees
+                        .into_iter()
+                        .flatten()
+                        .map(|(&i, t)| (i, t.clone()))
                         .collect(),
                 });
             }
@@ -538,6 +568,7 @@ impl World {
                 eco_revision,
                 changes,
                 plants,
+                trees,
                 ..
             } => {
                 let chunk = self.chunks.get(&pos).ok_or(DeltaError::NotResident(pos))?;
@@ -559,9 +590,8 @@ impl World {
                         value,
                     });
                 }
-                if let Some(&(index, _)) =
-                    plants.iter().find(|(i, _)| usize::from(*i) >= CHUNK_VOLUME)
-                {
+                let indices = plants.iter().map(|p| p.0).chain(trees.iter().map(|t| t.0));
+                if let Some(index) = indices.clone().find(|&i| usize::from(i) >= CHUNK_VOLUME) {
                     return Err(DeltaError::BadIndex { pos, index });
                 }
                 let chunk = self.chunks.get_mut(&pos).expect("checked resident");
@@ -582,6 +612,15 @@ impl World {
                         Some(p) => chunk.plants.insert(index, p),
                         None => chunk.plants.remove(&index),
                     };
+                }
+                for (index, tree) in trees {
+                    match tree {
+                        Some(t) => chunk.trees.insert(*index, t.clone()),
+                        None => chunk.trees.remove(index),
+                    };
+                }
+                if !trees.is_empty() {
+                    self.light_dirty = true;
                 }
                 chunk.eco_revision = *eco_revision;
                 self.wake_water_chunk(pos);

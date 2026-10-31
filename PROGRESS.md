@@ -4320,3 +4320,37 @@ Decisions:
 - In the testkit `advance_season` ticks season N and the client then shows N+1, so the e2e checks bareness against the last ticked season.
 Next: T5, interaction (capsule collision, raycast, `EditOp::Chop`, felling, trees in `ChunkDelta::Layers`).
 Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2. The lab trees are tall and thin (T8 tunes).
+
+## 2026-10-31 — Trees as geometry T5: interaction (docs/TREES.md) — passed
+Done:
+- `rmc_world::chop`:
+  - `TreeRules`: tip radii by plant, `solid_radius_um`, `metamer_litter`, `wood_per_item_dm3`.
+  - Limb boxes and `tree_boxes(region)`, `in_tree`, `is_solid_limb`.
+  - Chop damage per (root, metamer).
+  - `chop` and `fell`: wood items by volume, leaves as ledgered litter.
+- `EditOp::Chop { metamer, dmg }`, plus the reject reasons `ChopNeedsCell`, `NoLimb`, `PlaceInTree`.
+- Removing a root cell fells its graph. Digging yields the wood; other causes turn it to litter.
+- `ChunkDelta::Layers` carries `trees`, applied by `apply_delta`.
+- `raycast_tree`.
+- The controller collides with solid limbs.
+- The pickaxe chops the nearest solid limb before the target cell.
+- `eco.wood_per_item_dm3`.
+- The tree rules reach the host world and the client (`ClientEco.trees`, synced into the replica).
+Tests added:
+- `chop::tests::{solid_limbs_are_boxes_around_their_internodes, chopping_a_limb_drops_wood_by_volume_and_leaves_as_litter, thick_limbs_take_more_hits, chopping_the_first_internode_fells_the_tree, digging_the_root_fells_the_standing_graph, chops_need_a_tree_and_a_solid_limb, placing_into_a_trunk_is_refused, a_chop_replays_on_a_replica, the_ray_hits_a_trunk_before_the_cell_behind_it}`
+- `controller::tests::cannot_walk_through_a_trunk_but_walks_through_leaves`
+- `pickaxe::tests::a_trunk_before_the_wall_is_chopped`
+- The codec T1 test gains a Layers delta with trees.
+Decisions:
+- Limb collision uses axis-aligned boxes grown by the radius, not true capsules. Exact for trunks, a little generous for slanted limbs.
+- The protocol stays at 3: version 3 introduced trees, and the Layers field ships in the same release line.
+- Chopping metamer 0 removes the graph and leaves the root cell and plant as a stump.
+- Digging the root yields the wood. Remove, displacement or a pass turns the graph into litter (`metamer_litter` per metamer plus leaves), ledgered. The fell runs in `eco_set` too.
+- Chop damage is host-only (not saved, not replicated) and resets on any graph change, growth included.
+- A tree growing into the player does not push them out. The overlapped box is ignored until they leave it.
+- `PickTarget` and the HUD keep showing the cell. A limb highlight is look work for later.
+- `tree_boxes` is recomputed per controller sweep. T8 measures it and caches if needed.
+- `wood_per_item_dm3` = 5 (a 20 cm × 0.5 m limb gives 3 items).
+- The planned host test `a_felled_tree_matches_on_host_and_replica` is covered at world level by `chop::tests::a_chop_replays_on_a_replica`, which checks the full world hash after a chop and after felling.
+Next: T6, fruit and seed on the graph.
+Blockers: the rule amendments in docs/TREES.md §6 still need pasting into the protected CLAUDE.md and SAD-P2.

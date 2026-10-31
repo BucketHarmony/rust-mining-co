@@ -58,6 +58,9 @@
         leaf_attenuation: Some(3),
         wood_attenuation: Some(64),
         solid_radius_um: Some(80000),
+        // Trees as geometry (docs/TREES.md T5): wood volume per wood item a
+        // chopped or dug limb yields
+        wood_per_item_dm3: Some(5),
         // §7.9 activity: quiet Jacobi passes before a chunk is skipped
         quiet_skip: 2,
     ),

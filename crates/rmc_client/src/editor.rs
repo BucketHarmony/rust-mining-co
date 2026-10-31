@@ -2202,6 +2202,7 @@ mod tests {
             plants: vec!["moss".into(), "fireweed".into()],
             plant_looks: Vec::new(),
             deficiency: Vec::new(),
+            trees: Default::default(),
         }
     }
 
