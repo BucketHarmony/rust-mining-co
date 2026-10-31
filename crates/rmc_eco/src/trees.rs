@@ -1292,4 +1292,40 @@ mod tests {
         }
         assert!(graph(&w, root).len() > 30);
     }
+
+    #[test]
+    fn an_old_cell_tree_turns_into_a_growing_graph() {
+        // A save from before the oak grew graphs: a cell oak of trunk and
+        // crown parts.
+        let shipped = EcoTables::load(ASSETS).unwrap();
+        let cells = EcoTables::from_sources(
+            Arc::clone(shipped.materials()),
+            &crate::tables::fixtures::cell_tree_sources(ASSETS),
+        )
+        .unwrap();
+        let mut w = world(&cells);
+        let root = CellPos::new(16, 31, 16);
+        oak(&mut w, &cells, root);
+        for _ in 0..12 {
+            w.eco_put_layer(root, LayerId::Biomass, i32::from(u8::MAX));
+            extend(&mut w, &cells, SEED);
+        }
+        let old = crate::parts::parts_of(&w, root).len();
+        assert!(old >= 8, "{old} parts");
+        assert!(graph(&w, root).is_empty());
+
+        // The graph oak's first sweep drops every part as litter, then the
+        // root grows its graph.
+        let t = tables(133, 4000);
+        let part_litter = i64::from(t.params().part_litter.unwrap());
+        let ledger = flush_in(&mut w, &t, root, season_of(&t, "spring", 1));
+        assert!(crate::parts::parts_of(&w, root).is_empty());
+        crate::parts::check_parts(&w).unwrap();
+        let organic = usize::from(t.role_substance("organic").unwrap());
+        assert_eq!(ledger.litter_in[organic], old as i64 * part_litter);
+        assert_eq!(w.get_cell(root), Some(id(&t, "oak_wood")), "the root stays");
+        assert!(!graph(&w, root).is_empty(), "and grows a graph");
+        flush_in(&mut w, &t, root, season_of(&t, "summer", 1));
+        assert!(graph(&w, root).len() > 1);
+    }
 }

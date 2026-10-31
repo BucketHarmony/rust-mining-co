@@ -1,7 +1,8 @@
 // The tree lab's forms (docs/TREES.md T4, §5): the Graph form each species
-// grows under `rmc_app --tree-lab`, until the shipped plants.ron rows switch
-// to graphs (TREES T7). Fields as in plants.ron's Graph form; T8 owns the
-// numbers. Angles are in steps of 4096 per turn. `mature`: metamers before
+// grows under `rmc_app --tree-lab`, over its plants.ron row. Since TREES T7
+// the shipped rows carry these same forms; edit here to try a shape in the
+// lab, then copy it to plants.ron. Fields as in plants.ron's Graph form; T8
+// owns the numbers. Angles are in steps of 4096 per turn. `mature`: metamers before
 // the tree flowers and fruits.
 [
     // Oak: 25 cm internodes, 45° laterals on the golden angle, λ 0.52;

@@ -71,6 +71,11 @@
 //! paying `cost` per metamer added. A graph whose root is no longer a
 //! graph tree's is removed before the sweep.
 //!
+//! A graph tree's root that still carries part cells (a save from before
+//! the row grew graphs, docs/TREES.md T7) drops them first, children
+//! before parents, each rotting as `eco.part_litter` on its landing like a
+//! bare season's leaves; the graph then grows from the root.
+//!
 //! Its flowers and fruit (T6) are Flower and Fruit buds on its tips
 //! ([`crate::trees::bear`]). Steps 1 and 2 drop them as they drop part
 //! cells, from the cell their metamer ends in: fruit falls (and may take
@@ -690,6 +695,18 @@ impl SweepPass for ExtendPass {
                 }
             }
             parts = parts_of(ctx.world, cell);
+        }
+        if let Shape::Graph(_) = &form.shape
+            && !parts.is_empty()
+        {
+            for &(c, _) in parts.iter().rev() {
+                if ctx.world.layer(c, LayerId::Part) != 0 {
+                    let landing = self.landing(ctx.world, c);
+                    ctx.world.eco_set(c, self.air, ctx.ledger);
+                    self.rot(ctx, landing);
+                }
+            }
+            parts.clear();
         }
 
         if let Shape::Graph(_) = &form.shape
