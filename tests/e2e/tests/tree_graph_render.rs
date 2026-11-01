@@ -35,8 +35,46 @@ use rmc_testkit::{TestApp, TestConfig, e2e};
 use rmc_world::coords::{CELL_SIZE_M, CellPos};
 use rmc_world::edit::{EditOp, MAX_EDIT_CELLS};
 use rmc_world::layers::LayerId;
-use rmc_world::materials::{MaterialId, MaterialTable};
+use rmc_world::materials::{MaterialId, MaterialTable, Phase};
 use rmc_world::shape::Shape;
+
+/// Every liquid cell in `min..=max` becomes air, one edit per run of them
+/// along x.
+fn drain(t: &mut TestApp, materials: &MaterialTable, min: CellPos, max: CellPos) {
+    let world = t.host_world();
+    let wet = |c: CellPos| {
+        world
+            .get_cell(c)
+            .and_then(|id| materials.get(id))
+            .is_some_and(|d| d.phase == Phase::Liquid)
+    };
+    let mut edits = Vec::new();
+    for y in min.0.y..=max.0.y {
+        for z in min.0.z..=max.0.z {
+            let mut x = min.0.x;
+            while x <= max.0.x {
+                if !wet(CellPos::new(x, y, z)) {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x <= max.0.x && wet(CellPos::new(x, y, z)) {
+                    x += 1;
+                }
+                edits.push((
+                    EditOp::Set(MaterialId::AIR),
+                    Shape::Box {
+                        min: CellPos::new(start, y, z),
+                        max: CellPos::new(x - 1, y, z),
+                    },
+                ));
+            }
+        }
+    }
+    if !edits.is_empty() {
+        t.apply_edits(&edits);
+    }
+}
 
 /// One edit per x-slab of the box `min..=max`, each within the host's
 /// [`MAX_EDIT_CELLS`].
@@ -63,14 +101,17 @@ const DEPTH: i32 = 3;
 const FED: i32 = 200;
 /// Cleared ground around the bed, in cells, so close shots see a floor
 /// and not the cut walls of the terrain.
-const SCENE: i32 = 12;
+const SCENE: i32 = 24;
+/// Rain pools on the flat cleared floor: before each shot, liquid in this
+/// many cells above it is drained.
+const DRAIN: i32 = 4;
 /// The forest stand: `STAND` × `STAND` trees, `STAND_SPACING` cells
 /// apart, starting `STAND_GAP` cells past the bed's +x edge. The eye
 /// stands `FOREST_BACK` cells from its middle.
 const STAND: i32 = 3;
-const STAND_SPACING: i32 = 4;
+const STAND_SPACING: i32 = 6;
 const STAND_GAP: i32 = 3;
-const FOREST_BACK: i32 = 10;
+const FOREST_BACK: i32 = 26;
 /// Open air kept above the bed.
 const HEADROOM: i32 = 30;
 /// Seasons grown before the first shot: four years, into the fifth
@@ -199,6 +240,8 @@ fn meshes(t: &mut TestApp, roots: &[CellPos]) -> Vec<(usize, usize)> {
 
 /// A player's view of the stand: from [`FOREST_BACK`] cells off its
 /// middle, on the side whose ground is nearest the stand's, at eye height.
+/// The cleared floor reaches past it on -z, which wins a tie (the bed lies
+/// on -x).
 fn forest(t: &mut TestApp, stand: &[CellPos]) {
     let n = stand.len() as i32;
     let mid = stand.iter().fold(IVec3::ZERO, |s, c| s + c.0) / n;
@@ -368,10 +411,15 @@ fn run(t: &mut TestApp) {
         )]);
     }
     feed(t);
+    let (wet_lo, wet_hi) = (
+        CellPos::new(s_lo.0, ground + 1, s_lo.1),
+        CellPos::new(s_hi.0, ground + DRAIN, s_hi.1),
+    );
     for _ in 0..GROW {
         t.advance_season();
         feed(t);
     }
+    drain(t, &materials, wet_lo, wet_hi);
     t.steps(4);
     settle(t);
     let grown = meshes(t, &roots);
@@ -422,6 +470,7 @@ fn run(t: &mut TestApp) {
     for _ in 0..rows {
         t.advance_season();
         feed(t);
+        drain(t, &materials, wet_lo, wet_hi);
         t.steps(4);
         settle(t);
         let label = turn(t);

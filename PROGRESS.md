@@ -4555,3 +4555,28 @@ Tests added: none.
 Decisions: none. Options are on the update artifact: trial runs, keep clover alive (p demand 1), faster rot, moss takes no n, grape k demand 1.
 Next: apply the owner's pick.
 Blockers: waiting on the owner's pick.
+
+## 2026-11-01 — Understory trials, grape potassium, drained tree shots — passed
+Done:
+- Owner picks on the update artifact (https://claude.ai/artifact/4HLgdihEvpnvexPXn2FVZA): run the nitrogen trials, lower grape's potassium, fix the shots, push.
+- Grape `demand` k 2 → 1 (plants.ron). In the ten-year world, grape ends at 9 instead of 3 (from 52).
+- `tree_graph_render`:
+  - Before each shot, liquid in the `DRAIN` (4) cells above the cleared floor becomes air.
+  - The forest stand is 6 cells apart, the clearing is 24 cells (`SCENE`), and the forest eye stands 26 cells back on the -z side.
+  - At 14 cells back the eye stood inside the grown crowns. At 26 cells with a 16-cell clearing, the flattest side was the bed, and a bed birch filled the frame.
+  - Passes locally in 1,775 s.
+  - Left in the shots: ice and snow blocks on the floor after winter. They are solid, and the drain removes only liquid.
+- Trials: headless, seed 1, 128 × 64 × 128, 40 seasons, release, grape k 1 in each. Assets were changed for each run and then restored; none of these changes is committed. Counts at season 39 (grass / clematis / grape / clover / moss / oak / soil n):
+  - grape only: 0 / 0 / 9 / 0 / 5,815 / 57 / 1.03 M;
+  - clover `demand` p 1: 0 / 0 / 8 / 0 (161 at season 8) / 5,827 / 57 / 1.03 M;
+  - `decompose` consumes c 2 (was 4): 0 / 2 / 12 / 0 / 5,788 / 62 / 1.10 M;
+  - moss without n uptake: 19 / 6 / 9 / 0 / 5,720 / 66 / 1.29 M;
+  - all three: 69 / 10 / 15 / 0 (199 at season 8) / 5,661 / 70 / 1.45 M.
+- Invariants held in every run.
+- In the all-three run, grass's "n >= 2" limit falls to 3 by season 39. Grass is held by space: moss fills the cells a grass cohort leaves, and a cell holds one plant.
+Tests added: none (data change and scenario setup).
+Decisions:
+- The grape change ships as the owner picked. The nitrogen fixes don't ship until the owner picks from the trial results ("trial" meant measure, apply nothing).
+- Draining the scene before each shot is scenario setup, like the clearing. The rain still falls and still shows in the shots.
+Next: the owner's picks on the trial results and on grass against moss.
+Blockers: none.

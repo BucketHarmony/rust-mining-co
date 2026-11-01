@@ -199,7 +199,7 @@
      needs: (light: 0, moisture: 16, temp: (-80, 380),
              substance_max: [("cu", 24), ("acid", 32)]),
      growth_per_substep: 32, spread_chance: 0, spread_radius: 2, litter: 24,
-     lifespan_seasons: 80, uptake: [("n", 1)], demand: [("k", 2)],
+     lifespan_seasons: 80, uptake: [("n", 1)], demand: [("k", 1)],
      worldgen_chance: 2, sway: 24,
      season_colors: [("autumn", (196, 120, 48))],
      parts: Some((cost: 5, leaf_feed: 32, leaf_light: 32,
