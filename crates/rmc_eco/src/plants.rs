@@ -1566,14 +1566,17 @@ mod tests {
         let row = clover(&t).clone();
         let healthy = PlantState::default();
         let x = |k: &str| t.substance_index(k).unwrap();
-        // Half of the first demand, ample of the rest: s = SUFFICIENT / 2.
-        let (first, d0) = (&row.demand[0].0, i32::from(row.demand[0].1));
+        // Half of the largest demand, ample of the rest: s = SUFFICIENT / 2.
+        let i0 = (0..row.demand.len())
+            .max_by_key(|&i| row.demand[i].1)
+            .expect("clover demands");
+        let (first, d0) = (&row.demand[i0].0, i32::from(row.demand[i0].1));
         let mut subs: Vec<(&str, i32)> = row
             .demand
             .iter()
             .map(|(k, d)| (k.as_str(), 4 * i32::from(*d)))
             .collect();
-        subs[0].1 = d0 / 2;
+        subs[i0].1 = d0 / 2;
         let half = (d0 / 2) * SUFFICIENT / d0;
         let mut w = world(&t);
         let c = CellPos::new(5, 31, 5);
@@ -1594,7 +1597,7 @@ mod tests {
             want.litter_in[usize::from(x(k))] += i64::from(fixed);
         }
         assert_eq!(ledger, want, "uptake sunk, fixation a source");
-        assert_eq!(first, &row.demand[0].0);
+        assert_eq!(first, &row.demand[i0].0);
     }
 
     #[test]
@@ -1640,7 +1643,7 @@ mod tests {
                         .iter()
                         .map(|(k, d)| {
                             let d = i32::from(*d);
-                            (k.as_str(), if rich { 8 * d } else { d / 2 })
+                            (k.as_str(), if rich { 8 * d } else { (d / 2).max(1) })
                         })
                         .collect();
                     let c = CellPos::new(x, 31, z);

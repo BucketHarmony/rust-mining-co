@@ -1879,7 +1879,7 @@ mod tests {
         let row = |k: &str| t.plants().iter().position(|p| p.key == k).unwrap();
         let clover = &looks[row("clover")];
         assert_eq!(clover.material, t.materials().id("clover").unwrap());
-        assert_eq!(clover.needs, [(sub("p"), 2), (sub("k"), 2)], "its demand");
+        assert_eq!(clover.needs, [(sub("p"), 1), (sub("k"), 2)], "its demand");
         assert_eq!(clover.sway, 40);
         assert_eq!(clover.season_colors.len(), 4, "one per season row");
         assert_eq!(clover.season_colors[0], Some([110, 176, 92]), "spring");
@@ -2060,7 +2060,7 @@ mod tests {
                 ),
                 reaction(
                     "decompose",
-                    &[("c", 4)],
+                    &[("c", 2)],
                     vec![Condition::Tag("soil".into())],
                     &[("n", 1), ("p", 1), ("k", 1)],
                     Some(SideEffect::EmitGas("chokedamp".into(), 2))

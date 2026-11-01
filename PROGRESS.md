@@ -4587,3 +4587,23 @@ Tests added: none.
 Decisions: none.
 Next: the owner's picks on the understory trials (us-apply, us-space).
 Blockers: CI run 41263875577 (6f67e19). Green: linux, linux-features, windows, windows-release. linux-e2e was still running when the 60-minute wait cap ran out (rule 22). `tree_graph_render` now takes about 30 min locally, so the job will run longer than before. Check its result in the next session.
+
+## 2026-11-01 — Understory nitrogen fixes; takeover and fungi design — passed
+Done:
+- Owner picks on the update artifact: ship all three nitrogen fixes ("Take inspiration from nature when finding imbalances in the game"), design a grass-over-moss takeover before coding, and answer "Would mushrooms help?".
+- Shipped (data):
+  - clover `demand` p 2 → 1;
+  - `decompose` consumes c 4 → 2;
+  - moss `uptake` n 1 removed (moss has no roots).
+- Ten-year world with all three (from the trials): grass 69, clematis 10, grape 15, oak 70, soil n 1.45 M at season 39.
+- docs/VEGETATION.md "Understory balance" section: the shipped values, the trial table, a takeover design (a `stature` column, taking a lower plant's cell in the spread sweep after empty cells, `eco.takeover_chance`), and three fungi options (a shade-loving mushroom species, shade rot, mycorrhizae). None of these is built.
+Tests added: none. Tests updated (test-fix, same commit as the data):
+- `chemistry::tests` (the decompose row, its fire sequence, ledgers, the two-chunk ledger);
+- `tables::tests` (the decompose row and clover's demand);
+- `stocks::tests` (clover's p);
+- `plants::tests` clover poor/rich halves the largest demand, and the poor amount is at least 1.
+Decisions:
+- The test updates go in the data commit, under `test-fix:`, because the tests pin shipped values the owner changed. Split, either commit would fail the gate.
+- The takeover and the fungi wait for the owner's review of the design, as asked.
+Next: the owner's picks on the takeover and the fungi (tk-build, tk-fungi, tk-order, tk-push).
+Blockers: CI run 41263875577 (6f67e19): linux-e2e was still in progress when checked this session. The other four jobs are green.

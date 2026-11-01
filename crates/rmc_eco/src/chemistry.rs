@@ -2323,7 +2323,7 @@ mod tests {
     // ---- Chokedamp from decomposition (F155) ----
 
     /// `docs/VEGETATION.md` V1: litter's carbon decomposes into n, p and
-    /// k, one each per 4 c, until less than 4 c is left; a full p layer
+    /// k, one each per 2 c, until less than 2 c is left; a full p layer
     /// takes no more. Every firing is ledgered, so the substance invariant
     /// holds.
     #[test]
@@ -2346,18 +2346,25 @@ mod tests {
         let checker = InvariantChecker::new(&w);
         let mut ledger = SeasonLedger::default();
         let amounts = |w: &World, cell| [c, n, p, k].map(|x| w.layer(cell, layer(x)));
-        for want in [[6, 1, 1, 1], [2, 2, 2, 2], [2, 2, 2, 2]] {
+        for want in [
+            [8, 1, 1, 1],
+            [6, 2, 2, 2],
+            [4, 3, 3, 3],
+            [2, 4, 4, 4],
+            [0, 5, 5, 5],
+            [0, 5, 5, 5],
+        ] {
             merge(&mut ledger, &react(&mut w, &pass));
             assert_eq!(amounts(&w, s), want);
             checker.check(&w, &ledger).unwrap();
         }
         let [cc, nn, pp, kk] = amounts(&w, full);
-        assert_eq!((cc, nn, kk), (2, 2, 2), "it fires beside a full layer");
+        assert_eq!((cc, nn, kk), (0, 5, 5), "it fires beside a full layer");
         assert_eq!(pp, i32::from(u8::MAX));
     }
 
     /// `decompose` (SAD-P2 §7.6): a soil cell holding organic carbon turns
-    /// 4 `c` into 1 `n`, 1 `p` and 1 `k` (`docs/VEGETATION.md` V1: litter
+    /// 2 `c` into 1 `n`, 1 `p` and 1 `k` (`docs/VEGETATION.md` V1: litter
     /// returns what plants took) and its `EmitGas("chokedamp", 2)` side adds
     /// `min(2, room)` to its first air face neighbor in sorted (y, z, x)
     /// order, booked as `react_in`. The receiver joins the chokedamp
@@ -2387,10 +2394,10 @@ mod tests {
             t.substance_index("p").unwrap(),
             t.substance_index("k").unwrap(),
         );
-        assert_eq!(needs(t, row), BTreeMap::from([(c, 4)]));
+        assert_eq!(needs(t, row), BTreeMap::from([(c, 2)]));
         assert_eq!(
             nets(t, row),
-            BTreeMap::from([(c, -4), (n, 1), (p, 1), (k, 1)])
+            BTreeMap::from([(c, -2), (n, 1), (p, 1), (k, 1)])
         );
         let emit = i32::from(*emit);
         assert_eq!(emit, 2);
@@ -2407,7 +2414,7 @@ mod tests {
         // `gas_lost` found no room.
         let fired = |react_in: i64, gas_lost: i64| {
             let mut l = SeasonLedger::default();
-            l.react_delta[usize::from(c)] = -4;
+            l.react_delta[usize::from(c)] = -2;
             l.react_delta[usize::from(n)] = 1;
             l.react_delta[usize::from(p)] = 1;
             l.react_delta[usize::from(k)] = 1;
@@ -2443,7 +2450,7 @@ mod tests {
         let mut w = base();
         assert!(!active(&w, west));
         let ledger = run(&mut w);
-        assert_eq!((w.layer(s, layer(c)), w.layer(s, layer(n))), (6, 1));
+        assert_eq!((w.layer(s, layer(c)), w.layer(s, layer(n))), (8, 1));
         assert_eq!((w.layer(west, gas), w.layer(up, gas)), (emit, 0));
         assert_eq!(ledger, fired(2, 0));
         assert!(active(&w, west), "the receiver joins the chokedamp sweep");
@@ -2490,8 +2497,8 @@ mod tests {
             assert_eq!(total, 0, "{open:?}");
         }
 
-        // Not soil, or 3 c: nothing at all.
-        for (m, amount) in [(filler(t), 10), (soil, 3)] {
+        // Not soil, or 1 c: nothing at all.
+        for (m, amount) in [(filler(t), 10), (soil, 1)] {
             let mut w = base();
             w.eco_set(s, m, &mut SeasonLedger::default());
             w.eco_put_layer(s, layer(c), amount);
@@ -2534,7 +2541,7 @@ mod tests {
         checker.check(&serial, &ledger).unwrap();
         assert_eq!(serial.layer(mid, gas), FULL);
         let mut want = fired(4, 1);
-        want.react_delta[usize::from(c)] = -8;
+        want.react_delta[usize::from(c)] = -4;
         want.react_delta[usize::from(n)] = 2;
         want.react_delta[usize::from(p)] = 2;
         want.react_delta[usize::from(k)] = 2;

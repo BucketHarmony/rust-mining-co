@@ -14,7 +14,7 @@ Owner request, 2026-10-27: plants that grow based on NPK needs and availability;
   - Uptake is a fixed amount per pass (for example grass takes 1 n and 1 p) and does not change the growth rate.
 - **Nutrient cycle**:
   - `n`, `p` and `k` are substances (`plant_nutrient: true`).
-  - Litter adds `c` to the anchor. `decompose` turns 4 c into 1 n on soil and gives off chokedamp.
+  - Litter adds `c` to the anchor. `decompose` turns 2 c into 1 n on soil (4 before the understory picks) and gives off chokedamp.
   - Basalt holds `p: 20`, but it does not weather, so the phosphorus is locked in.
   - Nothing in the world supplies `k`.
   - Worldgen seeds no soil nutrients.
@@ -69,7 +69,7 @@ Each step is a feature-sized unit with its own tests. Steps 1 and 2 are prerequi
   - worldgen seeds moss and grass on a fresh world (a count above zero).
 - **Status: done (2026-10-28).**
   - `worldgen.ron` gains `soil_horizon` (loam 1–3 cells, `max_slope: 1`, a mask noise, starting `moisture: 32`) and `fertility` (`(substance, lo, hi)` per soil material: loam, topsoil, dirt). `rmc_worldgen::SoilInit` lays both per chunk, before the water table; the game's `generate_world` uses it (`Generator::with_soil`).
-  - Basalt weathers at 16; `decompose` gives 1 n, 1 p and 1 k per 4 c.
+  - Basalt weathers at 16; `decompose` gives 1 n, 1 p and 1 k per 2 c (4 before the understory picks).
   - Tests: `soil::tests::{loam_lies_damp_on_gentle_ground_only, surface_soil_holds_nutrients_in_range, unknown_names_are_refused}`, `weathering::tests::basalt_weathers_phosphorus_out`, `chemistry::tests::decompose_returns_n_p_and_k_and_the_ledger_conserves`, `garden::tests::a_fresh_world_seeds_moss_and_grass`.
   - Decisions:
     - Basalt's rate is 16, not 1. §7.5 releases `total · Δ / 256` per pass, truncating, so with p 20 any rate under 13 releases nothing. 16 releases 1 p a pass for 16 passes, then the regolith is full and basalt stays basalt.
@@ -337,6 +337,88 @@ are unchanged. `PlantLook` gains `tuft` (the wood) and `bare` (per season
 row). Oak, birch and pine have it. Test:
 `mesher::tests::a_growing_trunk_carries_a_leaf_tuft_until_its_crown`; shot:
 `docs/screens/trees_render-summer-*.png`.
+
+### Understory balance (owner picks, 2026-11-01)
+
+The ten-year headless world (seed 1, 128 × 64 × 128, 40 seasons) lost its
+whole understory except moss: clover died by season 4, and grass and
+clematis followed as soil nitrogen fell from 1.68 M to 1.02 M. The owner
+picked all three nitrogen fixes, plus a lower potassium need for grape.
+"Take inspiration from nature when finding imbalances."
+
+Shipped (data only):
+
+| Row | Was | Now | In nature |
+|---|---|---|---|
+| grape `demand` k (shipped earlier) | 2 | 1 | vines root deep and forage widely |
+| clover `demand` p | 2 | 1 | legumes need phosphorus, but not more than grass |
+| `decompose` consumes c | 4 | 2 | leaf litter mineralizes within a year or two |
+| moss `uptake` | n 1 | none | moss has no roots; it lives on rain and dust, not soil nitrogen |
+
+Trials (season 39, grape k 1 in each; grass / clematis / grape / clover /
+moss / oak / soil n):
+
+| Run | Grass | Clematis | Grape | Clover | Moss | Oak | Soil n |
+|---|---|---|---|---|---|---|---|
+| grape only | 0 | 0 | 9 | 0 | 5,815 | 57 | 1.03 M |
+| clover p 1 | 0 | 0 | 8 | 0 (161 at s8) | 5,827 | 57 | 1.03 M |
+| rot c 2 | 0 | 2 | 12 | 0 | 5,788 | 62 | 1.10 M |
+| moss no n | 19 | 6 | 9 | 0 | 5,720 | 66 | 1.29 M |
+| all three | 69 | 10 | 15 | 0 (199 at s8) | 5,661 | 70 | 1.45 M |
+
+With all three, only 3 grass plants are short of nitrogen at season 39.
+Grass is now held by space: a grass cohort dies after its 6 seasons, moss
+spreads into the bare cells, and a cell holds one plant, so grass cannot
+seed back.
+
+#### Proposal: takeover (not built; owner review)
+
+In nature moss loses open, bright, fertile ground to vascular plants,
+which overtop and shade it. It keeps the shade, bare rock and poor soil
+where they cannot grow. Proposed rule:
+
+- A new plant column `stature` (0–255; moss 0, grass and clover 32,
+  fireweed 48, shrub 96, vines 64, trees 255).
+- In the spread sweep, a mature plant may also take a cell holding a
+  plant of lower `stature`, if the cell's anchor passes the spreader's
+  needs (light included, so only where it is bright enough for the
+  spreader). The loser dies as in growth step 2: litter to its anchor,
+  `plants_died`, and §7.0 displacement. Then the spreader is placed
+  (`plants_born`).
+- An empty cell is still preferred: the takeover is only tried when no
+  air cell in the radius qualifies.
+- Each takeover rolls a second seeded chance, `eco.takeover_chance`
+  (proposed 64 in 256), so moss gives way over a few seasons rather than
+  at once.
+- Determinism holds: it runs in the same sweep in global cell order, and
+  the loser's state is read at the moment of the move.
+- Rule 18 holds: the pass compares a column and never names a species.
+
+Expected effect: grass reclaims lit soil from moss within a year of a
+cohort dying. Moss keeps stone, deep shade under crowns, and wet hollows.
+
+#### Fungi (owner question: "Would mushrooms help?")
+
+Yes. Fungi are the main decomposers on a forest floor, and that is where
+this world piles up litter carbon. Three ways in, from cheapest:
+
+1. **Mushroom species (data, plus one need column).** A plant row that
+   needs no light and avoids bright light (a new need, `light_max`), on
+   soil with carbon. It uses existing columns: `uptake` c (it eats litter)
+   and `fix` n, p and k (it returns them). It would live under the tree
+   crowns, where moss now lingers in the shade, and speed the return of
+   carbon to nitrogen there. It is visible as small caps on the forest
+   floor (a new material and mesh look).
+2. **Shade rot (reaction data only).** A second `decompose` row that runs
+   only on soil under a plant part (crown shade). It needs a new
+   `where` condition, and nothing would show on screen.
+3. **Mycorrhizae (code).** Trees share nutrients with understory plants
+   within their root reach, raising those plants' sufficiency. It is the
+   closest to nature, but the largest to build and the hardest to see.
+
+Recommendation: the takeover rule first, then mushrooms (1). They answer
+different limits: space for grass, and carbon locked up in the forest
+litter.
 
 ## 5. Pacing
 

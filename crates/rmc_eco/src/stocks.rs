@@ -321,7 +321,7 @@ mod tests {
             "clover",
             (4, 4),
             100,
-            &[("n", 50), ("p", 1), ("k", 50)],
+            &[("n", 50), ("p", 0), ("k", 50)],
         );
         plant(&mut w, &t, "moss", (6, 6), 0, &[]);
         // An oak with a trunk part above its root and a leaf beside that.
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(s.parts, BTreeMap::from([one("Leaf"), one("Trunk")]));
         assert_eq!(s.cover, 5, "four plant columns and the leaf's");
         assert_eq!(s.biomass, 30);
-        assert_eq!((s.soil["n"], s.soil["p"], s.soil["k"]), (100, 1, 50));
+        assert_eq!((s.soil["n"], s.soil["p"], s.soil["k"]), (100, 0, 50));
         assert_eq!(s.limits.get(FED), Some(&1), "{:?}", s.limits);
         assert_eq!(s.limits.get("p"), Some(&1), "{:?}", s.limits);
         assert_eq!(s.limits.get("moisture"), Some(&1), "{:?}", s.limits);
