@@ -50,6 +50,17 @@
 //! adds them from the chunks' plant maps before the sweep, and a visited
 //! cell that is no longer a mature plant leaves it.
 //!
+//! **Takeover** (docs/VEGETATION.md, understory balance): when no air cell
+//! in reach passes, the plant may take the first cell in the same order
+//! that holds a plant of lower `stature` (its own cell of its species'
+//! material) on an anchor with one of `anchor_tags`, with the spreader's
+//! needs met there, if the seeded [`takeover_roll`] of `(seed, season,
+//! sub-step, cell, target)` is below `eco.takeover_chance`. The loser dies
+//! as in growth step 2: its cell becomes air through `World::eco_set`, its
+//! `litter` of the organic substance goes into its anchor (ledger
+//! `litter_in`, the rest `saturation_loss`), `plants_died`. Then the
+//! spreader's seedling is placed as above.
+//!
 //! **Aging.** At the end of each season every plant's `age_seasons` goes up
 //! by one ([`age_plants`]); a plant that reached its lifespan dies in the
 //! next season's first growth pass.
@@ -64,7 +75,8 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::reference::order_key;
 use crate::runner::{
-    ChunkView, JacobiOut, JacobiPass, Queued, SweepCtx, SweepPass, SweepReport, run_sweep,
+    ChunkView, JacobiOut, JacobiPass, Queued, SweepCtx, SweepPass, SweepReport, put_delta,
+    run_sweep,
 };
 use crate::tables::EcoTables;
 
@@ -97,6 +109,7 @@ struct Species {
     anchors: Vec<bool>,
     spread_chance: u8,
     spread_radius: i32,
+    stature: u8,
 }
 
 impl Species {
@@ -146,6 +159,7 @@ impl Species {
                     .collect(),
                 spread_chance: p.spread_chance,
                 spread_radius: i32::from(p.spread_radius),
+                stature: p.stature,
             })
             .collect()
     }
@@ -334,6 +348,10 @@ impl JacobiPass for GrowthPass {
 pub struct SpreadPass {
     species: Vec<Species>,
     air: MaterialId,
+    /// `eco.takeover_chance`: `None`, no takeover.
+    takeover_chance: Option<u8>,
+    /// Substance index of role `organic`: what a loser's litter adds.
+    organic: Option<u8>,
     season: u32,
     seed: u64,
     /// The sub-step the next run belongs to.
@@ -346,6 +364,8 @@ impl SpreadPass {
         Self {
             species: Species::all(tables),
             air: tables.role_material("air").unwrap_or(MaterialId::AIR),
+            takeover_chance: tables.params().takeover_chance,
+            organic: tables.role_substance("organic"),
             season,
             seed,
             substep: 0,
@@ -387,10 +407,8 @@ impl SpreadPass {
         mature.then_some((plant.species, sp))
     }
 
-    /// The first cell in the global order within `sp`'s reach of `cell`
-    /// that is air on an anchor with one of `sp`'s tags and passes `sp`'s
-    /// needs.
-    fn target(&self, world: &World, sp: &Species, cell: CellPos) -> Option<CellPos> {
+    /// The cells within `sp`'s reach of `cell`, in the global order.
+    fn reach(sp: &Species, cell: CellPos) -> Vec<CellPos> {
         let (c, r) = (cell.0, sp.spread_radius);
         let mut reach: Vec<CellPos> = (c.y - 1..=c.y + 1)
             .flat_map(|y| {
@@ -399,7 +417,62 @@ impl SpreadPass {
             })
             .collect();
         reach.sort_by_key(|&t| order_key(t));
-        reach.into_iter().find(|&t| self.takes(world, sp, t))
+        reach
+    }
+
+    /// The first cell in the global order within `sp`'s reach of `cell`
+    /// that is air on an anchor with one of `sp`'s tags and passes `sp`'s
+    /// needs.
+    fn target(&self, world: &World, sp: &Species, cell: CellPos) -> Option<CellPos> {
+        Self::reach(sp, cell)
+            .into_iter()
+            .find(|&t| self.takes(world, sp, t))
+    }
+
+    /// The first cell in the global order within `sp`'s reach of `cell`
+    /// that a plant of lower stature holds and `sp` could grow in.
+    fn contest(&self, world: &World, sp: &Species, cell: CellPos) -> Option<CellPos> {
+        Self::reach(sp, cell)
+            .into_iter()
+            .find(|&t| self.yields(world, sp, t))
+    }
+
+    /// Whether the plant at `cell` gives way to `sp`: its species stands
+    /// lower than `sp`, `cell` is its own cell of its material, and `sp`'s
+    /// anchor tags and needs hold there.
+    fn yields(&self, world: &World, sp: &Species, cell: CellPos) -> bool {
+        let anchor = below(cell);
+        world.bounds().contains(cell)
+            && world
+                .plant(cell)
+                .and_then(|p| self.species.get(usize::from(p.species)))
+                .is_some_and(|lo| lo.stature < sp.stature && lo.is_body(world.get_cell(cell)))
+            && world.get_cell(anchor).is_some_and(|a| sp.anchors_on(a))
+            && sp.needs_met(|c, id| world.layer(c, id), cell, anchor)
+    }
+
+    /// The plant at `cell` dies as in growth step 2: the cell becomes air
+    /// and its litter goes into the anchor.
+    fn overtop(&self, ctx: &mut SweepCtx<'_>, cell: CellPos) {
+        let litter = ctx
+            .world
+            .plant(cell)
+            .and_then(|p| self.species.get(usize::from(p.species)))
+            .map_or(0, |lo| lo.litter);
+        ctx.world.eco_set(cell, self.air, ctx.ledger);
+        ctx.ledger.plants_died += 1;
+        if let Some(c) = self.organic
+            && litter > 0
+        {
+            ctx.ledger.litter_in[usize::from(c)] += i64::from(litter);
+            put_delta(
+                ctx.world,
+                below(cell),
+                LayerId::Substance(c),
+                litter,
+                ctx.ledger,
+            );
+        }
     }
 
     /// Whether a plant of `sp` can start at `cell`: an air cell in the
@@ -429,8 +502,21 @@ impl SweepPass for SpreadPass {
         if spread_roll(self.seed, self.season, self.substep, cell) >= sp.spread_chance {
             return;
         }
-        let Some(target) = self.target(ctx.world, sp, cell) else {
-            return;
+        let target = match self.target(ctx.world, sp, cell) {
+            Some(target) => target,
+            None => {
+                let Some(chance) = self.takeover_chance else {
+                    return;
+                };
+                let Some(target) = self.contest(ctx.world, sp, cell) else {
+                    return;
+                };
+                if takeover_roll(self.seed, self.season, self.substep, cell, target) >= chance {
+                    return;
+                }
+                self.overtop(ctx, target);
+                target
+            }
         };
         ctx.world.eco_set(target, material, ctx.ledger);
         ctx.world.eco_put_plant(
@@ -508,6 +594,21 @@ pub fn spread_roll(seed: u64, season: u32, substep: u8, cell: CellPos) -> u8 {
     h.update(&cell.0.x.to_le_bytes());
     h.update(&cell.0.y.to_le_bytes());
     h.update(&cell.0.z.to_le_bytes());
+    h.digest().to_le_bytes()[0]
+}
+
+/// The seeded takeover roll of the plant at `cell` against the plant at
+/// `target` in sub-step `substep` of season `season`, 0..=255 (the hash's
+/// low byte).
+pub fn takeover_roll(seed: u64, season: u32, substep: u8, cell: CellPos, target: CellPos) -> u8 {
+    let mut h = Xxh3::with_seed(seed);
+    h.update(&season.to_le_bytes());
+    h.update(&[substep]);
+    for c in [cell, target] {
+        h.update(&c.0.x.to_le_bytes());
+        h.update(&c.0.y.to_le_bytes());
+        h.update(&c.0.z.to_le_bytes());
+    }
     h.digest().to_le_bytes()[0]
 }
 
@@ -1372,6 +1473,135 @@ mod tests {
         assert_eq!(spread(&mut w, &t, seed, season, 2), born(0));
         assert_eq!(w.hash(), hash);
         assert_eq!(w.get_cell(far), Some(MaterialId::AIR));
+    }
+
+    /// Mature grass at P = (10, 31, 10) with every other cell of its reach
+    /// on y = 31 holding a young (not mature) plant on fed, lit soil: moss,
+    /// except a dark moss at (8, 31, 8) and clover at (9, 31, 8), the first
+    /// two in the global order. When `open` is set it stays an air site
+    /// instead of moss.
+    fn crowded(t: &EcoTables, open: Option<CellPos>) -> (World, CellPos) {
+        let mut w = world(t);
+        let p = CellPos::new(10, 31, 10);
+        mature(&mut w, t, p, "grass");
+        for z in 8..=12 {
+            for x in 8..=12 {
+                let c = CellPos::new(x, 31, z);
+                if c == p {
+                    continue;
+                }
+                if Some(c) == open {
+                    site(&mut w, t, c);
+                    continue;
+                }
+                let (key, light) = match (x, z) {
+                    (8, 8) => ("moss", 0),
+                    (9, 8) => ("clover", 255),
+                    _ => ("moss", 255),
+                };
+                plant(&mut w, t, c, key, PlantState::default(), light, 100, &FED);
+            }
+        }
+        (w, p)
+    }
+
+    #[test]
+    fn spread_takes_a_lower_plants_cell_when_no_air_cell_passes() {
+        let t = tables();
+        let at = |x, z| CellPos::new(x, 31, z);
+        let (w0, p) = crowded(&t, None);
+        let (c, k) = (chance(&t, "grass"), t.params().takeover_chance.unwrap());
+        let season = 5;
+        // The dark moss fails grass's light need and the clover stands as
+        // tall as grass, so the first cell grass may take is (10, 31, 8).
+        let target = at(10, 8);
+        assert!(
+            t.plants()[usize::from(species(&t, "clover"))].stature
+                == t.plants()[usize::from(species(&t, "grass"))].stature
+        );
+        assert!(
+            t.plants()[usize::from(species(&t, "moss"))].stature
+                < t.plants()[usize::from(species(&t, "grass"))].stature
+        );
+        let won = (0..u64::from(u32::MAX))
+            .find(|&s| {
+                spread_roll(s, season, 0, p) < c && takeover_roll(s, season, 0, p, target) < k
+            })
+            .expect("a seed where grass spreads and wins the takeover roll");
+        let lost = (0..u64::from(u32::MAX))
+            .find(|&s| {
+                spread_roll(s, season, 0, p) < c && takeover_roll(s, season, 0, p, target) >= k
+            })
+            .expect("a seed where grass spreads and loses the takeover roll");
+
+        // A lost roll changes nothing.
+        let mut w = w0.clone();
+        let hash = w.hash();
+        assert_eq!(spread(&mut w, &t, lost, season, 0), born(0));
+        assert_eq!(w.hash(), hash);
+
+        // A won roll: the moss dies, leaving its litter, and a fresh grass
+        // plant takes its cell.
+        let mut w = w0.clone();
+        let organic = t.role_substance("organic").unwrap();
+        let rot = LayerId::Substance(organic);
+        let had = w.layer(below(target), rot);
+        let litter = i32::from(t.plants()[usize::from(species(&t, "moss"))].litter);
+        let l = spread(&mut w, &t, won, season, 0);
+        assert_eq!((l.plants_born, l.plants_died), (1, 1));
+        assert_eq!(l.litter_in[usize::from(organic)], i64::from(litter));
+        assert_eq!(w.layer(below(target), rot), had + litter);
+        assert_eq!(w.get_cell(target), Some(id(&t, "grass")));
+        assert_eq!(
+            w.plant(target),
+            Some(&PlantState {
+                species: species(&t, "grass"),
+                ..PlantState::default()
+            })
+        );
+        assert_eq!(w.layer(target, LayerId::Growth), 0, "a seedling");
+        assert_eq!(w.get_cell(at(8, 8)), Some(id(&t, "moss")));
+        assert_eq!(w.get_cell(at(9, 8)), Some(id(&t, "clover")));
+        assert_eq!(
+            w.plant(at(11, 8)).map(|s| s.species),
+            Some(species(&t, "moss"))
+        );
+
+        // Moss, the lowest plant, never takes a cell from anything.
+        let (mut w, _) = crowded(&t, None);
+        let m = CellPos::new(10, 31, 10);
+        w.eco_put_plant(m, None);
+        let mut scratch = SeasonLedger::default();
+        w.eco_set(m, MaterialId::AIR, &mut scratch);
+        mature(&mut w, &t, m, "moss");
+        let hash = w.hash();
+        for seed in 0..64 {
+            let mut v = w.clone();
+            assert_eq!(spread(&mut v, &t, seed, season, 0), born(0), "seed {seed}");
+            assert_eq!(v.hash(), hash);
+        }
+    }
+
+    #[test]
+    fn spread_prefers_an_air_cell_to_a_takeover() {
+        let t = tables();
+        // The only air site is the last cell of the reach in the global
+        // order; every moss before it would pass.
+        let open = CellPos::new(12, 31, 12);
+        let (w0, p) = crowded(&t, Some(open));
+        let (c, k) = (chance(&t, "grass"), t.params().takeover_chance.unwrap());
+        let season = 5;
+        let seed = (0..u64::from(u32::MAX))
+            .find(|&s| {
+                spread_roll(s, season, 0, p) < c
+                    && takeover_roll(s, season, 0, p, CellPos::new(10, 31, 8)) < k
+            })
+            .expect("a seed where grass spreads and would win a takeover");
+        let mut w = w0.clone();
+        let l = spread(&mut w, &t, seed, season, 0);
+        assert_eq!(l, born(1), "no plant dies");
+        assert_eq!(w.get_cell(open), Some(id(&t, "grass")));
+        assert_eq!(w.get_cell(CellPos::new(10, 31, 8)), Some(id(&t, "moss")));
     }
 
     #[test]

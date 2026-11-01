@@ -397,6 +397,23 @@ where they cannot grow. Proposed rule:
 Expected effect: grass reclaims lit soil from moss within a year of a
 cohort dying. Moss keeps stone, deep shade under crowns, and wet hollows.
 
+**Status: built (2026-11-01, owner pick "build").** As proposed, except
+vines have `stature` 128, not 64: they climb above shrubs, and a shrub
+must not take a vine's root. `eco.takeover_chance` is 64.
+- Tests: `plants::tests::{spread_takes_a_lower_plants_cell_when_no_air_cell_passes, spread_prefers_an_air_cell_to_a_takeover}`.
+- Ten-year world (seed 1, all nitrogen fixes), counts at seasons
+  0 / 8 / 20 / 39:
+
+  | `takeover_chance` | Grass | Moss | Clover | Clematis | Grape | Soil n at 39 |
+  |---|---|---|---|---|---|---|
+  | off (before) | 1,778 / … / … / 69 | 3,135 / … / … / 5,661 | 735 / 199 / … / 0 | 62 / … / … / 10 | 52 / … / … / 15 | 1.45 M |
+  | 64 (shipped) | 1,778 / 5,432 / 2,463 / 1,689 | 3,135 / 250 / 41 / 61 | 735 / 763 / 105 / 109 | 62 / 42 / 9 / 5 | 52 / 45 / 20 / 14 | 1.28 M |
+  | 16 (trial) | 1,778 / 3,125 / 2,001 / 1,165 | 3,135 / 3,380 / 2,894 / 3,611 | 735 / 380 / 139 / 90 | 62 / 42 / 8 / 4 | 52 / 45 / 19 / 15 | 1.34 M |
+
+  At 64, grass overruns the moss within two years and moss is left with
+  about 60 cells. At 16, the two coexist and clover persists. The light
+  limit stays near zero, so crown shade is not yet a refuge for moss.
+
 #### Fungi (owner question: "Would mushrooms help?")
 
 Yes. Fungi are the main decomposers on a forest floor, and that is where

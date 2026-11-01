@@ -216,6 +216,11 @@ pub struct PlantDef {
     /// (docs/VEGETATION.md V3). Not encoded when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sway: u8,
+    /// How tall the plant stands over its neighbors (docs/VEGETATION.md,
+    /// understory takeover): a spreading plant with no air cell to take
+    /// may take the cell of a plant of lower stature. Not encoded when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stature: u8,
     /// Per season key: the color (sRGB) the leaves turn toward that season
     /// (docs/VEGETATION.md V3). Not encoded when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -526,6 +531,11 @@ pub struct EcoParams {
     /// `None`: wood yields none. Not encoded when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wood_per_item_dm3: Option<u32>,
+    /// Understory takeover (docs/VEGETATION.md): the chance in 256 that a
+    /// spreading plant takes a lower plant's cell. `None`: never. Not
+    /// encoded when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover_chance: Option<u8>,
     // §7.9 activity
     pub quiet_skip: u8,
 }

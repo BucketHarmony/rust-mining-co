@@ -359,7 +359,7 @@ fn apply_out(world: &mut World, pos: ChunkPos, out: &JacobiOut, ledger: &mut Sea
 /// cell outside the bounds or not resident is skipped.
 ///
 /// Panics if `d` would take a moisture, substance or gas layer below 0.
-fn put_delta(
+pub(crate) fn put_delta(
     world: &mut World,
     c: CellPos,
     id: LayerId,

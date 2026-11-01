@@ -4607,3 +4607,24 @@ Decisions:
 - The takeover and the fungi wait for the owner's review of the design, as asked.
 Next: the owner's picks on the takeover and the fungi (tk-build, tk-fungi, tk-order, tk-push).
 Blockers: CI run 41263875577 (6f67e19): linux-e2e was still in progress when checked this session. The other four jobs are green.
+
+## 2026-11-01 — Understory takeover (grass over moss) — passed
+Done:
+- Owner picks on the update artifact: build the takeover as designed, mushrooms as a species (later), takeover first, push. Pushed 7e7583f.
+- `plants.ron` `stature` column (moss 0, grass and clover 32, fireweed 48, shrub 96, vines 128, trees 255) and `eco.takeover_chance` 64.
+- The spread sweep: when no air cell in reach passes, a mature plant may take the first cell in the global order that holds a plant of lower stature on an anchor it accepts, with its needs met there, if the seeded `takeover_roll(seed, season, sub-step, cell, target)` is below `takeover_chance`.
+  - The loser dies as in growth step 2: its cell becomes air (`eco_set`, so held, a tall top and the growth layer go as usual), its litter goes into its anchor (`litter_in`, the clamped rest `saturation_loss`), and `plants_died` is counted.
+  - Then the seedling is placed as before (`plants_born`).
+- Ten-year world (seed 1, 40 seasons), at season 39:
+  - with takeover 64: grass 1,689, moss 61, clover 109, clematis 5, grape 14, oak 69, soil n 1.28 M;
+  - trial at 16 (not shipped): grass 1,165, moss 3,611, clover 90, clematis 4, grape 15, soil n 1.34 M.
+  - Before: grass 69, moss 5,661, clover 0.
+- Invariants held. `tailings_kill_moss` passes.
+Tests added: `plants::tests::{spread_takes_a_lower_plants_cell_when_no_air_cell_passes, spread_prefers_an_air_cell_to_a_takeover}`
+Decisions:
+- Vines get stature 128, not the design's 64. They climb above shrubs, and at 64 a spreading shrub (96) could take a vine's root.
+- The takeover roll hashes both the spreader's cell and the target, so it is independent of the spread roll without a salt constant (rule 19).
+- `takeover_chance` ships at 64, as the owner picked. At 64 grass nearly wipes out moss; at 16 they coexist. That choice is on the artifact.
+- `runner::put_delta` is now `pub(crate)`, so the sweep books the loser's litter with the same clamp and ledger as the Jacobi passes.
+Next: the owner's pick on `takeover_chance` (64 or 16), then the mushroom species. Clematis falls to about 5 in every run and needs its own look.
+Blockers: none. CI run 41270478273 (7e7583f) was in progress at the time of writing. Run 41263875577 (6f67e19) was cancelled by the newer push.
