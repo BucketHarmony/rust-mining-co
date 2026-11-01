@@ -63,7 +63,7 @@
         wood_per_item_dm3: Some(5),
         // Understory takeover (docs/VEGETATION.md): the chance in 256 that
         // a spreading plant with no air cell takes a lower plant's cell
-        takeover_chance: Some(64),
+        takeover_chance: Some(16),
         // §7.9 activity: quiet Jacobi passes before a chunk is skipped
         quiet_skip: 2,
     ),

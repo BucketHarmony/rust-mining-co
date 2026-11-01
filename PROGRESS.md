@@ -4628,3 +4628,10 @@ Decisions:
 - `runner::put_delta` is now `pub(crate)`, so the sweep books the loser's litter with the same clamp and ledger as the Jacobi passes.
 Next: the owner's pick on `takeover_chance` (64 or 16), then the mushroom species. Clematis falls to about 5 in every run and needs its own look.
 Blockers: none. CI run 41270478273 (7e7583f) was in progress at the time of writing. Run 41263875577 (6f67e19) was cancelled by the newer push.
+
+## 2026-11-01 — Takeover chance 16 — passed
+Done: owner pick "16 (coexist)": `eco.takeover_chance` 64 → 16. In the ten-year trial at 16 (seed 1), year 10 has grass 1,165, moss 3,611, clover 90, soil n 1.34 M. At 64, moss fell to 61.
+Tests added: none (the takeover tests read the chance from the tables).
+Decisions: none.
+Next: the mushroom species (owner pick).
+Blockers: none.
