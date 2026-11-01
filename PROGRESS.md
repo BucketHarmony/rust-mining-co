@@ -4635,3 +4635,29 @@ Tests added: none (the takeover tests read the chance from the tables).
 Decisions: none.
 Next: the mushroom species (owner pick).
 Blockers: none.
+
+## 2026-11-01 — Mushroom species — partial (stashed, awaiting owner pick)
+Done:
+- Owner pick tk-next "mushrooms". Built:
+  - a `mushroom` material (id 48);
+  - a plant row: light 0, stature 0, demand c 2, fix n/p/k 1, lifespan 4;
+  - a `cap` look flag (`PlantDef`, `PlantLook`, `PlantCell`);
+  - a stalk-and-cap mesh in `mesher::push_cap`.
+- Trial: starting humus in worldgen fertility (loam c 4–24, topsoil c 2–12).
+- Ten-year trials (seed 1) on the stashed work:
+  - without humus, all 671 seeded mushrooms are extinct by season 4;
+  - with humus, extinct by season 2.
+- Cause: `decompose` (reactions, before plant growth in the fixed pass order) turns every 2 c in soil into n, p, k each sub-step, so the mushroom sees at most 1 c.
+- All work is in `git stash` "mushroom species WIP: awaiting owner pick mu-fix ...".
+- Options are on the update artifact (mu-fix, mu-humus, mu-push):
+  - a humus reserve (decompose only above a reserve);
+  - fungi decompose;
+  - a look only;
+  - shelve.
+Tests added (in the stash): `plants::tests::a_mushroom_turns_litter_into_nutrients_and_starves_without_it`, `mesher::tests::a_capped_plant_draws_a_stalk_and_a_flat_cap`. The species list in `tables::tests::loads_all_phase2_tables` is extended with "mushroom" (an extension, not a weakening).
+Decisions:
+- No `light_max` need: worldgen seeds plants at season 0, before any shade exists. Shade preference comes from the carbon demand and from stature 0.
+Next:
+- Pop the stash after the owner's mu-fix pick and apply it.
+- `garden::tests::the_garden_plants_every_species_where_its_needs_hold` fails with the stash applied ("mushroom planted"). The garden must give the mushroom carbon to grow.
+Blockers: none. CI run 41272816090 (f567708): linux, windows and windows-release green; linux-e2e and linux-features in progress at the time of writing.
