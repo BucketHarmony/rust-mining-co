@@ -437,6 +437,54 @@ Recommendation: the takeover rule first, then mushrooms (1). They answer
 different limits: space for grass, and carbon locked up in the forest
 litter.
 
+#### Mushrooms (status: built, 2026-11-01)
+
+Owner picks: the mushroom species (tk-next), a humus reserve (mu-fix), and
+keeping the starting humus (mu-humus).
+
+- **Why a reserve.** `decompose` runs in the reactions pass, before plant
+  growth (SAD-P2 §3 order). It turned every 2 c in soil into n, p and k,
+  so a mushroom never saw more than 1 c, and both early trials starved
+  out by season 4. Soil also keeps a humus fraction that breaks down
+  slowly. So `decompose` now has a new reaction condition,
+  `SubstanceAbove("c", 8)`, and soil keeps up to 8 c that only a mushroom
+  eats.
+- **Starting humus.** Worldgen fertility lays c in loam (4 to 24) and
+  topsoil (2 to 12), as real topsoil holds humus.
+- **The row.**
+  - Light 0, `substance_min` c 2: spores take only humus.
+  - `demand` c 1 and `fix` 1 each of n, p and k. Fungi also free p and k
+    from the mineral soil.
+  - Growth 64 a sub-step: fruiting bodies come up in days.
+  - `spread_chance` 64 and `spread_radius` 6: spores travel.
+  - Stature 0, as moss: it takes only open cells, and grass takes its cell
+    in the light.
+  - `cap: true`: drawn as a pale stalk and a flat brown cap.
+  - Short of humus it shrivels dark: c's new `deficiency_color`.
+- **No `light_max` need.** Worldgen seeds plants at season 0, before there
+  is any shade, so a light ceiling would leave no mushrooms. Shade comes
+  instead from food: they live on humus and litter.
+- **The garden.** Mushrooms ring the grove trees, and the meadow loam holds
+  64 c.
+
+Ten-year world (seed 1), counts at year 10, takeover 16:
+
+| Run | Mushroom | Moss | Grass | Clover | Soil n |
+|---|---|---|---|---|---|
+| No mushroom (chance 16 trial) | — | 3,611 | 1,165 | 90 | 1.34 M |
+| Demand c 2, no reserve | extinct, season 4 | 3,565 | 1,232 | 52 | 1.38 M |
+| Reserve 8, radius 3 | extinct, year 9 | 3,702 | 1,132 | 101 | 1.39 M |
+| Reserve 8, radius 6, stature 16 | 3,663 | 243 | 1,293 | 58 | 1.56 M |
+| **Reserve 8, radius 6, stature 0 (shipped)** | 2,178 | 2,837 | 728 | 30 | 1.50 M |
+
+- With radius 3, the mushrooms bloomed on the starting humus (1,606 in
+  year 1) and ate their neighbourhoods down below 2 c. Litter that built
+  up later lay beyond spore reach.
+- At stature 16 they pushed through the moss and overran it.
+- Shipped, they hold about 2,200 cells, and soil n and p rise. Grass is
+  lower than without mushrooms, because mushrooms hold open cells grass
+  would spread into.
+
 ## 5. Pacing
 
 At 5 s a game hour, a season lasts 14 minutes and holds 7 growth passes, and a year lasts 56 minutes.

@@ -28,7 +28,8 @@
 //! - `PhBelow(n)` / `PhAbove(n)`: [`ph`] of the cell `< n` / `> n`;
 //! - `Evaporating`: the evaporation step (§7.3 C) took water from the cell
 //!   in this sub-step, and its fill is now below `evap_low_fill`;
-//! - `Tag(t)`: the cell's material carries tag `t`.
+//! - `Tag(t)`: the cell's material carries tag `t`;
+//! - `SubstanceAbove(x, n)`: the cell holds more than `n` of substance `x`.
 //!
 //! A row that fails either way passes the cell on to the next row. Firing
 //! subtracts `consume` and adds `produce` on the cell's own layers. The
@@ -253,6 +254,8 @@ enum Cond {
     Evaporating,
     /// Per material id: whether the material carries the tag.
     Tag(Vec<bool>),
+    /// Substance index and the amount the cell must exceed.
+    SubstanceAbove(u8, i32),
 }
 
 /// One `reactions.ron` row resolved against the tables.
@@ -341,6 +344,9 @@ impl ReactionsPass {
                         Condition::Evaporating => Cond::Evaporating,
                         Condition::Tag(t) => {
                             Cond::Tag(materials.iter().map(|d| d.has_tag(t)).collect())
+                        }
+                        Condition::SubstanceAbove(key, n) => {
+                            Cond::SubstanceAbove(sub(key), i32::from(*n))
                         }
                     })
                     .collect();
@@ -438,6 +444,9 @@ impl ReactionsPass {
                     && i32::from(layers.get_u8(LayerId::Moisture, local)) < self.evap_low_fill
             }
             Cond::Tag(has) => has.get(usize::from(m.0)).copied().unwrap_or(false),
+            Cond::SubstanceAbove(x, n) => {
+                i32::from(layers.get_u8(LayerId::Substance(*x), local)) > *n
+            }
         }
     }
 }
@@ -1188,7 +1197,18 @@ mod tests {
                 _ => {}
             }
         }
-        let need = needs(t, row);
+        let mut need = needs(t, row);
+        // `SubstanceAbove(x, n)`: one more than `n` when it holds, `n` when
+        // it fails (and at least what the row consumes either way).
+        for (k, cond) in row.conditions.iter().enumerate() {
+            if let Condition::SubstanceAbove(key, n) = cond {
+                let x = t.substance_index(key).unwrap();
+                let amount = need.entry(x).or_default();
+                let n = i32::from(*n);
+                assert!(*amount <= n, "the reserve covers the consumed amount");
+                *amount = if holds(k) { n + 1 } else { n };
+            }
+        }
         let (acid, lime) = (
             t.role_substance("acid").unwrap(),
             t.role_substance("lime").unwrap(),
@@ -1223,6 +1243,29 @@ mod tests {
         (0..N_SUBSTANCES as u8)
             .map(|x| w.layer(c, layer(x)))
             .collect()
+    }
+
+    /// `SubstanceAbove(x, n)` holds while the cell has more than `n` of
+    /// `x`: a row consuming 2 on `SubstanceAbove(x, 4)` fires at 6 and 5,
+    /// leaving 4 and 3, and never at 4, so it keeps a reserve.
+    #[test]
+    fn a_substance_above_condition_keeps_a_reserve() {
+        let t0 = shipped();
+        let key = t0.substances()[0].key.clone();
+        let t = tables_reacting(&[reaction(
+            "probe",
+            &[(&key, 2)],
+            vec![Condition::SubstanceAbove(key.clone(), 4)],
+            &[],
+            None,
+        )]);
+        let pass = ReactionsPass::new(&t);
+        for (start, left) in [(6, 4), (5, 3), (4, 4), (3, 3)] {
+            let mut w = filled_world(&t);
+            w.eco_put_layer(at(), layer(0), start);
+            react(&mut w, &pass);
+            assert_eq!(w.layer(at(), layer(0)), left, "from {start}");
+        }
     }
 
     /// pH is derived in `i32` from the `u8` amounts: `lime − acid` never
@@ -1362,7 +1405,7 @@ mod tests {
             }
         }
         // The shipped table exercises every kind of condition.
-        assert_eq!(kinds.len(), 6, "condition kinds covered");
+        assert_eq!(kinds.len(), 7, "condition kinds covered");
 
         // `Evaporating` is fed by the evaporation step: a shallow water
         // cell under air evaporates, and a row on that condition fires
@@ -2323,7 +2366,8 @@ mod tests {
     // ---- Chokedamp from decomposition (F155) ----
 
     /// `docs/VEGETATION.md` V1: litter's carbon decomposes into n, p and
-    /// k, one each per 2 c, until less than 2 c is left; a full p layer
+    /// k, one each per 2 c, until the humus reserve (8 c, the row's
+    /// `SubstanceAbove`) is left; a full p layer
     /// takes no more. Every firing is ledgered, so the substance invariant
     /// holds.
     #[test]
@@ -2340,26 +2384,26 @@ mod tests {
         let mut ledger = SeasonLedger::default();
         for cell in [s, full] {
             w.eco_set(cell, soil, &mut ledger);
-            w.eco_put_layer(cell, layer(c), 10);
+            w.eco_put_layer(cell, layer(c), 18);
         }
         w.eco_put_layer(full, layer(p), i32::from(u8::MAX));
         let checker = InvariantChecker::new(&w);
         let mut ledger = SeasonLedger::default();
         let amounts = |w: &World, cell| [c, n, p, k].map(|x| w.layer(cell, layer(x)));
         for want in [
-            [8, 1, 1, 1],
-            [6, 2, 2, 2],
-            [4, 3, 3, 3],
-            [2, 4, 4, 4],
-            [0, 5, 5, 5],
-            [0, 5, 5, 5],
+            [16, 1, 1, 1],
+            [14, 2, 2, 2],
+            [12, 3, 3, 3],
+            [10, 4, 4, 4],
+            [8, 5, 5, 5],
+            [8, 5, 5, 5],
         ] {
             merge(&mut ledger, &react(&mut w, &pass));
             assert_eq!(amounts(&w, s), want);
             checker.check(&w, &ledger).unwrap();
         }
         let [cc, nn, pp, kk] = amounts(&w, full);
-        assert_eq!((cc, nn, kk), (0, 5, 5), "it fires beside a full layer");
+        assert_eq!((cc, nn, kk), (8, 5, 5), "it fires beside a full layer");
         assert_eq!(pp, i32::from(u8::MAX));
     }
 
@@ -2428,12 +2472,13 @@ mod tests {
             offset(s, ABOVE),
             offset(s, [0, 0, -1]),
         );
-        // A soil cell with 10 c in filler, air to the west and above.
+        // A soil cell with 12 c (two firings over the 8 c humus reserve)
+        // in filler, air to the west and above.
         let base = || {
             let mut w = filled_world(t);
             let mut ledger = SeasonLedger::default();
             w.eco_set(s, soil, &mut ledger);
-            w.eco_put_layer(s, layer(c), 10);
+            w.eco_put_layer(s, layer(c), 12);
             for a in [west, up] {
                 w.eco_set(a, MaterialId::AIR, &mut ledger);
             }
@@ -2450,7 +2495,7 @@ mod tests {
         let mut w = base();
         assert!(!active(&w, west));
         let ledger = run(&mut w);
-        assert_eq!((w.layer(s, layer(c)), w.layer(s, layer(n))), (8, 1));
+        assert_eq!((w.layer(s, layer(c)), w.layer(s, layer(n))), (10, 1));
         assert_eq!((w.layer(west, gas), w.layer(up, gas)), (emit, 0));
         assert_eq!(ledger, fired(2, 0));
         assert!(active(&w, west), "the receiver joins the chokedamp sweep");
@@ -2497,8 +2542,9 @@ mod tests {
             assert_eq!(total, 0, "{open:?}");
         }
 
-        // Not soil, or 1 c: nothing at all.
-        for (m, amount) in [(filler(t), 10), (soil, 1)] {
+        // Not soil, 1 c, or no more than the 8 c humus reserve: nothing at
+        // all.
+        for (m, amount) in [(filler(t), 10), (soil, 1), (soil, 8)] {
             let mut w = base();
             w.eco_set(s, m, &mut SeasonLedger::default());
             w.eco_put_layer(s, layer(c), amount);

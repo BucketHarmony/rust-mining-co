@@ -212,4 +212,11 @@
     (id: 47, key: "grape_leaves", phase: Solid, tags: ["leaf", "vine"],
      hardness: 2, diggable: true, yield_count: 1, color: (100, 146, 62, 255), emissive: 0.0,
      passable: true, conductivity: 64, heat_capacity: 8, light_attenuation: Some(32)),
+
+    // Mushroom (docs/VEGETATION.md, understory balance: fungi): a low
+    // plant that turns litter carbon into nutrients; plants.ron's mushroom
+    // row. Drawn as a stalk and a cap.
+    (id: 48, key: "mushroom", phase: Solid, tags: ["plant"],
+     hardness: 1, diggable: true, yield_count: 1, color: (168, 118, 76, 255), emissive: 0.0,
+     passable: true, conductivity: 64, heat_capacity: 8),
 ]

@@ -7,7 +7,8 @@
 //! Look and feel (CLAUDE.md rule 21): the test asserts what the code set up
 //! (the client's plant looks come from the tables, the chunk material sways
 //! at `SWAY_RATE`, the mesh input carries a plant cell for every plant with
-//! a starved plant colored apart from a fed one) and that the frames render;
+//! a starved plant colored apart from a fed one, and a capped species'
+//! cells drawn as caps) and that the frames render;
 //! the screenshots (spring, then two seasons on) are for the playtester.
 
 use bevy::prelude::*;
@@ -106,10 +107,11 @@ fn run(t: &mut TestApp) {
             },
         ),
     ]);
-    // The left half fed, the right half bare; water in all of it.
+    // The left half fed (n, p, k and the mushroom's humus c), the right half
+    // bare; water in all of it.
     let half = x0 + WIDTH / 2 - 1;
     let mut soil = Vec::new();
-    for key in ["n", "p", "k"] {
+    for key in ["n", "p", "k", "c"] {
         let x = eco.substance_index(key).expect("a plant nutrient");
         soil.push((
             EditOp::SetLayer {
@@ -201,6 +203,9 @@ fn run(t: &mut TestApp) {
     };
     let (fed, bare) = (cell_of(fed_cell), cell_of(bare_cell));
     assert_ne!(fed.color, bare.color, "the bare soil's plant looks starved");
+    // A capped species (the mushroom) draws as a stalk and a cap.
+    let capped = client_eco.plant_looks.iter().any(|l| l.cap);
+    assert_eq!(input.plants.values().any(|p| p.cap), capped);
     assert!(bare.stage > fed.stage, "growth ramps along x");
 
     // From the bare side's front corner, looking across the bed.

@@ -17,7 +17,8 @@
 // of the plant sways in the wind (0 none, 255 most), and per season the color
 // its leaves turn toward. stature (docs/VEGETATION.md, understory takeover):
 // a spreading plant with no air cell may take the cell of a plant of lower
-// stature (absent: 0, the lowest). Moss's acid cap of 4 is what water
+// stature (absent: 0, the lowest). cap: the client draws the plant as a
+// mushroom, a stalk and a flat cap, instead of a cross. Moss's acid cap of 4 is what water
 // near pH 2 leaves there, so moss dies beside acid drainage (F171).
 [
     (key: "moss", material: "moss", anchor_tags: ["stone", "soil"],
@@ -209,4 +210,16 @@
              form: Vine(climb_tags: ["stone", "wood"], reach: 20, hang: true),
              shed: Some("winter"),
              fruit: Some((grow: "summer", fall: "autumn", count: 8, take: 52))))),
+    // Mushroom (docs/VEGETATION.md, understory balance: fungi): it eats the
+    // humus reserve decompose leaves (c >= 2), 1 c a sub-step for 1 each of
+    // n, p and k, and starves where no litter falls. Fruiting bodies come up
+    // in days (64 a sub-step) and spores travel (radius 6). Stature 0, as
+    // moss: it takes only open cells, and grass takes its cell in the light.
+    (key: "mushroom", material: "mushroom", anchor_tags: ["soil"],
+     needs: (light: 0, moisture: 24, temp: (20, 300), substance_min: [("c", 2)],
+             substance_max: [("cu", 16), ("acid", 48)]),
+     growth_per_substep: 64, spread_chance: 64, spread_radius: 6, litter: 2,
+     lifespan_seasons: 4, demand: [("c", 1)], fix: [("n", 1), ("p", 1), ("k", 1)],
+     worldgen_chance: 24, cap: true,
+     season_colors: [("winter", (132, 112, 92))]),
 ]

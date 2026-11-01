@@ -1583,6 +1583,78 @@ mod tests {
     }
 
     #[test]
+    fn a_mushroom_turns_litter_into_nutrients_and_starves_without_it() {
+        // docs/VEGETATION.md, fungi: 1 c of humus into 1 n, 1 p and 1 k a
+        // sub-step (fungi also free p and k from the mineral soil), inside
+        // the plant pass, needing no light, and only on humus (c >= 2).
+        let t = tables();
+        let row = &t.plants()[usize::from(species(&t, "mushroom"))];
+        assert_eq!(row.needs.light, 0);
+        assert_eq!(
+            row.stature, 0,
+            "below grass, so grass takes it in the light"
+        );
+        assert!(row.cap);
+        let mut w = world(&t);
+        let fed = CellPos::new(4, 31, 4);
+        let bare = CellPos::new(8, 31, 4);
+        let thin = CellPos::new(12, 31, 4);
+        let mut subs: Vec<(&str, i32)> = FED.to_vec();
+        subs.push(("c", 20));
+        plant(
+            &mut w,
+            &t,
+            fed,
+            "mushroom",
+            PlantState::default(),
+            0,
+            100,
+            &subs,
+        );
+        plant(
+            &mut w,
+            &t,
+            bare,
+            "mushroom",
+            PlantState::default(),
+            0,
+            100,
+            &FED,
+        );
+        let mut one: Vec<(&str, i32)> = FED.to_vec();
+        one.push(("c", 1));
+        plant(
+            &mut w,
+            &t,
+            thin,
+            "mushroom",
+            PlantState::default(),
+            0,
+            100,
+            &one,
+        );
+        let c = sub(&t, "c");
+        let before: Vec<i32> = ["c", "n", "p", "k"]
+            .iter()
+            .map(|x| w.layer(below(fed), sub(&t, x)))
+            .collect();
+        grow(&mut w, &t, Exec::Serial);
+        let after: Vec<i32> = ["c", "n", "p", "k"]
+            .iter()
+            .map(|x| w.layer(below(fed), sub(&t, x)))
+            .collect();
+        assert_eq!(
+            after,
+            vec![before[0] - 1, before[1] + 1, before[2] + 1, before[3] + 1]
+        );
+        assert_eq!(w.plant(fed).unwrap().stress, 0, "dark is fine");
+        assert!(w.layer(fed, LayerId::Growth) > 0);
+        assert_eq!(w.layer(below(bare), c), 0);
+        assert_eq!(w.plant(bare).unwrap().stress, 1, "no litter, no food");
+        assert_eq!(w.plant(thin).unwrap().stress, 1, "1 c is no humus");
+    }
+
+    #[test]
     fn spread_prefers_an_air_cell_to_a_takeover() {
         let t = tables();
         // The only air site is the last cell of the reach in the global

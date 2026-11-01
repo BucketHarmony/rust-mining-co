@@ -128,6 +128,9 @@ pub enum Condition {
     PhAbove(u8),
     Evaporating,
     Tag(String),
+    /// The cell holds more than `n` of the substance (docs/VEGETATION.md,
+    /// the humus reserve).
+    SubstanceAbove(String, u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +224,10 @@ pub struct PlantDef {
     /// may take the cell of a plant of lower stature. Not encoded when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub stature: u8,
+    /// The client draws the plant as a mushroom: a stalk and a flat cap
+    /// (docs/VEGETATION.md, fungi). A look only. Not encoded when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cap: bool,
     /// Per season key: the color (sRGB) the leaves turn toward that season
     /// (docs/VEGETATION.md V3). Not encoded when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -825,6 +832,9 @@ impl EcoTables {
                         ));
                     }
                     Condition::Tag(tag) => non_empty(REACTIONS_FILE, "where tag", tag)?,
+                    Condition::SubstanceAbove(x, _) => {
+                        key_in(REACTIONS_FILE, &r.id, "substance", x, &sub_keys)?;
+                    }
                     _ => {}
                 }
             }
@@ -1234,6 +1244,7 @@ impl EcoTables {
                     sub(&p.demand)
                 },
                 sway: p.sway,
+                cap: p.cap,
                 season_colors: self
                     .seasons
                     .seasons
@@ -1909,6 +1920,7 @@ mod tests {
                 (LayerId::Substance(sub("n")), [214, 196, 72]),
                 (LayerId::Substance(sub("p")), [122, 74, 140]),
                 (LayerId::Substance(sub("k")), [148, 100, 52]),
+                (LayerId::Substance(sub("c")), [84, 70, 58]),
             ]
         );
     }
@@ -2071,7 +2083,10 @@ mod tests {
                 reaction(
                     "decompose",
                     &[("c", 2)],
-                    vec![Condition::Tag("soil".into())],
+                    vec![
+                        Condition::Tag("soil".into()),
+                        Condition::SubstanceAbove("c".into(), 8)
+                    ],
                     &[("n", 1), ("p", 1), ("k", 1)],
                     Some(SideEffect::EmitGas("chokedamp".into(), 2))
                 ),
@@ -2079,7 +2094,7 @@ mod tests {
         );
 
         // §7.8: four pioneer species, then clover (docs/VEGETATION.md V2),
-        // the trees (V4, V5) and the vines (V6).
+        // the trees (V4, V5), the vines (V6) and the mushroom (fungi).
         assert_eq!(
             t.plants()
                 .iter()
@@ -2087,7 +2102,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "moss", "grass", "fireweed", "shrub", "clover", "oak", "birch", "pine", "ivy",
-                "clematis", "grape"
+                "clematis", "grape", "mushroom"
             ]
         );
         let plant = |k: &str| t.plants().iter().find(|p| p.key == k).unwrap();

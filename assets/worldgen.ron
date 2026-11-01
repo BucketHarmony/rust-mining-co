@@ -128,8 +128,8 @@
     fertility: Some((
         noise: (frequency: 0.04, octaves: 2),
         soils: [
-            (material: "loam", substances: [("n", 16, 96), ("p", 8, 48), ("k", 16, 96)]),
-            (material: "topsoil", substances: [("n", 4, 24), ("p", 2, 12), ("k", 8, 32)]),
+            (material: "loam", substances: [("n", 16, 96), ("p", 8, 48), ("k", 16, 96), ("c", 4, 24)]),
+            (material: "topsoil", substances: [("n", 4, 24), ("p", 2, 12), ("k", 8, 32), ("c", 2, 12)]),
             (material: "dirt", substances: [("n", 0, 8), ("p", 0, 6), ("k", 4, 16)]),
         ],
     )),

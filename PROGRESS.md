@@ -4673,3 +4673,34 @@ Decisions:
 - Nothing is deleted. The old save keeps its files under the new name.
 Next: the mushroom species with the owner's picks (mu-fix humus, mu-humus keep, mu-push push).
 Blockers: none.
+
+## 2026-11-01 — Mushroom species (humus reserve) — passed
+Done:
+- Owner picks on the update artifact: mu-fix "humus" (a humus reserve), mu-humus "keep" (worldgen starting humus), mu-push "push".
+- New reaction condition `SubstanceAbove(x, n)` (`tables::Condition`, `chemistry::Cond`). `decompose` now runs only on soil holding more than 8 c, so soil keeps a humus reserve of up to 8 c that only a mushroom eats.
+- Mushroom row (popped from the stash, then tuned in ten-year trials):
+  - needs c ≥ 2, light 0, moisture 24, no copper or acid;
+  - growth 64 a sub-step, spread chance 64, radius 6, lifespan 4, stature 0;
+  - demand c 1, fix n, p and k 1 each, `cap` look.
+- Worldgen starting humus kept: fertility loam c 4–24, topsoil c 2–12.
+- `c` gets a deficiency colour (84, 70, 58), so a mushroom short of humus shows shrivelled dark.
+- Garden: loam gets c 64, and bed species past the lawn (the mushroom) ring each grove tree on its four face neighbours.
+- `plants_render` feeds c in the fed half and checks that a capped look reaches the client. The screenshots were retaken.
+- The windowed game moves saves made with other game data aside (`save.old-*`), and `.gitignore` covers them.
+- Ten-year world (seed 1, 40 seasons), at season 39: mushroom 2,178, moss 2,837, grass 728, clover 30, soil n 1.50 M.
+  - Without mushrooms (takeover 16) the same world had grass 1,165 and moss 3,611.
+  - Earlier trials went extinct (radius 3) or let moss collapse (stature 16, 243 moss). See docs/VEGETATION.md "Mushrooms".
+Tests added: `chemistry::tests::a_substance_above_condition_keeps_a_reserve`, `plants::tests::a_mushroom_turns_litter_into_nutrients_and_starves_without_it`, `mesher::tests::a_capped_plant_draws_a_stalk_and_a_flat_cap`
+Test-fixes (the reserve changes the decompose rule these tests pinned):
+- `chemistry::tests::decompose_returns_n_p_and_k_and_the_ledger_conserves` starts at c 18 and stops at the 8 c reserve.
+- `chemistry::tests::decompose_c_to_n_emits_chokedamp` starts at c 12, and the "nothing" case adds soil holding c 8.
+- The `reaction_fixture` kinds count goes from 6 to 7.
+- `tables::tests::loads_all_phase2_tables`: the decompose row has the new condition, the deficiency colours include c, and the species list includes the mushroom.
+- e2e `plants_render`: c is in the fed half, and an assert on the cap look was added.
+Decisions:
+- No `light_max`. Shade preference comes from the humus need and stature 0.
+- Stature 0, as moss, so the mushroom takes only open cells and grass can take its cell.
+- Radius 6: at 3, mushrooms died out in their own depleted patches.
+- p and k come from fix (minerals the hyphae free), as n does.
+Next: grass fell from 1,165 to 728 with mushrooms holding open cells, which is a tuning option for the owner. Clematis is still about 5.
+Blockers: none.

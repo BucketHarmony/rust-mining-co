@@ -1696,6 +1696,7 @@ mod tests {
             material: t.id("acorn").unwrap(),
             needs: Vec::new(),
             sway: 32,
+            cap: false,
             season_colors: Vec::new(),
             leaf: t.id("oak_leaves"),
             tuft: None,

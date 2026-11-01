@@ -14,7 +14,8 @@
 //! around the crossing. The beds hold the species in `plants.ron` row
 //! order: north-west moss, north-east grass, south-west fireweed,
 //! south-east shrubs, and the lawn the fifth (clover), each with gaps to
-//! spread into. Species that grow parts take no bed: trees
+//! spread into. Bed species past the lawn's (the mushroom) ring the trees,
+//! in their shade and litter. Species that grow parts take no bed: trees
 //! (`docs/VEGETATION.md` V4, V5) stand near the corners of the meadow, at
 //! [`GROVE`] from the centre, far enough apart for their crowns; vines (V6)
 //! stand at the foot of a stone trellis wall along the meadow's south edge,
@@ -62,8 +63,9 @@ const LOAM_DEPTH: i32 = 4;
 const MOISTURE: i32 = 48;
 /// Nutrients in every loam cell: grass takes up one nitrogen a sub-step and
 /// shrubs one of each, so the beds keep feeding for many seasons; litter
-/// puts some back.
-const NUTRIENTS: [(&str, i32); 3] = [("n", 220), ("p", 160), ("k", 160)];
+/// puts some back. The carbon is humus: decomposition turns it into n, p
+/// and k down to the reserve a mushroom eats.
+const NUTRIENTS: [(&str, i32); 4] = [("n", 220), ("p", 160), ("k", 160), ("c", 64)];
 /// The chance in 256 that a bed column starts planted; the gaps are where
 /// the beds spread.
 const PLANTED: u8 = 160;
@@ -275,13 +277,27 @@ pub fn build(assets: &GameAssets, seed: u64) -> anyhow::Result<Garden> {
             g.plant(key, *material, cell, &mut planted)?;
         }
     }
-    // The trees, in place of whatever bed plant stood there.
+    // The trees, in place of whatever bed plant stood there, each ringed
+    // by the bed species past the lawn's, on its four sides.
     let corners = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+    let ring = plants.get(LAWN_BED + 1..).unwrap_or_default();
+    let mut ringed = ring.iter().cycle();
     for (&(sx, sz), (key, material)) in corners.iter().zip(trees.iter().cycle()) {
         let (x, z) = (CENTRE.0 + sx * GROVE, CENTRE.1 + sz * GROVE);
         let cell = CellPos::new(x, i32::from(g.world.surface_y(x, z)) + 1, z);
         g.clear(t, cell, &mut planted)?;
         g.plant(key, *material, cell, &mut planted)?;
+        for (dx, dz) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
+            let Some((key, material)) = ringed.next() else {
+                break;
+            };
+            let (x, z) = (x + dx, z + dz);
+            let cell = CellPos::new(x, i32::from(g.world.surface_y(x, z)) + 1, z);
+            g.clear(t, cell, &mut planted)?;
+            if g.world.get_cell(cell) == air {
+                g.plant(key, *material, cell, &mut planted)?;
+            }
+        }
     }
     // The trellis, then the vines at its foot.
     let open = air.unwrap_or(MaterialId::AIR);

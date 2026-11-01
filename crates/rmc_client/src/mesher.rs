@@ -152,6 +152,16 @@ pub const PLANT_HEALTH_MIX: f32 = 0.7;
 pub const PLANT_FOOT_SHADE: f32 = 0.6;
 /// Sway at the top of a plant of sway 255, in meters.
 pub const PLANT_SWAY_M: f32 = 0.3 * CELL_SIZE_M;
+/// A full-grown mushroom's stalk height, as a share of the cell.
+pub const MUSHROOM_STALK: f32 = 0.3;
+/// A full-grown mushroom's stalk width, as a share of the cell.
+pub const MUSHROOM_STALK_WIDTH: f32 = 0.12;
+/// A full-grown mushroom's cap width, as a share of the cell.
+pub const MUSHROOM_CAP: f32 = 0.5;
+/// A full-grown mushroom's cap rim height, as a share of the cell.
+pub const MUSHROOM_RIM: f32 = 0.1;
+/// A mushroom stalk's sRGB color: pale, whatever the cap.
+pub const MUSHROOM_STEM_RGB: [u8; 3] = [226, 214, 190];
 
 /// The tag of materials drawn as vines, flat against the cubes they climb.
 pub const VINE_TAG: &str = "vine";
@@ -186,6 +196,8 @@ pub struct PlantCell {
     pub color: [u8; 3],
     /// Wind sway, 0 to 255 ([`PLANT_SWAY_M`] at 255).
     pub sway: u8,
+    /// Drawn as a mushroom ([`push_cap`]) instead of a cross.
+    pub cap: bool,
 }
 
 /// `a` moved toward `b` by `t` (0 to 1), per channel, rounded.
@@ -1274,6 +1286,7 @@ fn plant_cell(
         stage,
         color,
         sway: look.map_or(0, |l| l.sway),
+        cap: look.is_some_and(|l| l.cap),
     }
 }
 
@@ -1296,6 +1309,7 @@ fn mesh_plants(input: &MeshInput, out: &mut MeshData) {
                     stage: u8::MAX,
                     color: def.map_or([0; 3], |d| [d.color[0], d.color[1], d.color[2]]),
                     sway: 0,
+                    cap: false,
                 });
                 let base = match overlay {
                     Some((_, cmap, values)) => overlay_base_color(cmap, values[i], 0.0),
@@ -1378,6 +1392,7 @@ fn tree_tufts(
                     stage: u8::MAX,
                     color,
                     sway: look.sway,
+                    cap: false,
                 };
                 out.push((IVec3::new(x, y, z), cell));
             }
@@ -1432,6 +1447,7 @@ fn mesh_vines(input: &MeshInput, solid: &[bool], base_colors: &[[f32; 4]], out: 
                         stage: u8::MAX,
                         color: [0; 3],
                         sway: 0,
+                        cap: false,
                     };
                     push_plant(out, p, cell, base);
                 }
@@ -1482,6 +1498,10 @@ fn push_panel(out: &mut MeshData, p: IVec3, dir: IVec3, base: [f32; 4]) {
 /// lit like the ground they stand on; the top vertices carry the sway in
 /// their second UV, and their first UV is 0 (no tile).
 fn push_plant(out: &mut MeshData, p: IVec3, cell: PlantCell, base: [f32; 4]) {
+    if cell.cap {
+        push_cap(out, p, cell, base);
+        return;
+    }
     let k = PLANT_STAGE_MIN + (1.0 - PLANT_STAGE_MIN) * f32::from(cell.stage) / f32::from(u8::MAX);
     let foot = (p.as_vec3() + Vec3::new(0.5, 0.0, 0.5)) * CELL_SIZE_M;
     let (r, h) = (0.5 * PLANT_SPREAD * k * CELL_SIZE_M, k * CELL_SIZE_M);
@@ -1512,6 +1532,72 @@ fn push_plant(out: &mut MeshData, p: IVec3, cell: PlantCell, base: [f32; 4]) {
             }
             out.quad_count += 1;
         }
+    }
+}
+
+/// Appends the mushroom at `p` (docs/VEGETATION.md, fungi), scaled by its
+/// stage like a cross: a crossed stalk in [`MUSHROOM_STEM_RGB`], and a flat
+/// cap in `base` (top, underside and four rim sides). Every quad is drawn
+/// once per facing (16 quads); normals point up as a cross's do, and
+/// nothing sways.
+fn push_cap(out: &mut MeshData, p: IVec3, cell: PlantCell, base: [f32; 4]) {
+    let k = PLANT_STAGE_MIN + (1.0 - PLANT_STAGE_MIN) * f32::from(cell.stage) / f32::from(u8::MAX);
+    let foot = (p.as_vec3() + Vec3::new(0.5, 0.0, 0.5)) * CELL_SIZE_M;
+    let size = k * CELL_SIZE_M;
+    let (s, c) = (0.5 * MUSHROOM_STALK_WIDTH * size, 0.5 * MUSHROOM_CAP * size);
+    let stalk = Vec3::new(0.0, MUSHROOM_STALK * size, 0.0);
+    let rim = Vec3::new(0.0, MUSHROOM_RIM * size, 0.0);
+    let [r, g, b] = MUSHROOM_STEM_RGB;
+    let stem = Color::srgb_u8(r, g, b).to_linear();
+    let stem = [stem.red, stem.green, stem.blue, base[3]];
+    let shade = |c: [f32; 4]| {
+        [
+            c[0] * PLANT_FOOT_SHADE,
+            c[1] * PLANT_FOOT_SHADE,
+            c[2] * PLANT_FOOT_SHADE,
+            c[3],
+        ]
+    };
+    for dz in [1.0, -1.0] {
+        let a = foot - Vec3::new(s, 0.0, dz * s);
+        let b = foot + Vec3::new(s, 0.0, dz * s);
+        push_two_sided(out, [a, b, b + stalk, a + stalk], [shade(stem), stem]);
+    }
+    let corner = |x: f32, z: f32| foot + stalk + Vec3::new(x * c, 0.0, z * c);
+    let ring = [
+        corner(-1.0, -1.0),
+        corner(-1.0, 1.0),
+        corner(1.0, 1.0),
+        corner(1.0, -1.0),
+    ];
+    push_two_sided(out, ring.map(|v| v + rim), [base, base]);
+    push_two_sided(out, ring, [shade(base), shade(base)]);
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        push_two_sided(out, [a, b, b + rim, a + rim], [shade(base), base]);
+    }
+}
+
+/// Appends the quad `corners` once per facing, normals up and no sway;
+/// the first two corners take `colors[0]`, the last two `colors[1]`.
+fn push_two_sided(out: &mut MeshData, corners: [Vec3; 4], colors: [[f32; 4]; 2]) {
+    for front in [true, false] {
+        let first = out.positions.len() as u32;
+        for (j, c) in corners.iter().enumerate() {
+            out.positions.push(c.to_array());
+            out.normals.push([0.0, 1.0, 0.0]);
+            out.uvs.push([0.0, 0.0]);
+            out.colors.push(colors[j / 2]);
+        }
+        let tris: [[u32; 3]; 2] = if front {
+            [[0, 1, 2], [0, 2, 3]]
+        } else {
+            [[0, 2, 1], [0, 3, 2]]
+        };
+        for t in tris {
+            out.indices.extend(t.map(|v| first + v));
+        }
+        out.quad_count += 1;
     }
 }
 
@@ -3479,6 +3565,7 @@ mod tests {
             material: id(&t, "acorn"),
             needs: Vec::new(),
             sway: 0,
+            cap: false,
             season_colors: vec![None, None, Some(autumn), None],
             leaf: Some(leaves),
             tuft: None,
@@ -3533,6 +3620,70 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_plant_draws_a_stalk_and_a_flat_cap() {
+        // docs/VEGETATION.md, fungi: a mushroom is a stalk and a cap, lower
+        // than a cross, inside its cell, and still.
+        let p = IVec3::new(2, 3, 4);
+        let base = [0.5, 0.3, 0.2, 0.0];
+        let cell = PlantCell {
+            stage: u8::MAX,
+            color: [0; 3],
+            sway: 200,
+            cap: true,
+        };
+        let mut cap = MeshData::default();
+        push_plant(&mut cap, p, cell, base);
+        let mut cross = MeshData::default();
+        push_plant(&mut cross, p, PlantCell { cap: false, ..cell }, base);
+        assert_eq!(cross.quad_count, 4);
+        assert_eq!(cap.quad_count, 16, "4 stalk, 2 top, 2 underside, 8 rim");
+        assert_eq!(cap.positions.len(), 4 * cap.quad_count as usize);
+        assert_eq!(cap.indices.len(), 6 * cap.quad_count as usize);
+        let high = |d: &MeshData| d.positions.iter().map(|v| v[1]).fold(f32::MIN, f32::max);
+        let floor = p.y as f32 * CELL_SIZE_M;
+        let top = high(&cap);
+        assert!((top - floor - (MUSHROOM_STALK + MUSHROOM_RIM) * CELL_SIZE_M).abs() < 1e-5);
+        assert!(top < high(&cross), "lower than a cross");
+        let lo = p.as_vec3() * CELL_SIZE_M;
+        for v in &cap.positions {
+            assert!((lo.x..=lo.x + CELL_SIZE_M).contains(&v[0]), "{v:?}");
+            assert!((lo.z..=lo.z + CELL_SIZE_M).contains(&v[2]), "{v:?}");
+        }
+        // The cap's top is flat and wider than the stalk.
+        let width = |pred: &dyn Fn(f32) -> bool| {
+            let xs: Vec<f32> = cap
+                .positions
+                .iter()
+                .filter(|v| pred(v[1]))
+                .map(|v| v[0])
+                .collect();
+            xs.iter().fold(f32::MIN, |a, &b| a.max(b)) - xs.iter().fold(f32::MAX, |a, &b| a.min(b))
+        };
+        let cap_w = width(&|y| (y - top).abs() < 1e-6);
+        let stalk_w = width(&|y| (y - floor).abs() < 1e-6);
+        assert!((cap_w - MUSHROOM_CAP * CELL_SIZE_M).abs() < 1e-5, "{cap_w}");
+        assert!(stalk_w < cap_w / 2.0, "{stalk_w}");
+        assert!(cap.uvs.iter().all(|uv| *uv == [0.0, 0.0]), "no sway");
+        // The stalk is pale; the cap takes the plant's color.
+        let [r, g, b] = MUSHROOM_STEM_RGB;
+        let stem = Color::srgb_u8(r, g, b).to_linear();
+        let at = |pred: &dyn Fn(f32) -> bool| {
+            let i = cap.positions.iter().position(|v| pred(v[1])).unwrap();
+            cap.colors[i]
+        };
+        assert_eq!(at(&|y| (y - top).abs() < 1e-6), base);
+        assert_eq!(
+            at(&|y| (y - floor).abs() < 1e-6),
+            [
+                stem.red * PLANT_FOOT_SHADE,
+                stem.green * PLANT_FOOT_SHADE,
+                stem.blue * PLANT_FOOT_SHADE,
+                base[3]
+            ]
+        );
+    }
+
+    #[test]
     fn a_growing_trunk_carries_a_leaf_tuft_until_its_crown() {
         // docs/VEGETATION.md "Leaf tuft": a young trunk is not a bare post.
         let t = table();
@@ -3543,6 +3694,7 @@ mod tests {
             material: id(&t, "birch_seed"),
             needs: Vec::new(),
             sway: 48,
+            cap: false,
             season_colors: vec![None, None, Some(autumn), None],
             leaf: Some(leaves),
             tuft: Some(wood),
@@ -3600,6 +3752,7 @@ mod tests {
             stage: u8::MAX,
             color: [r, g, b],
             sway: 48,
+            cap: false,
         };
 
         // On the top trunk cell, in the leaf color; in autumn, turned.
@@ -3652,6 +3805,7 @@ mod tests {
             material: clover,
             needs: vec![(0, 100), (1, 100)],
             sway: 255,
+            cap: false,
             season_colors: vec![None, Some([200, 100, 0])],
             leaf: None,
             tuft: None,

@@ -57,6 +57,8 @@ pub struct PlantLook {
     pub needs: Vec<(u8, i32)>,
     /// Wind sway at the top of the plant, 0 (none) to 255.
     pub sway: u8,
+    /// Drawn as a mushroom: a stalk and a flat cap (`plants.ron` `cap`).
+    pub cap: bool,
     /// Per `seasons.ron` row: the color (sRGB) the leaves turn toward that
     /// season; `None` keeps the material color.
     pub season_colors: Vec<Option<[u8; 3]>>,
