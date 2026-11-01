@@ -4661,3 +4661,15 @@ Next:
 - Pop the stash after the owner's mu-fix pick and apply it.
 - `garden::tests::the_garden_plants_every_species_where_its_needs_hold` fails with the stash applied ("mushroom planted"). The garden must give the mushroom carbon to grow.
 Blockers: none. CI run 41272816090 (f567708): linux, windows and windows-release green; linux-e2e and linux-features in progress at the time of writing.
+
+## 2026-11-01 — The game starts over a stale save — passed
+Done:
+- Owner report: `cargo run -p rmc_app` exited with "save header MaterialHash mismatch". The save in `save/` dated from 29 Oct, and the materials have changed since.
+- New `session::set_aside_stale_save`: a save the current assets cannot load (unreadable header, or other materials, tables, worldgen params or noise crate) moves whole to the first free `<dir>.old-<n>`. The windowed game (`main.rs`) calls it before building the app and prints where the old save went, then generates a new world.
+Tests added: `session::tests::a_save_of_other_assets_is_set_aside_and_the_game_starts_fresh`
+Decisions:
+- Only the windowed game sets a save aside. `start_world`, `build_game_app` and headless runs still refuse a mismatched save loudly, as their tests pin.
+- A save of another seed or size stays and is refused: those mismatches come from the player's own `--seed` / `--world-size` flags.
+- Nothing is deleted. The old save keeps its files under the new name.
+Next: the mushroom species with the owner's picks (mu-fix humus, mu-humus keep, mu-push push).
+Blockers: none.

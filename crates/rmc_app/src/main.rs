@@ -9,7 +9,7 @@ use rmc_app::app::{GameConfig, build_game_app};
 use rmc_app::cli::Cli;
 use rmc_app::eco_clock::EcoClock;
 use rmc_app::headless::{REPORT_FILE, run_headless};
-use rmc_app::session::{DEFAULT_SEED, assets_dir};
+use rmc_app::session::{DEFAULT_SEED, assets_dir, set_aside_stale_save};
 use rmc_app::tree_lab::run_tree_lab;
 
 fn main() -> anyhow::Result<()> {
@@ -63,6 +63,15 @@ fn main() -> anyhow::Result<()> {
             cli.save.display()
         );
         return Ok(());
+    }
+    // A save the current assets cannot load (made before a materials,
+    // tables or worldgen change) moves aside, so the game starts a new world.
+    if let Some(old) = set_aside_stale_save(&config.assets, &cli.save)? {
+        eprintln!(
+            "The save in {} was made with other game data and cannot load;              it was moved to {} and a new world is generated.",
+            cli.save.display(),
+            old.display()
+        );
     }
     let mut app = build_game_app(config, true)?;
     let interval = cli.eco_interval(hours);

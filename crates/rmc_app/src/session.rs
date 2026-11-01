@@ -168,6 +168,42 @@ pub fn has_save(dir: &Path) -> bool {
     dir.join(HEADER_FILE).is_file()
 }
 
+/// Moves the save in `dir` aside if `assets` cannot load it: its header is
+/// unreadable, or it was made with other materials, tables, worldgen
+/// parameters or noise crate. It moves whole to the first free
+/// `<dir>.old-<n>`, which is returned, so the game generates a new world
+/// instead of failing. A save of another seed or size stays: those come
+/// from the player's own flags, and [`start_world`] refuses them loudly.
+pub fn set_aside_stale_save(assets: &GameAssets, dir: &Path) -> anyhow::Result<Option<PathBuf>> {
+    if !has_save(dir) {
+        return Ok(None);
+    }
+    if let Ok(found) = save::read_header(dir) {
+        let expected = assets.save_header(found.seed);
+        if (
+            expected.material_hash,
+            expected.tables_hash,
+            expected.gen_params_hash,
+            &expected.noise_crate_version,
+        ) == (
+            found.material_hash,
+            found.tables_hash,
+            found.gen_params_hash,
+            &found.noise_crate_version,
+        ) {
+            return Ok(None);
+        }
+    }
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    let old = (1..)
+        .map(|n| dir.with_file_name(format!("{name}.old-{n}")))
+        .find(|p| !p.exists())
+        .expect("a free name");
+    std::fs::rename(dir, &old)
+        .with_context(|| format!("moving {} to {}", dir.display(), old.display()))?;
+    Ok(Some(old))
+}
+
 /// Loads the save in `dir` into a world generated from `seed`. The save's
 /// header must match what `assets` and `seed` build, field for field.
 pub fn load_world(assets: &GameAssets, seed: u64, dir: &Path) -> anyhow::Result<CellWorld> {
@@ -539,6 +575,49 @@ mod tests {
 
     fn send_edit(app: &mut App, cmd: EditCommand) {
         app.world_mut().write_message(ToHost(ClientMsg::Edit(cmd)));
+    }
+
+    #[test]
+    fn a_save_of_other_assets_is_set_aside_and_the_game_starts_fresh() {
+        let assets = small_assets();
+        let dir = TempDir::new("stale");
+        // No save: nothing to set aside.
+        assert_eq!(set_aside_stale_save(&assets, &dir.0).unwrap(), None);
+        // A save of these assets stays, and so does one of another seed
+        // (start_world refuses that one loudly).
+        let ours = assets.save_header(DEFAULT_SEED);
+        let other_seed = assets.save_header(DEFAULT_SEED + 1);
+        for header in [&ours, &other_seed] {
+            save::write(&dir.0, header, &[]).unwrap();
+            assert_eq!(set_aside_stale_save(&assets, &dir.0).unwrap(), None);
+            assert!(has_save(&dir.0));
+        }
+        // A save of other materials, tables, worldgen or noise moves whole
+        // to the first free `<dir>.old-<n>`; the next start generates.
+        let stale: [fn(&mut SaveHeader); 4] = [
+            |h| h.material_hash ^= 1,
+            |h| h.tables_hash ^= 1,
+            |h| h.gen_params_hash ^= 1,
+            |h| h.noise_crate_version.push('x'),
+        ];
+        let mut moved = Vec::new();
+        for change in stale {
+            let mut header = ours.clone();
+            change(&mut header);
+            save::write(&dir.0, &header, &[]).unwrap();
+            let old = set_aside_stale_save(&assets, &dir.0)
+                .unwrap()
+                .expect("set aside");
+            assert!(!has_save(&dir.0));
+            assert_eq!(save::read_header(&old).unwrap(), header);
+            assert!(!moved.contains(&old), "a free name each time");
+            moved.push(old);
+        }
+        let fresh = start_world(&assets, None, &dir.0).unwrap();
+        assert_eq!(fresh.origin, WorldOrigin::Generated);
+        for old in moved {
+            let _ = std::fs::remove_dir_all(old);
+        }
     }
 
     #[test]
