@@ -4580,3 +4580,10 @@ Decisions:
 - Draining the scene before each shot is scenario setup, like the clearing. The rain still falls and still shows in the shots.
 Next: the owner's picks on the trial results and on grass against moss.
 Blockers: none.
+
+## 2026-11-01 — Push of the tree follow-ups — passed (CI pending, see Blockers)
+Done: pushed main to 6f67e19 (owner pick "push" on the update artifact). The previous runs 41225298661 and 41244818549 both passed, linux-e2e included.
+Tests added: none.
+Decisions: none.
+Next: the owner's picks on the understory trials (us-apply, us-space).
+Blockers: CI run 41263875577 (6f67e19). Green: linux, linux-features, windows, windows-release. linux-e2e was still running when the 60-minute wait cap ran out (rule 22). `tree_graph_render` now takes about 30 min locally, so the job will run longer than before. Check its result in the next session.
